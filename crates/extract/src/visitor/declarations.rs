@@ -109,6 +109,7 @@ impl ModuleInfoExtractor {
                             span: member.span,
                             has_decorator: false,
                             is_instance_returning_static: false,
+                            is_self_returning: false,
                         })
                     })
                     .collect();
@@ -192,6 +193,7 @@ impl ModuleInfoExtractor {
                         span: id.span,
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     });
                 }
             }
@@ -204,6 +206,7 @@ impl ModuleInfoExtractor {
                             span: id.span,
                             has_decorator: false,
                             is_instance_returning_static: false,
+                            is_self_returning: false,
                         });
                     }
                 }
@@ -216,6 +219,7 @@ impl ModuleInfoExtractor {
                         span: id.span,
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     });
                 }
             }
@@ -226,6 +230,7 @@ impl ModuleInfoExtractor {
                     span: enumd.id.span,
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 });
             }
             Declaration::TSInterfaceDeclaration(iface) => {
@@ -235,6 +240,7 @@ impl ModuleInfoExtractor {
                     span: iface.id.span,
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 });
             }
             Declaration::TSTypeAliasDeclaration(alias) => {
@@ -244,6 +250,7 @@ impl ModuleInfoExtractor {
                     span: alias.id.span,
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 });
             }
             Declaration::TSModuleDeclaration(module) => match &module.id {
@@ -254,6 +261,7 @@ impl ModuleInfoExtractor {
                         span: id.span,
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     });
                 }
                 TSModuleDeclarationName::StringLiteral(lit) => {
@@ -263,6 +271,7 @@ impl ModuleInfoExtractor {
                         span: lit.span,
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     });
                 }
             },

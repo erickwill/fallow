@@ -434,6 +434,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(200, 300),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                     MemberInfo {
                         name: "listUsers".to_string(),
@@ -441,6 +442,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(310, 400),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                     MemberInfo {
                         name: "baseUrl".to_string(),
@@ -448,6 +450,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(120, 150),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                 ],
                 is_side_effect_used: false,
@@ -466,6 +469,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(570, 590),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                     MemberInfo {
                         name: "Inactive".to_string(),
@@ -473,6 +477,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(595, 620),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                     MemberInfo {
                         name: "Pending".to_string(),
@@ -480,6 +485,7 @@ fn bench_cache_round_trip(c: &mut Criterion) {
                         span: oxc_span::Span::new(625, 650),
                         has_decorator: false,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     },
                 ],
                 is_side_effect_used: false,

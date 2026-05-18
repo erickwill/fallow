@@ -79,6 +79,18 @@ pub const PLAYWRIGHT_FIXTURE_USE_SENTINEL: &str = "__fallow_playwright_fixture_u
 /// See issue #346.
 pub const FACTORY_CALL_SENTINEL: &str = "__fallow_factory_call__:";
 
+/// Synthetic member-access object prefix for fluent-builder chain credit.
+///
+/// `MemberAccess { object: format!("{FLUENT_CHAIN_SENTINEL}{callee}:{root_method}:{chain}"), member }`
+/// means a fluent chain `<callee>.<root_method>().<...chain>.<member>` was
+/// observed. `chain` is a comma-separated list of method names (empty when
+/// `member` is the first chained call after `root_method`). The analyze layer
+/// resolves `callee` to a class export, validates `root_method` has
+/// `is_instance_returning_static`, walks each `chain` segment requiring
+/// `is_self_returning` on the class, and credits `member` on the class
+/// when the chain remains on the class type. See issue #387.
+pub const FLUENT_CHAIN_SENTINEL: &str = "__fallow_fluent_chain__:";
+
 use parse::parse_source_to_module;
 
 /// Parse all files in parallel, extracting imports and exports.

@@ -369,13 +369,23 @@ pub struct MemberInfo {
     /// flagged as unused class members.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_decorator: bool,
-    /// True when this is a static class method whose body returns a fresh
-    /// instance of the same class via `return new this()` or
-    /// `return new <SameClassName>()`. Consumers calling such a static method
-    /// receive an instance, so the call result's member accesses are credited
-    /// against the class. See issue #346.
+    /// True when this is a static class method that returns a fresh instance
+    /// of the same class: either via `return new this()` / `return new
+    /// <SameClassName>()` in the body's last statement, or via a declared
+    /// return type matching the class name. Consumers calling such a static
+    /// method receive an instance, so the call result's member accesses are
+    /// credited against the class. See issues #346, #387.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_instance_returning_static: bool,
+    /// True when this is an instance class method whose call result is an
+    /// instance of the same class. Qualifies when the declared return type
+    /// matches the class name (`setX(): EventBuilder { ... }`) or when the
+    /// body's last statement is `return this`. The analyze layer walks fluent
+    /// chains (`Class.factory().setX().setY()`) only through methods carrying
+    /// this flag, so the chain stops at a non-self-returning method like
+    /// `.build()`. See issue #387.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_self_returning: bool,
 }
 
 /// The kind of member.

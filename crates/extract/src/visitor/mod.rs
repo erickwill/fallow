@@ -163,6 +163,16 @@ pub(crate) struct ModuleInfoExtractor {
     /// the analyze layer decodes. Records that do not match either are
     /// dropped without effect. See issue #346.
     pub(crate) factory_call_candidates: Vec<FactoryCallCandidate>,
+    /// Stack of class type-parameter constraint maps for classes currently
+    /// being walked. Each frame maps a type parameter name to its constraint
+    /// type (`TClient -> Some(BaseClient)` for `<TClient extends BaseClient>`)
+    /// or `None` for an unconstrained parameter (`<T>` → drop the binding,
+    /// there is no resolvable class). Read by `resolve_class_type_param`
+    /// inside `record_typed_binding` so `constructor(client: TClient)` inside
+    /// `class BaseService<TClient extends BaseClient>` registers
+    /// `this.client -> BaseClient` instead of the unresolvable `TClient`.
+    /// Pushed in `visit_class`, popped on exit. See issue #388.
+    pub(crate) class_type_param_constraints: Vec<FxHashMap<String, Option<String>>>,
 }
 
 impl ModuleInfoExtractor {

@@ -496,6 +496,7 @@ fn module_to_cached_roundtrip_members() {
                     span: Span::new(10, 15),
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 },
                 MemberInfo {
                     name: "greet".to_string(),
@@ -503,6 +504,7 @@ fn module_to_cached_roundtrip_members() {
                     span: Span::new(20, 30),
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 },
                 MemberInfo {
                     name: "name".to_string(),
@@ -510,6 +512,7 @@ fn module_to_cached_roundtrip_members() {
                     span: Span::new(35, 45),
                     has_decorator: false,
                     is_instance_returning_static: false,
+                    is_self_returning: false,
                 },
             ],
             is_side_effect_used: false,
@@ -1596,6 +1599,7 @@ fn module_to_cached_roundtrip_member_decorators() {
                 span: Span::new(50, 80),
                 has_decorator: true,
                 is_instance_returning_static: false,
+                is_self_returning: false,
             }],
             is_side_effect_used: false,
             super_class: None,

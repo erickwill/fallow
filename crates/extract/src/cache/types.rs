@@ -7,7 +7,7 @@ use bitcode::{Decode, Encode};
 use crate::MemberKind;
 
 /// Cache version, bump when the cache format or cached extraction semantics change.
-pub(super) const CACHE_VERSION: u32 = 80;
+pub(super) const CACHE_VERSION: u32 = 81;
 
 /// Duplication token cache version — bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.
@@ -238,10 +238,16 @@ pub struct CachedMember {
     pub span_end: u32,
     /// Whether this member has decorators.
     pub has_decorator: bool,
-    /// True when this is a static method that returns `new this()` or
-    /// `new <SameClassName>()`. Treated as a factory: consumers calling it
-    /// receive an instance of the class. See issue #346.
+    /// True when this is a static method that returns a fresh instance of
+    /// the class: body returns `new this()` / `new <SameClassName>()`, or the
+    /// declared return type matches the class name. Treated as a factory.
+    /// See issues #346, #387.
     pub is_instance_returning_static: bool,
+    /// True when this instance method's call result is an instance of the
+    /// same class (declared return type matches the class name, or body's
+    /// last statement is `return this`). Drives fluent-chain credit. See
+    /// issue #387.
+    pub is_self_returning: bool,
 }
 
 /// Cached dynamic import pattern data (template literals, `import.meta.glob`).

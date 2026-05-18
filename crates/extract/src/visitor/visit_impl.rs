@@ -603,14 +603,84 @@ impl ModuleInfoExtractor {
     }
 
     fn record_typed_binding(&mut self, binding_name: &str, type_annotation: &TSTypeAnnotation<'_>) {
-        if let Some(type_name) = extract_type_annotation_name(type_annotation) {
+        if let Some(type_name) = extract_type_annotation_name(type_annotation)
+            && let Some(resolved) = self.resolve_class_type_param(&type_name)
+        {
             self.binding_target_names
-                .insert(binding_name.to_string(), type_name);
+                .insert(binding_name.to_string(), resolved);
         }
 
         for (property_path, type_name) in extract_nested_type_bindings(type_annotation) {
+            let Some(resolved) = self.resolve_class_type_param(&type_name) else {
+                continue;
+            };
             self.binding_target_names
-                .insert(format!("{binding_name}.{property_path}"), type_name);
+                .insert(format!("{binding_name}.{property_path}"), resolved);
+        }
+    }
+
+    /// Substitute a class type-parameter with its constraint when the visitor
+    /// is currently inside a class that declares `<T extends Foo>`.
+    /// Returns `Some(constraint)` for a constrained parameter, `None` for an
+    /// unconstrained parameter (drop the binding: there is no concrete class),
+    /// or `Some(original)` for a non-parameter type name. See issue #388.
+    fn resolve_class_type_param(&self, type_name: &str) -> Option<String> {
+        let Some(frame) = self.class_type_param_constraints.last() else {
+            return Some(type_name.to_string());
+        };
+        match frame.get(type_name) {
+            Some(Some(constraint)) => Some(constraint.clone()),
+            Some(None) => None,
+            None => Some(type_name.to_string()),
+        }
+    }
+
+    /// Emit a fluent-chain sentinel `MemberAccess` when this call is chained
+    /// off a previous call, walking back to the root `ID.root_method()`.
+    /// Encoded as `MemberAccess { object:
+    /// "{FLUENT_CHAIN_SENTINEL}{root_id}:{root_method}:{chain_prefix}",
+    /// member: this_method }`, where `chain_prefix` is a comma-separated list
+    /// of intermediate chained method names (empty when this call is the
+    /// first after the root). The analyze layer decodes the sentinel and
+    /// validates each step against `is_instance_returning_static` (root) and
+    /// `is_self_returning` (chain segments) before crediting. See issue #387.
+    fn try_record_fluent_chain_access(&mut self, expr: &CallExpression<'_>) {
+        let Expression::StaticMemberExpression(member) = &expr.callee else {
+            return;
+        };
+        // Receiver must itself be a call expression for this to be a chain.
+        // Direct `ID.method()` calls are handled by the existing
+        // `static_member_object_name`-based flow.
+        let Expression::CallExpression(_) = &member.object else {
+            return;
+        };
+        let this_method = member.property.name.as_str();
+        let mut chain_prefix_reversed: Vec<String> = Vec::new();
+        let mut current = &member.object;
+        loop {
+            let Expression::CallExpression(call) = current else {
+                return;
+            };
+            let Expression::StaticMemberExpression(inner_member) = &call.callee else {
+                return;
+            };
+            if let Expression::Identifier(root_id) = &inner_member.object {
+                chain_prefix_reversed.reverse();
+                let chain_prefix = chain_prefix_reversed.join(",");
+                self.member_accesses.push(MemberAccess {
+                    object: format!(
+                        "{}{}:{}:{}",
+                        crate::FLUENT_CHAIN_SENTINEL,
+                        root_id.name,
+                        inner_member.property.name,
+                        chain_prefix,
+                    ),
+                    member: this_method.to_string(),
+                });
+                return;
+            }
+            chain_prefix_reversed.push(inner_member.property.name.to_string());
+            current = &inner_member.object;
         }
     }
 
@@ -1661,6 +1731,17 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
             self.handled_import_spans.insert(import_expr.span);
         }
 
+        // Fluent-builder chain credit (issue #387).
+        //
+        // When `expr.callee` is `<some chain of calls>.this_method`, walk back
+        // through the chain to a root `ID.root_method()`. Record one synthetic
+        // `MemberAccess` keyed on the fluent-chain sentinel; the analyze layer
+        // validates root_method is `is_instance_returning_static` and each
+        // intermediate chain method is `is_self_returning` on the class before
+        // crediting `this_method`. Without this, calls like
+        // `EventBuilder.create().setX().setY()` flag every `setX` as unused.
+        self.try_record_fluent_chain_access(expr);
+
         walk::walk_call_expression(self, expr);
     }
 
@@ -1997,7 +2078,14 @@ impl<'a> Visit<'a> for ModuleInfoExtractor {
         // depth matches the visit depth when nested classes appear.
         self.class_super_stack
             .push(super::helpers::extract_super_class_name(class));
+        // Track class type-parameter constraints so `constructor(client: TClient)`
+        // inside `class BaseService<TClient extends BaseClient>` resolves to
+        // `this.client -> BaseClient`. Pushed for every class so the stack depth
+        // matches the visit depth when nested classes appear. See issue #388.
+        self.class_type_param_constraints
+            .push(super::helpers::collect_class_type_param_constraints(class));
         walk::walk_class(self, class);
+        self.class_type_param_constraints.pop();
         self.class_super_stack.pop();
     }
 

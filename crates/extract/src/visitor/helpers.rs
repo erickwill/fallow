@@ -8,6 +8,7 @@ use oxc_ast::ast::{
     TSType, TSTypeAnnotation, TSTypeName,
 };
 use oxc_span::{GetSpan, Span};
+use rustc_hash::FxHashMap;
 
 use crate::{MemberInfo, MemberKind};
 
@@ -512,12 +513,15 @@ pub fn extract_class_members(class: &Class<'_>, is_angular_class: bool) -> Vec<M
                     {
                         let is_instance_returning_static = method.r#static
                             && is_instance_returning_static_method(method, class_name);
+                        let is_self_returning = !method.r#static
+                            && is_self_returning_instance_method(method, class_name);
                         members.push(MemberInfo {
                             name: name_str,
                             kind: MemberKind::ClassMethod,
                             span: method.span,
                             has_decorator: !method.decorators.is_empty(),
                             is_instance_returning_static,
+                            is_self_returning,
                         });
                     }
                 }
@@ -541,6 +545,7 @@ pub fn extract_class_members(class: &Class<'_>, is_angular_class: bool) -> Vec<M
                         span: prop.span,
                         has_decorator,
                         is_instance_returning_static: false,
+                        is_self_returning: false,
                     });
                 }
             }
@@ -550,25 +555,79 @@ pub fn extract_class_members(class: &Class<'_>, is_angular_class: bool) -> Vec<M
     members
 }
 
-/// Detect whether a static method's body returns a fresh instance of the
-/// enclosing class. Conservative: only the body's LAST top-level statement
-/// being `return new this()` or `return new <class_name>()` qualifies.
-/// Earlier guard returns (`if (cond) return null;`) stay inside an
-/// `IfStatement` and so are not top-level, while a stray dead-code
-/// `return null; return new this();` pair is correctly rejected because
-/// the qualifying return is not the last statement. Chained `.build()`,
-/// `Object.assign(new this(), ...)`, ternaries, and other transformations
-/// are intentionally out of scope. See issue #346.
+/// Detect whether a static method returns a fresh instance of the enclosing
+/// class. Two qualifying shapes:
+///
+/// 1. Body's LAST top-level statement is `return new this()` or
+///    `return new <class_name>()`. Earlier guard returns inside `if` blocks
+///    are not top-level, so they don't disqualify. A stray dead-code pair
+///    `return null; return new this();` is correctly rejected because the
+///    qualifying return is not the last statement.
+/// 2. Declared return type matches the enclosing class name (issue #387):
+///    `static createWithDefaults(): EventBuilder { return chain; }` where the
+///    body is a fluent chain ending in a method that returns `this`. The
+///    declared return type is a strong signal even when the body is too
+///    complex to inspect syntactically.
+///
+/// Chained `.build()` results, `Object.assign(new this(), ...)`, and
+/// ternaries are intentionally out of scope (only matter when the declared
+/// return type isn't the class). See issues #346, #387.
 fn is_instance_returning_static_method(
     method: &oxc_ast::ast::MethodDefinition<'_>,
     class_name: Option<&str>,
 ) -> bool {
+    if returns_named_class_type(method.value.return_type.as_ref(), class_name) {
+        return true;
+    }
     let Some(body) = method.value.body.as_ref() else {
         return false;
     };
     body.statements
         .last()
         .is_some_and(|stmt| statement_returns_class_instance(stmt, class_name))
+}
+
+/// Detect whether an instance method's call result is the enclosing class
+/// (i.e., the method is suitable for fluent-builder chaining). Two qualifying
+/// shapes:
+///
+/// 1. Declared return type matches the enclosing class name. The canonical
+///    fluent shape: `setX(value: T): EventBuilder { ... return this; }`.
+/// 2. Body's LAST top-level statement is `return this`. The "untyped" fluent
+///    shape: `setX(value) { ...; return this; }`.
+///
+/// Used by the analyze layer to continue walking a fluent chain
+/// (`Class.factory().setX().setY()`) only while each step preserves the
+/// receiver type. See issue #387.
+fn is_self_returning_instance_method(
+    method: &oxc_ast::ast::MethodDefinition<'_>,
+    class_name: Option<&str>,
+) -> bool {
+    if returns_named_class_type(method.value.return_type.as_ref(), class_name) {
+        return true;
+    }
+    let Some(body) = method.value.body.as_ref() else {
+        return false;
+    };
+    body.statements.last().is_some_and(|stmt| {
+        let Statement::ReturnStatement(ret) = stmt else {
+            return false;
+        };
+        matches!(ret.argument.as_ref(), Some(Expression::ThisExpression(_)))
+    })
+}
+
+fn returns_named_class_type(
+    return_type: Option<&oxc_allocator::Box<'_, oxc_ast::ast::TSTypeAnnotation<'_>>>,
+    class_name: Option<&str>,
+) -> bool {
+    let Some(name) = class_name else {
+        return false;
+    };
+    let Some(annotation) = return_type.map(|boxed| boxed.as_ref()) else {
+        return false;
+    };
+    extract_type_annotation_name(annotation).is_some_and(|ty| ty == name)
 }
 
 fn statement_returns_class_instance(stmt: &Statement<'_>, class_name: Option<&str>) -> bool {
@@ -680,8 +739,23 @@ fn collect_nested_type_bindings(
 /// Angular templates also reference these bindings by their local name
 /// (`dataService.getTotal()` in the template maps to
 /// `this.dataService` -> `DataService`). Private bindings are excluded.
+///
+/// Generic-constraint resolution (issue #388): when a binding's type is a
+/// generic parameter declared on the class (`class BaseService<TClient extends
+/// BaseClient>`), the parameter is substituted with its constraint type
+/// (`TClient` -> `BaseClient`). Without this, `this.client.fetchLatest()` on a
+/// `TClient`-typed field cannot resolve `fetchLatest` back to `BaseClient`.
+/// Unconstrained type parameters (`<T>`) are dropped: there is no
+/// resolvable class for the caller to bind to.
 #[must_use]
 pub fn extract_class_instance_bindings(class: &Class<'_>) -> Vec<(String, String)> {
+    let type_param_constraints = collect_class_type_param_constraints(class);
+    let resolve = |raw: String| -> Option<String> {
+        if let Some(replacement) = type_param_constraints.get(raw.as_str()) {
+            return replacement.clone();
+        }
+        Some(raw)
+    };
     let mut bindings: Vec<(String, String)> = Vec::new();
     for element in &class.body.body {
         match element {
@@ -703,7 +777,10 @@ pub fn extract_class_instance_bindings(class: &Class<'_>) -> Vec<(String, String
                         let Some(type_name) = extract_type_annotation_name(type_annotation) else {
                             continue;
                         };
-                        bindings.push((id.name.to_string(), type_name));
+                        let Some(resolved) = resolve(type_name) else {
+                            continue;
+                        };
+                        bindings.push((id.name.to_string(), resolved));
                     }
                 } else if matches!(method.kind, MethodDefinitionKind::Get) {
                     if matches!(method.accessibility, Some(TSAccessibility::Private)) {
@@ -718,7 +795,10 @@ pub fn extract_class_instance_bindings(class: &Class<'_>) -> Vec<(String, String
                     let Some(type_name) = extract_type_annotation_name(type_annotation) else {
                         continue;
                     };
-                    bindings.push((name.to_string(), type_name));
+                    let Some(resolved) = resolve(type_name) else {
+                        continue;
+                    };
+                    bindings.push((name.to_string(), resolved));
                 }
             }
             ClassElement::PropertyDefinition(prop) => {
@@ -731,7 +811,9 @@ pub fn extract_class_instance_bindings(class: &Class<'_>) -> Vec<(String, String
                 if let Some(type_annotation) = prop.type_annotation.as_deref()
                     && let Some(type_name) = extract_type_annotation_name(type_annotation)
                 {
-                    bindings.push((name.to_string(), type_name));
+                    if let Some(resolved) = resolve(type_name) {
+                        bindings.push((name.to_string(), resolved));
+                    }
                     continue;
                 }
                 if let Some(Expression::NewExpression(new_expr)) = &prop.value
@@ -745,6 +827,31 @@ pub fn extract_class_instance_bindings(class: &Class<'_>) -> Vec<(String, String
         }
     }
     bindings
+}
+
+/// Build a map from each class type parameter name to the type name of its
+/// constraint, if any. `class Service<TClient extends BaseClient, T>` produces
+/// `{TClient -> Some(BaseClient), T -> None}`. Used by
+/// `extract_class_instance_bindings` and the visitor's class-scoped type-
+/// param resolver to substitute generic parameter names with their resolvable
+/// class constraint, and to drop unconstrained parameters that cannot be
+/// resolved to a concrete class. See issue #388.
+#[must_use]
+pub fn collect_class_type_param_constraints(
+    class: &Class<'_>,
+) -> FxHashMap<String, Option<String>> {
+    let mut map = FxHashMap::default();
+    let Some(type_parameters) = class.type_parameters.as_deref() else {
+        return map;
+    };
+    for param in &type_parameters.params {
+        let constraint_name = param
+            .constraint
+            .as_ref()
+            .and_then(extract_type_reference_name);
+        map.insert(param.name.name.to_string(), constraint_name);
+    }
+    map
 }
 
 /// Extract a simple referenced type name from a TypeScript type node.

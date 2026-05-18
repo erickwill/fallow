@@ -2714,6 +2714,227 @@ fn dotted_bound_receiver_preserves_suffix() {
 }
 
 #[test]
+fn fluent_chain_emits_sentinel_member_access() {
+    let info = parse(
+        r#"
+        import { EventBuilder } from './event-builder';
+        EventBuilder.create().setProcessId("x").setSubject("y").build();
+        "#,
+    );
+
+    // The first chained call (`.setProcessId`) records chain prefix "".
+    assert!(
+        info.member_accesses.iter().any(|a| a.object
+            == format!("{}EventBuilder:create:", crate::FLUENT_CHAIN_SENTINEL)
+            && a.member == "setProcessId"),
+        "first chained call should emit sentinel with empty chain prefix, found: {:?}",
+        info.member_accesses,
+    );
+    // The second chained call (`.setSubject`) records chain prefix "setProcessId".
+    assert!(
+        info.member_accesses.iter().any(|a| a.object
+            == format!(
+                "{}EventBuilder:create:setProcessId",
+                crate::FLUENT_CHAIN_SENTINEL
+            )
+            && a.member == "setSubject"),
+        "second chained call should encode intermediate method in chain prefix, found: {:?}",
+        info.member_accesses,
+    );
+    // The terminal `.build()` records chain prefix "setProcessId,setSubject".
+    assert!(
+        info.member_accesses.iter().any(|a| a.object
+            == format!(
+                "{}EventBuilder:create:setProcessId,setSubject",
+                crate::FLUENT_CHAIN_SENTINEL
+            )
+            && a.member == "build"),
+        "terminal call should encode the full prior chain, found: {:?}",
+        info.member_accesses,
+    );
+}
+
+#[test]
+fn self_returning_instance_method_flagged() {
+    let info = parse(
+        r"
+        export class Builder {
+            setX(value: number): Builder {
+                return this;
+            }
+            setY(value: number) {
+                return this;
+            }
+            build(): { x: number } {
+                return { x: 1 };
+            }
+        }
+        ",
+    );
+
+    let builder_members: Vec<&crate::MemberInfo> = info
+        .exports
+        .iter()
+        .find(|e| matches!(&e.name, crate::ExportName::Named(n) if n == "Builder"))
+        .map(|e| e.members.iter().collect())
+        .unwrap_or_default();
+
+    let set_x = builder_members
+        .iter()
+        .find(|m| m.name == "setX")
+        .expect("setX should be in members");
+    assert!(
+        set_x.is_self_returning,
+        "setX declares return type Builder, should be marked self-returning",
+    );
+    let set_y = builder_members
+        .iter()
+        .find(|m| m.name == "setY")
+        .expect("setY should be in members");
+    assert!(
+        set_y.is_self_returning,
+        "setY returns `this` as the last statement, should be marked self-returning",
+    );
+    let build = builder_members
+        .iter()
+        .find(|m| m.name == "build")
+        .expect("build should be in members");
+    assert!(
+        !build.is_self_returning,
+        "build returns a different type, must NOT be marked self-returning",
+    );
+}
+
+#[test]
+fn static_factory_with_declared_return_type_qualifies() {
+    let info = parse(
+        r"
+        export class Builder {
+            static createWithDefaults(): Builder {
+                return Builder.create().setX(1);
+            }
+            static create(): Builder {
+                return new Builder();
+            }
+            setX(value: number): Builder {
+                return this;
+            }
+        }
+        ",
+    );
+
+    let builder_members: Vec<&crate::MemberInfo> = info
+        .exports
+        .iter()
+        .find(|e| matches!(&e.name, crate::ExportName::Named(n) if n == "Builder"))
+        .map(|e| e.members.iter().collect())
+        .unwrap_or_default();
+
+    let create_with_defaults = builder_members
+        .iter()
+        .find(|m| m.name == "createWithDefaults")
+        .expect("createWithDefaults should be in members");
+    assert!(
+        create_with_defaults.is_instance_returning_static,
+        "static method whose declared return type is the class qualifies as a factory (issue #387)",
+    );
+}
+
+#[test]
+fn generic_constructor_param_resolved_via_constraint() {
+    let info = parse(
+        r"
+        import { BaseClient } from './base-client';
+
+        export abstract class BaseService<TClient extends BaseClient> {
+            constructor(protected readonly client: TClient) {}
+        }
+        ",
+    );
+
+    assert!(
+        info.class_heritage.iter().any(|heritage| {
+            heritage.export_name == "BaseService"
+                && heritage
+                    .instance_bindings
+                    .contains(&("client".to_string(), "BaseClient".to_string()))
+        }),
+        "constructor param typed as a generic parameter should resolve to its constraint, found: {:?}",
+        info.class_heritage
+    );
+}
+
+#[test]
+fn unconstrained_generic_param_drops_binding() {
+    let info = parse(
+        r"
+        export class Container<T> {
+            constructor(public readonly value: T) {}
+        }
+        ",
+    );
+
+    let container_bindings = info
+        .class_heritage
+        .iter()
+        .find(|heritage| heritage.export_name == "Container")
+        .map(|heritage| &heritage.instance_bindings);
+    assert!(
+        container_bindings.is_none_or(|bindings| !bindings.iter().any(|(name, _)| name == "value")),
+        "unconstrained generic parameter has no resolvable class, binding should be dropped, found: {container_bindings:?}",
+    );
+}
+
+#[test]
+fn generic_constructor_param_binds_this_to_constraint() {
+    let info = parse(
+        r"
+        import { BaseClient } from './base-client';
+
+        export abstract class BaseService<TClient extends BaseClient> {
+            constructor(protected readonly client: TClient) {}
+
+            async getLatest(id: string) {
+                return await this.client.fetchLatest(id);
+            }
+        }
+        ",
+    );
+
+    assert!(
+        info.member_accesses
+            .iter()
+            .any(|a| a.object == "BaseClient" && a.member == "fetchLatest"),
+        "this.client.fetchLatest inside BaseService<TClient extends BaseClient> should resolve through TClient's constraint to BaseClient.fetchLatest, found: {:?}",
+        info.member_accesses
+    );
+}
+
+#[test]
+fn generic_typed_property_resolved_via_constraint() {
+    let info = parse(
+        r"
+        import { BaseClient } from './base-client';
+
+        export class Wrapper<TClient extends BaseClient> {
+            public readonly client!: TClient;
+        }
+        ",
+    );
+
+    assert!(
+        info.class_heritage.iter().any(|heritage| {
+            heritage.export_name == "Wrapper"
+                && heritage
+                    .instance_bindings
+                    .contains(&("client".to_string(), "BaseClient".to_string()))
+        }),
+        "property typed as a generic parameter should resolve to its constraint, found: {:?}",
+        info.class_heritage
+    );
+}
+
+#[test]
 fn dotted_bound_whole_object_preserves_suffix() {
     let info = parse(
         r"

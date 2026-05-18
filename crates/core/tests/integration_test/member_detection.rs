@@ -263,6 +263,65 @@ fn playwright_fixture_teardown_credits_factory_getter_member_usage() {
 }
 
 #[test]
+fn fluent_builder_chain_credits_intermediate_setters() {
+    let root = fixture_path("issue-387-fluent-builder");
+    let config = create_config(root);
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let unused_class_members: Vec<String> = results
+        .unused_class_members
+        .iter()
+        .map(|m| format!("{}.{}", m.parent_name, m.member_name))
+        .collect();
+
+    for credited in [
+        "EventBuilder.setEventVersion",
+        "EventBuilder.setProcessId",
+        "EventBuilder.setSubject",
+        "EventBuilder.build",
+    ] {
+        assert!(
+            !unused_class_members.contains(&credited.to_string()),
+            "{credited} is reached through a fluent-builder chain off `EventBuilder.createWithDefaults()` / `EventBuilder.create()`, should be credited (issue #387), found: {unused_class_members:?}"
+        );
+    }
+    assert!(
+        unused_class_members.contains(&"EventBuilder.setUnused".to_string()),
+        "genuinely unused fluent setters should still be reported, found: {unused_class_members:?}"
+    );
+    // Negative case: `EventBuilder.format("x").trim()` emits a fluent-chain
+    // sentinel, but `format` is NOT `is_instance_returning_static` (it returns
+    // string). The analyze-layer `!has_factory` guard must reject the chain so
+    // `fakeFromNonFactory` stays reported as unused.
+    assert!(
+        unused_class_members.contains(&"EventBuilder.fakeFromNonFactory".to_string()),
+        "fluent-chain credit must not piggy-back on a non-factory root method, found: {unused_class_members:?}"
+    );
+}
+
+#[test]
+fn generic_constrained_param_credits_base_class_member() {
+    let root = fixture_path("issue-388-generic-constraint");
+    let config = create_config(root);
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let unused_class_members: Vec<String> = results
+        .unused_class_members
+        .iter()
+        .map(|m| format!("{}.{}", m.parent_name, m.member_name))
+        .collect();
+
+    assert!(
+        !unused_class_members.contains(&"BaseClient.fetchLatest".to_string()),
+        "BaseClient.fetchLatest is called via a generic-constrained `this.client`, should be credited (issue #388), found: {unused_class_members:?}"
+    );
+    assert!(
+        unused_class_members.contains(&"BaseClient.unusedBaseMethod".to_string()),
+        "genuinely unused base methods should still be reported, found: {unused_class_members:?}"
+    );
+}
+
+#[test]
 fn angular_inject_fields_credit_service_member_usage() {
     let root = fixture_path("angular-inject-class-members");
     let config = create_config(root);
