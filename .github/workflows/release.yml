@@ -399,6 +399,46 @@ jobs:
           git tag -f v1 "${GITHUB_SHA}"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" refs/tags/v1 --force
 
+  # Belt-and-suspenders codegen drift check before either privileged publish
+  # job runs. PR CI runs `pnpm run check:codegen` on every relevant change,
+  # but a release tag could in theory be cut on a commit where the committed
+  # `editors/vscode/src/generated/output-contract.d.ts` /
+  # `npm/fallow/types/output-contract.d.ts` disagree with what regen would
+  # produce from `docs/output-schema.json` (force-push to main, history rewrite,
+  # tag pointed at an old SHA). One `check:codegen` run validates BOTH outputs
+  # because `editors/vscode/scripts/codegen-types.mjs` writes them in lock-step.
+  # Failure here blocks `npm-publish` AND `vscode-publish`. Refs #416.
+  #
+  # Prep-tier job: `contents: read` only, no publish tokens, so running
+  # `pnpm install` here matches the release-workflow security boundary
+  # (untrusted-code-may-run is fine without tokens; tokens-present jobs
+  # never install).
+  check-codegen:
+    name: Check codegen drift
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: cd editors/vscode && pnpm install --frozen-lockfile
+
+      - name: Verify generated TypeScript matches docs/output-schema.json
+        run: cd editors/vscode && pnpm run check:codegen
+
   # Build the npm publish tree (versioned package.json files, binaries, NAPI
   # addons, schema) into immutable tarballs. This job runs no publish
   # credentials. The split exists to keep `npm ci`, dependency install
@@ -603,7 +643,7 @@ jobs:
     # - --ignore-scripts on every publish blocks lifecycle scripts inside the
     #   tarballs from executing here.
     # Anything that needs `npm ci` or runs dependency code belongs in npm-prep.
-    needs: [npm-prep, release]
+    needs: [npm-prep, release, check-codegen]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -799,7 +839,7 @@ jobs:
 
   vscode-publish:
     name: Publish VS Code Extension
-    needs: [vscode-prep, release]
+    needs: [vscode-prep, release, check-codegen]
     runs-on: ubuntu-latest
     permissions:
       contents: read

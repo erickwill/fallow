@@ -39,9 +39,24 @@ jobs:
         id: filter
         with:
           filters: |
+            # The `rust` filter gates the `check` job, which runs the
+            # `cargo test/clippy --features schema-emit` drift gate that catches
+            # Rust-source -> docs/output-schema.json divergence. JsonSchema-deriving
+            # structs are spread across multiple crates; keeping the filter at
+            # `crates/**` (rather than a narrower per-crate list) ensures edits to
+            # ANY of the following subtrees trigger the gate:
+            #   - crates/types/src/                       (finding structs)
+            #   - crates/core/src/duplicates/types.rs     (CloneFamily, CloneGroup, AttributedCloneGroup)
+            #   - crates/cli/src/health_types/            (ComplexityViolation, HealthFinding, hotspots, refactoring, coverage)
+            #   - crates/cli/src/output_envelope.rs       (FallowOutput enum + per-command envelopes)
+            # `docs/output-schema.json` is included so PR edits that ONLY touch
+            # the schema (without a matching Rust change) still trigger the
+            # drift gate on the PR rather than slipping through to a push-time
+            # failure on main. Refs #416.
             rust:
               - 'crates/**'
               - 'tests/**'
+              - 'docs/output-schema.json'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
