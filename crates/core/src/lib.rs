@@ -156,12 +156,20 @@ fn update_cache(
     for module in modules {
         if let Some(file) = files.get(module.file_id.0 as usize) {
             let (mt, sz) = file_mtime_and_size(&file.path);
-            // If content hash matches, just refresh mtime/size if stale (e.g. `touch`ed file)
+            // If content hash matches, just refresh mtime/size if stale
+            // (e.g. `touch`ed file). Critically, preserve the existing
+            // `last_access_secs` instead of rebuilding the entry via
+            // `module_to_cached` (which would stamp the current epoch
+            // second and defeat the LRU). A metadata-only refresh is NOT
+            // a content change, so the entry's recency should not bump.
             if let Some(cached) = store.get_by_path_only(&file.path)
                 && cached.content_hash == module.content_hash
             {
                 if cached.mtime_secs != mt || cached.file_size != sz {
-                    store.insert(&file.path, cache::module_to_cached(module, mt, sz));
+                    let preserved_last_access = cached.last_access_secs;
+                    let mut refreshed = cache::module_to_cached(module, mt, sz);
+                    refreshed.last_access_secs = preserved_last_access;
+                    store.insert(&file.path, refreshed);
                 }
                 continue;
             }
@@ -169,6 +177,22 @@ fn update_cache(
         }
     }
     store.retain_paths(files);
+}
+
+/// Resolve `config.cache_max_size_mb` into bytes, falling back to the
+/// extract crate's `DEFAULT_CACHE_MAX_SIZE`. Lives at this layer (not on
+/// `ResolvedConfig`) because `fallow-config` does not depend on
+/// `fallow-extract`; the bytes conversion is owned by the cache callsite.
+/// Public so CLI subcommands that load the cache directly (`flags`,
+/// `health`, `coverage analyze`) can call it without re-deriving the
+/// same fallback policy.
+#[must_use]
+pub fn resolve_cache_max_size_bytes(config: &ResolvedConfig) -> usize {
+    config
+        .cache_max_size_mb
+        .map_or(cache::DEFAULT_CACHE_MAX_SIZE, |mb| {
+            (mb as usize).saturating_mul(1024 * 1024)
+        })
 }
 
 /// Extract mtime (seconds since epoch) and file size from a path.
@@ -702,10 +726,15 @@ fn analyze_full(
     // Stage 2: Parse all files in parallel and extract imports/exports
     let t = Instant::now();
     let pb = progress.stage_spinner(&format!("Parsing {} files...", files.len()));
+    let cache_max_size_bytes = resolve_cache_max_size_bytes(config);
     let mut cache_store = if config.no_cache {
         None
     } else {
-        cache::CacheStore::load(&config.cache_dir)
+        cache::CacheStore::load(
+            &config.cache_dir,
+            config.cache_config_hash,
+            cache_max_size_bytes,
+        )
     };
 
     let parse_result = extract::parse_all_files(files, cache_store.as_ref(), need_complexity);
@@ -720,7 +749,11 @@ fn analyze_full(
     if !config.no_cache {
         let store = cache_store.get_or_insert_with(cache::CacheStore::new);
         update_cache(store, &modules, files);
-        if let Err(e) = store.save(&config.cache_dir) {
+        if let Err(e) = store.save(
+            &config.cache_dir,
+            config.cache_config_hash,
+            cache_max_size_bytes,
+        ) {
             tracing::warn!("Failed to save cache: {e}");
         }
     }
@@ -1408,6 +1441,7 @@ pub fn config_for_project(
                     num_cpus(),
                     false,
                     true, // quiet: LSP/programmatic callers don't need progress bars
+                    None, // LSP/programmatic embedders use the default cache cap
                 ),
                 Some(path),
             )
@@ -1419,6 +1453,7 @@ pub fn config_for_project(
                 num_cpus(),
                 false,
                 true,
+                None,
             ),
             None,
         ),
@@ -1446,6 +1481,7 @@ pub(crate) fn default_config(root: &Path) -> ResolvedConfig {
                 num_cpus(),
                 false,
                 true,
+                None,
             )
         },
         |(config, _)| config,
