@@ -54,12 +54,57 @@ pub(crate) use runtime_support::{build_ownership_resolver, load_config, load_con
 
 // ── CLI definition ───────────────────────────────────────────────
 
+const TOP_LEVEL_HELP_TEMPLATE: &str =
+    "{about-with-newline}\n{usage-heading} {usage}{after-help}\n\nOptions:\n{options}";
+
+const TOP_LEVEL_AFTER_HELP: &str = "\
+Analysis:
+  dead-code      Analyze unused code, dependency hygiene, and architecture cycles
+  dupes          Find copy-paste and structural code duplication
+  health         Analyze complexity, maintainability, hotspots, and coverage gaps
+  flags          Detect feature flag usage patterns
+  audit          Review changed files for dead code, complexity, and duplication
+
+Workflow:
+  watch          Re-run analysis as files change
+  fix            Auto-fix safe unused-code findings
+
+Project inspection:
+  list           List discovered files, entry points, plugins, boundaries, and workspaces
+  workspaces     Show monorepo workspace discovery diagnostics
+  explain        Explain one issue type without running analysis
+
+Setup and configuration:
+  init           Create a fallow config, optionally with a Git hook
+  migrate        Migrate knip or jscpd config to fallow
+  config         Show the resolved config and loaded config file
+  config-schema  Print the fallow config JSON Schema
+  plugin-schema  Print the external plugin JSON Schema
+
+Automation and CI:
+  ci             Build PR/MR feedback envelopes
+  ci-template    Print or vendor CI integration templates
+  hooks          Install or remove fallow-managed Git and agent hooks
+  setup-hooks    Legacy agent-hook installer
+
+Runtime coverage:
+  coverage       Set up or analyze runtime coverage data
+  license        Manage the paid-feature license
+
+Reference:
+  schema         Dump the CLI interface as machine-readable JSON
+  help           Print this message or the help of a command
+
+When no command is given, fallow runs dead-code + dupes + health together.
+Use --only/--skip to select specific analyses.";
+
 #[derive(Parser)]
 #[command(
     name = "fallow",
     about = "Codebase analyzer for TypeScript/JavaScript: unused code, circular dependencies, code duplication, complexity hotspots, and architecture boundary violations",
     version,
-    after_help = "When no command is given, runs dead-code + dupes + health together.\nUse --only/--skip to select specific analyses."
+    help_template = TOP_LEVEL_HELP_TEMPLATE,
+    after_help = TOP_LEVEL_AFTER_HELP
 )]
 struct Cli {
     #[command(subcommand)]
@@ -3133,6 +3178,52 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    #[test]
+    fn top_level_help_groups_commands_by_workflow() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        let expected_order = [
+            "Analysis:",
+            "  dead-code",
+            "  dupes",
+            "  health",
+            "  flags",
+            "  audit",
+            "Workflow:",
+            "  watch",
+            "  fix",
+            "Project inspection:",
+            "  list",
+            "  workspaces",
+            "  explain",
+            "Setup and configuration:",
+            "  init",
+            "  migrate",
+            "  config",
+            "  config-schema",
+            "  plugin-schema",
+            "Automation and CI:",
+            "  ci",
+            "  ci-template",
+            "  hooks",
+            "  setup-hooks",
+            "Runtime coverage:",
+            "  coverage",
+            "  license",
+            "Reference:",
+            "  schema",
+            "  help",
+            "Options:",
+        ];
+        let mut cursor = 0;
+        for needle in expected_order {
+            let Some(offset) = help[cursor..].find(needle) else {
+                panic!("top-level help missing `{needle}` after byte {cursor}:\n{help}");
+            };
+            cursor += offset + needle.len();
+        }
     }
 
     fn visit_help(cmd: &mut clap::Command, path: &str, violations: &mut Vec<(String, String)>) {
