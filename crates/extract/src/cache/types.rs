@@ -80,7 +80,12 @@ use crate::MemberKind;
 /// populate `auto_import_candidates` for convention auto-import resolution.
 /// Pre-fix entries omit the field, so Nuxt components consumed only via template
 /// tags are not edge-credited until the file is re-extracted.
-pub(super) const CACHE_VERSION: u32 = 101;
+///
+/// Bumped to 102 for issue #742: `FunctionComplexity` now carries an
+/// `Option<String> source_hash` (content digest of the function's full-span
+/// source slice) so runtime-coverage baselines survive line moves. Pre-fix
+/// cache entries lack the field, so the hash is absent until re-extraction.
+pub(super) const CACHE_VERSION: u32 = 102;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
 /// normalization, or the on-disk token cache schema changes.
@@ -137,7 +142,7 @@ assert_cached_type_size!(CachedReExport, 88);
 assert_cached_type_size!(CachedMember, 64);
 assert_cached_type_size!(CachedDynamicImportPattern, 56);
 assert_cached_type_size!(crate::MemberAccess, 48);
-assert_cached_type_size!(fallow_types::extract::FunctionComplexity, 48);
+assert_cached_type_size!(fallow_types::extract::FunctionComplexity, 72);
 assert_cached_type_size!(fallow_types::extract::FlagUse, 80);
 assert_cached_type_size!(fallow_types::extract::ClassHeritageInfo, 96);
 

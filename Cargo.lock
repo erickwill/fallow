@@ -961,6 +961,7 @@ name = "fallow-extract"
 version = "2.82.0"
 dependencies = [
  "bitcode",
+ "fallow-cov-protocol",
  "fallow-types",
  "oxc_allocator",
  "oxc_ast",

@@ -325,6 +325,11 @@ struct StaticFunctionInfo {
     /// `stable_id` for the same function, so a cloud function carrying a
     /// `stable_id` joins here directly.
     stable_id: String,
+    /// Content digest of the function's full-span source slice
+    /// (`FunctionComplexity.source_hash`). Stable across line moves, so a
+    /// finding built from this function carries a line-move-immune key for
+    /// baseline suppression.
+    source_hash: Option<String>,
 }
 
 #[derive(Default)]
@@ -442,6 +447,7 @@ fn build_index_from_analysis(
                 caller_count,
                 owner_count,
                 stable_id: stable_id.clone(),
+                source_hash: function.source_hash.clone(),
             };
             out.by_key.insert(
                 (rel.clone(), function.name.clone(), function.line),
@@ -643,6 +649,7 @@ fn cloud_finding(
     RuntimeCoverageFinding {
         id: stable_runtime_id("prod", &local.path, &local.name, local.start_line),
         stable_id: Some(local.stable_id.clone()),
+        source_hash: local.source_hash.clone(),
         path: local.path.clone(),
         function: local.name.clone(),
         line: local.start_line,
@@ -1212,6 +1219,7 @@ mod tests {
             caller_count: 0,
             owner_count: None,
             stable_id: function_identity_id("src/a.ts", "oldFlow", 10),
+            source_hash: None,
         };
         static_index.by_key.insert(
             ("src/a.ts".to_owned(), "oldFlow".to_owned(), 10),
@@ -1527,6 +1535,7 @@ mod tests {
         RuntimeCoverageFinding {
             id: id.to_owned(),
             stable_id: None,
+            source_hash: None,
             path: PathBuf::from("src/a.ts"),
             function: "a".to_owned(),
             line: 1,
@@ -1558,6 +1567,7 @@ mod tests {
             caller_count: 0,
             owner_count: None,
             stable_id: function_identity_id(&rel, name, start_line),
+            source_hash: None,
         }
     }
 

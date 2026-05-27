@@ -1633,6 +1633,7 @@ fn module_to_cached_roundtrip_complexity() {
                 cognitive: 15,
                 line_count: 20,
                 param_count: 4,
+                source_hash: Some("0123456789abcdef".to_string()),
             },
             FunctionComplexity {
                 name: "simple".to_string(),
@@ -1642,6 +1643,7 @@ fn module_to_cached_roundtrip_complexity() {
                 cognitive: 0,
                 line_count: 3,
                 param_count: 0,
+                source_hash: None,
             },
         ],
         flag_uses: Vec::new(),

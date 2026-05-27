@@ -391,7 +391,8 @@ fn translate_script_complexity(
     sfc_line_offsets: &[u32],
 ) -> Vec<FunctionComplexity> {
     let script_line_offsets = compute_line_offsets(&script.body);
-    let mut complexity = crate::complexity::compute_complexity(program, &script_line_offsets);
+    let mut complexity =
+        crate::complexity::compute_complexity(program, &script.body, &script_line_offsets);
     let (body_start_line, body_start_col) =
         byte_offset_to_line_col(sfc_line_offsets, script.byte_offset as u32);
 

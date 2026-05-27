@@ -1030,6 +1030,7 @@ mod tests {
                 cognitive: 0,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         }
     }

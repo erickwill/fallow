@@ -2410,6 +2410,7 @@ fn health_report_with_runtime_coverage(root: &Path) -> HealthReport {
                     description: "Tracked in runtime coverage with zero invocations.".to_string(),
                     auto_fixable: false,
                 }],
+                source_hash: None,
             },
             RuntimeCoverageFinding {
                 id: "fallow:prod:feedface".to_string(),
@@ -2435,6 +2436,7 @@ fn health_report_with_runtime_coverage(root: &Path) -> HealthReport {
                     description: "Collect a broader production dump.".to_string(),
                     auto_fixable: false,
                 }],
+                source_hash: None,
             },
         ],
         hot_paths: vec![RuntimeCoverageHotPath {

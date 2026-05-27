@@ -1919,6 +1919,7 @@ mod tests {
                 cognitive: 4,
                 line_count: 5,
                 param_count: 0,
+                source_hash: None,
             }],
         };
 
@@ -1966,6 +1967,7 @@ mod tests {
                     cognitive: 2,
                     line_count: 1,
                     param_count: 0,
+                    source_hash: None,
                 },
                 fallow_types::extract::FunctionComplexity {
                     name: "b".into(),
@@ -1975,6 +1977,7 @@ mod tests {
                     cognitive: 8,
                     line_count: 2,
                     param_count: 0,
+                    source_hash: None,
                 },
             ],
         };
@@ -2462,6 +2465,7 @@ mod tests {
                 cognitive: 3,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -2599,6 +2603,7 @@ mod tests {
                     cognitive: 1,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
             make_module_info(
@@ -2612,6 +2617,7 @@ mod tests {
                     cognitive: 2,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
         ];
@@ -2697,6 +2703,7 @@ mod tests {
                     cognitive: 20,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
             make_module_info(
@@ -2710,6 +2717,7 @@ mod tests {
                     cognitive: 0,
                     line_count: 100,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
         ];
@@ -2785,6 +2793,7 @@ mod tests {
                 cognitive: 0,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -2863,6 +2872,7 @@ mod tests {
                     cognitive: 20,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 },
                 fallow_types::extract::FunctionComplexity {
                     name: "medium".into(),
@@ -2872,6 +2882,7 @@ mod tests {
                     cognitive: 10,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 },
                 fallow_types::extract::FunctionComplexity {
                     name: "low".into(),
@@ -2881,6 +2892,7 @@ mod tests {
                     cognitive: 5,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 },
                 fallow_types::extract::FunctionComplexity {
                     name: "trivial".into(),
@@ -2890,6 +2902,7 @@ mod tests {
                     cognitive: 1,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 },
             ],
         )];
@@ -2975,6 +2988,7 @@ mod tests {
                     cognitive: 1,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
             make_module_info(
@@ -2988,6 +3002,7 @@ mod tests {
                     cognitive: 2,
                     line_count: 10,
                     param_count: 0,
+                    source_hash: None,
                 }],
             ),
         ];
@@ -3094,6 +3109,7 @@ mod tests {
                 cognitive: 0,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         );
         module.exports = vec![
@@ -3259,6 +3275,7 @@ mod tests {
                 cognitive: 0,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         );
         module.exports = vec![
@@ -3363,6 +3380,7 @@ mod tests {
                 cognitive: 1,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -3421,6 +3439,7 @@ mod tests {
                 cognitive: 3,
                 line_count: 100,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -3516,6 +3535,7 @@ mod tests {
                 cognitive: 1,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -3577,6 +3597,7 @@ mod tests {
                 cognitive: 0,
                 line_count: 10,
                 param_count: 0,
+                source_hash: None,
             }],
         )];
 
@@ -3620,6 +3641,7 @@ mod tests {
             cognitive: 0,
             line_count: 10,
             param_count: 0,
+            source_hash: None,
         }
     }
 

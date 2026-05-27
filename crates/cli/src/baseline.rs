@@ -758,6 +758,14 @@ pub struct HealthBaselineData {
     /// Stable runtime-coverage finding IDs from the sidecar.
     #[serde(default)]
     pub runtime_coverage_findings: Vec<String>,
+    /// Line-move-tolerant runtime-coverage suppression keys of the form
+    /// `path\0name\0source_hash`. Unlike `runtime_coverage_findings` (whose
+    /// keys hash the start line and so churn when a function moves), the
+    /// `source_hash` component is the content digest of the function body, so a
+    /// moved-but-unedited function keeps the same key and stays suppressed.
+    /// Only findings whose `source_hash` is present contribute an entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_coverage_source_hashes: Vec<String>,
     /// Refactoring target keys: `relative_path:category`.
     #[serde(default)]
     pub target_keys: Vec<String>,
@@ -828,6 +836,10 @@ impl HealthBaselineData {
             runtime_coverage_findings: runtime_coverage_findings
                 .iter()
                 .map(|f| runtime_coverage_finding_key(f, root))
+                .collect(),
+            runtime_coverage_source_hashes: runtime_coverage_findings
+                .iter()
+                .filter_map(|f| runtime_coverage_source_hash_key(f, root))
                 .collect(),
             target_keys: targets
                 .iter()
@@ -1059,6 +1071,26 @@ fn runtime_coverage_finding_key(
         .unwrap_or_else(|| finding.id.clone())
 }
 
+/// Line-move-tolerant writer key: `path\0name\0source_hash`.
+///
+/// Returns `None` when the finding carries no `source_hash` (e.g. a 0.5-shape
+/// sidecar or an un-migrated producer); such findings fall back to the
+/// line-sensitive `runtime_coverage_finding_key` for suppression. The NUL
+/// separator avoids collisions with paths/names that contain `:`.
+fn runtime_coverage_source_hash_key(
+    finding: &crate::health_types::RuntimeCoverageFinding,
+    root: &Path,
+) -> Option<String> {
+    finding.source_hash.as_deref().map(|hash| {
+        format!(
+            "{}\0{}\0{}",
+            relative_path(&finding.path, root),
+            finding.function,
+            hash
+        )
+    })
+}
+
 /// Filter health findings to only include those not present in the baseline.
 pub fn filter_new_health_findings(
     mut findings: Vec<crate::health_types::ComplexityViolation>,
@@ -1092,25 +1124,34 @@ pub fn filter_new_health_findings(
 pub fn filter_new_runtime_coverage_findings(
     mut findings: Vec<crate::health_types::RuntimeCoverageFinding>,
     baseline: &HealthBaselineData,
-    _root: &Path,
+    root: &Path,
 ) -> Vec<crate::health_types::RuntimeCoverageFinding> {
     let baseline_keys: FxHashSet<&str> = baseline
         .runtime_coverage_findings
         .iter()
         .map(String::as_str)
         .collect();
+    let baseline_source_hash_keys: FxHashSet<&str> = baseline
+        .runtime_coverage_source_hashes
+        .iter()
+        .map(String::as_str)
+        .collect();
     findings.retain(|finding| {
-        // Grace window: a finding counts as baselined if EITHER its stable_id
-        // (baselines written on this version) OR its legacy `fallow:prod:` id
-        // (baselines written before the upgrade) is present. Retain (report as
-        // new) only when NEITHER matches. Readers MUST accept both forms during
-        // the grace window per the protocol's suppression-vs-join-key contract.
+        // Grace window: a finding counts as baselined if ANY of three keys
+        // match: its stable_id (baselines written on this version), its legacy
+        // `fallow:prod:` id (baselines written before the upgrade), or the
+        // line-move-tolerant `path\0name\0source_hash` composite (so a
+        // moved-but-unedited function stays suppressed). Retain (report as new)
+        // only when NONE matches. A finding with no `source_hash` simply relies
+        // on the stable_id / legacy keys.
         let suppressed_by_stable_id = finding
             .stable_id
             .as_deref()
             .is_some_and(|id| baseline_keys.contains(id));
         let suppressed_by_legacy_id = baseline_keys.contains(finding.id.as_str());
-        !(suppressed_by_stable_id || suppressed_by_legacy_id)
+        let suppressed_by_source_hash = runtime_coverage_source_hash_key(finding, root)
+            .is_some_and(|key| baseline_source_hash_keys.contains(key.as_str()));
+        !(suppressed_by_stable_id || suppressed_by_legacy_id || suppressed_by_source_hash)
     });
     findings
 }
@@ -1787,6 +1828,7 @@ mod tests {
             finding_counts: BTreeMap::new(),
             target_keys: vec![],
             runtime_coverage_findings: vec![],
+            runtime_coverage_source_hashes: vec![],
         };
         let filtered = filter_new_health_findings(
             vec![make_health_finding(&root, "parseExpression", 42)],
@@ -1920,6 +1962,7 @@ mod tests {
             finding_counts: BTreeMap::new(),
             target_keys: vec![],
             runtime_coverage_findings: vec![],
+            runtime_coverage_source_hashes: vec![],
         };
         let filtered = filter_new_health_findings(findings, &baseline, &root);
         assert_eq!(filtered.len(), 1);
@@ -2465,10 +2508,12 @@ mod tests {
         id: &str,
         stable_id: Option<&str>,
         line: u32,
+        source_hash: Option<&str>,
     ) -> crate::health_types::RuntimeCoverageFinding {
         crate::health_types::RuntimeCoverageFinding {
             id: id.to_owned(),
             stable_id: stable_id.map(str::to_owned),
+            source_hash: source_hash.map(str::to_owned),
             path: PathBuf::from("src/a.ts"),
             function: "alpha".to_owned(),
             line,
@@ -2500,6 +2545,7 @@ mod tests {
             "fallow:prod:deadbeef",
             Some("fallow:fn:00000001"),
             14,
+            None,
         )];
         let filtered =
             filter_new_runtime_coverage_findings(findings, &baseline, Path::new("/repo"));
@@ -2507,25 +2553,35 @@ mod tests {
     }
 
     #[test]
-    fn stable_id_baseline_survives_line_move() {
-        // A baseline written on this version holds the `fallow:fn:` stable_id.
-        // After the function moves lines (new `fallow:prod:` id), the finding
-        // MUST stay suppressed because its stable_id is unchanged.
-        let baseline = HealthBaselineData {
-            runtime_coverage_findings: vec!["fallow:fn:00000001".to_owned()],
-            ..HealthBaselineData::default()
-        };
-        // Moved from line 14 to 40: new prod id, same stable_id.
+    fn source_hash_baseline_survives_line_move() {
+        // A baseline written on this version holds the line-move-tolerant
+        // `path\0name\0source_hash` composite. After the function moves lines,
+        // a real producer emits a DIFFERENT `fallow:prod:` id AND a different
+        // `fallow:fn:` stable_id (both hash the start line), but the SAME
+        // content digest (`source_hash`). The finding MUST stay suppressed via
+        // the source_hash match alone.
+        let root = Path::new("/repo");
+        let baselined = runtime_finding(
+            "fallow:prod:deadbeef",
+            Some("fallow:fn:00000001"),
+            14,
+            Some("0123456789abcdef"),
+        );
+        let baseline = HealthBaselineData::from_findings(&[], &[baselined], &[], root);
+        // Sanity: the composite key was written.
+        assert_eq!(baseline.runtime_coverage_source_hashes.len(), 1);
+
+        // Moved from line 14 to 40: new prod id, new stable_id, SAME source_hash.
         let findings = vec![runtime_finding(
             "fallow:prod:99999999",
-            Some("fallow:fn:00000001"),
+            Some("fallow:fn:cafe0002"),
             40,
+            Some("0123456789abcdef"),
         )];
-        let filtered =
-            filter_new_runtime_coverage_findings(findings, &baseline, Path::new("/repo"));
+        let filtered = filter_new_runtime_coverage_findings(findings, &baseline, root);
         assert!(
             filtered.is_empty(),
-            "stable_id baseline must survive a line move"
+            "source_hash baseline must survive a line move despite a changed stable_id and id"
         );
     }
 
@@ -2539,6 +2595,7 @@ mod tests {
             "fallow:prod:abc1234d",
             Some("fallow:fn:beefcafe"),
             7,
+            None,
         )];
         let filtered =
             filter_new_runtime_coverage_findings(findings, &baseline, Path::new("/repo"));

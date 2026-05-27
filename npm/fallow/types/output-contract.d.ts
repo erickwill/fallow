@@ -3759,6 +3759,15 @@ id: string
  */
 stable_id?: (string | null)
 /**
+ * Content digest of the function's full-span source slice
+ * (`fallow_cov_protocol::source_hash_for`: first 8 bytes of SHA-256 as 16
+ * lowercase hex). Unlike `stable_id`, this is stable across line moves: a
+ * moved-but-unedited function keeps the same value, so baselines can
+ * suppress it after a pure line shift. `null` when the producing surface
+ * supplied no `source_hash`.
+ */
+source_hash?: (string | null)
+/**
  * File path relative to the project root.
  */
 path: string

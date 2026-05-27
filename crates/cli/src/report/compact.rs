@@ -561,6 +561,7 @@ mod tests {
                         deployments_observed: 2,
                     },
                     actions: vec![],
+                    source_hash: None,
                 }],
                 hot_paths: vec![RuntimeCoverageHotPath {
                     id: "fallow:hot:cafebabe".to_owned(),

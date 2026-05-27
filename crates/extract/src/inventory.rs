@@ -57,6 +57,14 @@ pub struct InventoryEntry {
     pub end_line: u32,
     /// 1-indexed UTF-16 column of the function node end.
     pub end_column: u32,
+    /// Content digest of the function's full-span source slice
+    /// (`&source[span.start..span.end]`): first 8 bytes of SHA-256 as 16
+    /// lowercase hex characters, via `fallow_cov_protocol::source_hash_for`.
+    /// The slice is the canonical body bytes (signature line + body + closing
+    /// brace, no whitespace normalization), identical for `Function` and
+    /// `ArrowFunctionExpression`. Stable across line moves, so a
+    /// moved-but-unedited function keeps the same hash.
+    pub source_hash: String,
 }
 
 /// Visitor that collects [`InventoryEntry`] values in file traversal order.
@@ -105,12 +113,23 @@ impl<'a> InventoryVisitor<'a> {
     fn record(&mut self, name: String, span: Span) {
         let (line, start_column) = self.line_col_utf16(span.start);
         let (end_line, end_column) = self.line_col_utf16(span.end);
+        // Canonical body bytes: the function node's full-span slice. Valid AST
+        // spans always fall on char boundaries within range; fall back to an
+        // empty-input hash defensively rather than panicking.
+        let source_hash = self
+            .source
+            .get(span.start as usize..span.end as usize)
+            .map_or_else(
+                || fallow_cov_protocol::source_hash_for(b""),
+                |slice| fallow_cov_protocol::source_hash_for(slice.as_bytes()),
+            );
         self.entries.push(InventoryEntry {
             name,
             line,
             start_column,
             end_line,
             end_column,
+            source_hash,
         });
     }
 
@@ -472,6 +491,45 @@ mod tests {
         assert_ne!(
             entries[0].name, entries[1].name,
             "counter keeps them distinct"
+        );
+    }
+
+    #[test]
+    fn source_hash_is_the_content_digest_of_the_function_span() {
+        // The whole declaration is the function node's span here, so the
+        // canonical body bytes are the entire source. The recorded hash must
+        // equal the protocol helper over those exact bytes (16 lowercase hex).
+        let src = "function foo() { return 1; }";
+        let entries = walk(src);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].source_hash,
+            fallow_cov_protocol::source_hash_for(src.as_bytes())
+        );
+        assert_eq!(entries[0].source_hash.len(), 16);
+        assert!(
+            entries[0]
+                .source_hash
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
+    }
+
+    #[test]
+    fn source_hash_survives_line_moves_and_tracks_body_edits() {
+        // The #742 property: the same function shifted down keeps its
+        // source_hash (the body bytes are identical), while an edit to the body
+        // changes it. This is what lets baselines survive a pure line shift.
+        let original = walk("function foo() { return 1; }");
+        let moved = walk("\n\nfunction foo() { return 1; }");
+        assert_eq!(
+            original[0].source_hash, moved[0].source_hash,
+            "a moved-but-unedited function must keep its source_hash"
+        );
+        let edited = walk("function foo() { return 2; }");
+        assert_ne!(
+            original[0].source_hash, edited[0].source_hash,
+            "an edited body must change the source_hash"
         );
     }
 }

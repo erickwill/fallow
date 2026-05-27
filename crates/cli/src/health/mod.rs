@@ -2648,6 +2648,7 @@ mod tests {
             cognitive,
             line_count,
             param_count: 0,
+            source_hash: None,
         }
     }
 
@@ -3181,6 +3182,7 @@ mod tests {
                 cognitive: 18,
                 line_count: 75,
                 param_count: 2,
+                source_hash: None,
             }],
         )];
         let mut file_paths = FxHashMap::default();
@@ -3226,6 +3228,7 @@ mod tests {
             cognitive: 0,
             line_count: 11,
             param_count: 1,
+            source_hash: None,
         };
         let inner = FunctionComplexity {
             name: "<arrow>".to_string(),
@@ -3235,6 +3238,7 @@ mod tests {
             cognitive: 0,
             line_count: 10,
             param_count: 1,
+            source_hash: None,
         };
         // Inner is pushed first because pop_function() is LIFO; matches the
         // production order out of `complexity.rs`.
@@ -3336,6 +3340,7 @@ mod tests {
             cognitive: 0,
             line_count: 20,
             param_count: 1,
+            source_hash: None,
         };
         let inner = FunctionComplexity {
             name: "<arrow>".to_string(),
@@ -3345,6 +3350,7 @@ mod tests {
             cognitive: 0,
             line_count: 1,
             param_count: 1,
+            source_hash: None,
         };
         let modules = vec![make_module(FileId(0), vec![inner.clone(), outer.clone()])];
         let mut file_paths: FxHashMap<FileId, &PathBuf> = FxHashMap::default();
@@ -3464,6 +3470,7 @@ mod tests {
                 "fallow:prod:aaaaaaaa".to_owned(),
                 "fallow:prod:bbbbbbbb".to_owned(),
             ],
+            runtime_coverage_source_hashes: vec![],
             target_keys: vec![],
         };
         let mut report = crate::health_types::RuntimeCoverageReport {
@@ -3483,6 +3490,7 @@ mod tests {
                     confidence: crate::health_types::RuntimeCoverageConfidence::Medium,
                     evidence: fx_evidence("used", "not_covered", "tracked"),
                     actions: vec![],
+                    source_hash: None,
                 },
                 crate::health_types::RuntimeCoverageFinding {
                     id: "fallow:prod:bbbbbbbb".to_owned(),
@@ -3495,6 +3503,7 @@ mod tests {
                     confidence: crate::health_types::RuntimeCoverageConfidence::None,
                     evidence: fx_evidence("used", "not_covered", "untracked"),
                     actions: vec![],
+                    source_hash: None,
                 },
                 crate::health_types::RuntimeCoverageFinding {
                     id: "fallow:prod:cccccccc".to_owned(),
@@ -3507,6 +3516,7 @@ mod tests {
                     confidence: crate::health_types::RuntimeCoverageConfidence::Medium,
                     evidence: fx_evidence("used", "not_covered", "tracked"),
                     actions: vec![],
+                    source_hash: None,
                 },
             ],
             hot_paths: vec![
@@ -3568,6 +3578,7 @@ mod tests {
             findings: vec![],
             finding_counts: std::collections::BTreeMap::new(),
             runtime_coverage_findings: vec!["fallow:prod:aaaaaaaa".to_owned()],
+            runtime_coverage_source_hashes: vec![],
             target_keys: vec![],
         };
         let mut report = crate::health_types::RuntimeCoverageReport {
@@ -3586,6 +3597,7 @@ mod tests {
                 confidence: crate::health_types::RuntimeCoverageConfidence::Medium,
                 evidence: fx_evidence("used", "not_covered", "tracked"),
                 actions: vec![],
+                source_hash: None,
             }],
             hot_paths: vec![],
             blast_radius: vec![],
@@ -3943,6 +3955,7 @@ mod tests {
                 confidence: crate::health_types::RuntimeCoverageConfidence::High,
                 evidence: fx_evidence("unused", "not_covered", "tracked"),
                 actions: vec![],
+                source_hash: None,
             }],
             hot_paths: vec![fx_hot_path("fallow:hot:0b0b0b0b", "src/hot.ts", 7, 24)],
             blast_radius: vec![],
@@ -3993,6 +4006,7 @@ mod tests {
                 confidence: crate::health_types::RuntimeCoverageConfidence::High,
                 evidence: fx_evidence("unused", "not_covered", "tracked"),
                 actions: vec![],
+                source_hash: None,
             }],
             hot_paths: vec![fx_hot_path("fallow:hot:0c0c0c0c", "src/hot.ts", 7, 24)],
             blast_radius: vec![],
@@ -4143,6 +4157,7 @@ mod tests {
                         confidence: crate::health_types::RuntimeCoverageConfidence::Low,
                         evidence: fx_evidence("used", "not_covered", "tracked"),
                         actions: vec![],
+                        source_hash: None,
                     }],
                     hot_paths: vec![],
                     blast_radius: vec![],

@@ -337,6 +337,9 @@ pub fn compute_angular_template_complexity(source: &str) -> Option<FunctionCompl
         cognitive: complexity.cognitive,
         line_count,
         param_count: 0,
+        // Synthetic template-derived complexity has no source-byte span to
+        // digest; runtime coverage does not track templates.
+        source_hash: None,
     })
 }
 

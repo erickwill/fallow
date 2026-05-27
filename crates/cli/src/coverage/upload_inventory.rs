@@ -592,12 +592,12 @@ impl InventoryFunction {
             start_column: Some(entry.start_column),
             end_line: Some(entry.end_line),
             end_column: Some(entry.end_column),
-            // source_hash is an optional cross-producer tiebreaker; the static
-            // inventory does not emit it yet (the cloud join does not consume
-            // it, and it is excluded from `stable_id`). Resolution stays
-            // `Resolved` because byte-accurate UTF-16 columns satisfy that
-            // contract independently of `source_hash`.
-            source_hash: None,
+            // Content digest of the function's full-span source slice, computed
+            // by the inventory walker. Optional cross-producer tiebreaker that
+            // lets runtime-coverage baselines survive line moves; excluded from
+            // `stable_id`. Resolution stays `Resolved` because byte-accurate
+            // UTF-16 columns satisfy that contract independently of `source_hash`.
+            source_hash: Some(entry.source_hash.clone()),
             resolution: IdentityResolution::Resolved,
             stable_id,
         };
@@ -1367,6 +1367,7 @@ mod tests {
             start_column: 1,
             end_line: 50,
             end_column: 2,
+            source_hash: "0123456789abcdef".to_owned(),
         }
     }
 
@@ -1420,6 +1421,9 @@ mod tests {
         assert_eq!(func.identity.start_column, Some(1));
         assert_eq!(func.identity.end_line, Some(50));
         assert_eq!(func.identity.end_column, Some(2));
-        assert_eq!(func.identity.source_hash, None);
+        assert_eq!(
+            func.identity.source_hash.as_deref(),
+            Some("0123456789abcdef")
+        );
     }
 }

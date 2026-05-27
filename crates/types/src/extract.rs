@@ -210,6 +210,13 @@ pub struct FunctionComplexity {
     pub line_count: u32,
     /// Number of parameters (excluding TypeScript's `this` parameter).
     pub param_count: u8,
+    /// Content digest of the function's full-span source slice
+    /// (`&source[span.start..span.end]`): first 8 bytes of SHA-256 as 16
+    /// lowercase hex characters, computed via
+    /// `fallow_cov_protocol::source_hash_for`. Stable across line moves, so a
+    /// moved-but-unedited function keeps the same hash. `None` when the source
+    /// slice is unavailable (defensive: never expected for valid AST spans).
+    pub source_hash: Option<String>,
 }
 
 /// The kind of feature flag pattern detected.
@@ -966,6 +973,7 @@ mod tests {
             cognitive: 25,
             line_count: 80,
             param_count: 3,
+            source_hash: Some("0123456789abcdef".to_string()),
         };
         let bytes = bitcode::encode(&fc);
         let decoded: FunctionComplexity = bitcode::decode(&bytes).unwrap();
@@ -975,5 +983,6 @@ mod tests {
         assert_eq!(decoded.cyclomatic, 15);
         assert_eq!(decoded.cognitive, 25);
         assert_eq!(decoded.line_count, 80);
+        assert_eq!(decoded.source_hash.as_deref(), Some("0123456789abcdef"));
     }
 }

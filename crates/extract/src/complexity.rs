@@ -39,19 +39,37 @@ pub struct ComplexityVisitor<'a> {
     pub results: Vec<FunctionComplexity>,
     /// Line offsets for byte-offset to line/col conversion.
     line_offsets: &'a [u32],
+    /// Source text the AST was parsed from. Used to compute each function's
+    /// content digest (`source_hash`) from its full-span byte slice.
+    source: &'a str,
     /// Name override from a parent node (e.g., method name from `MethodDefinition`,
     /// variable name from `const foo = function() {}`).
     pending_name: Option<String>,
 }
 
 impl<'a> ComplexityVisitor<'a> {
-    pub const fn new(line_offsets: &'a [u32]) -> Self {
+    pub const fn new(source: &'a str, line_offsets: &'a [u32]) -> Self {
         Self {
             stack: Vec::new(),
             results: Vec::new(),
             line_offsets,
+            source,
             pending_name: None,
         }
+    }
+
+    /// Compute the content digest for a function's full-span byte slice.
+    ///
+    /// The slice (`&source[span.start..span.end]`) is the canonical body bytes
+    /// (signature line + body + closing brace, no whitespace normalization).
+    /// Returns `None` if the span falls outside the source or on a non-char
+    /// boundary; valid AST spans never do, but we clamp defensively rather than
+    /// panic, mirroring `line_col_utf16` in the inventory walker.
+    fn source_hash_for_span(&self, span: Span) -> Option<String> {
+        let start = span.start as usize;
+        let end = span.end as usize;
+        let slice = self.source.get(start..end)?;
+        Some(fallow_cov_protocol::source_hash_for(slice.as_bytes()))
     }
 
     fn push_function(&mut self, name: String, span: Span, param_count: u8) {
@@ -72,6 +90,7 @@ impl<'a> ComplexityVisitor<'a> {
                 fallow_types::extract::byte_offset_to_line_col(self.line_offsets, frame.span.start);
             let end_line =
                 fallow_types::extract::byte_offset_to_line_col(self.line_offsets, frame.span.end).0;
+            let source_hash = self.source_hash_for_span(frame.span);
             self.results.push(FunctionComplexity {
                 name: frame.name,
                 line,
@@ -80,6 +99,7 @@ impl<'a> ComplexityVisitor<'a> {
                 cognitive: frame.cognitive,
                 line_count: end_line.saturating_sub(line) + 1,
                 param_count: frame.param_count,
+                source_hash,
             });
         }
     }
@@ -510,8 +530,12 @@ impl<'ast> Visit<'ast> for ComplexityVisitor<'_> {
 }
 
 /// Compute per-function complexity metrics from a parsed Oxc program.
-pub fn compute_complexity(program: &Program<'_>, line_offsets: &[u32]) -> Vec<FunctionComplexity> {
-    let mut visitor = ComplexityVisitor::new(line_offsets);
+pub fn compute_complexity(
+    program: &Program<'_>,
+    source: &str,
+    line_offsets: &[u32],
+) -> Vec<FunctionComplexity> {
+    let mut visitor = ComplexityVisitor::new(source, line_offsets);
 
     // Push a module-level frame for top-level code
     // (we don't report this, but it serves as a catch-all for top-level expressions)
@@ -533,7 +557,7 @@ mod tests {
         let source_type = SourceType::tsx();
         let parser_return = Parser::new(&allocator, source, source_type).parse();
         let line_offsets = compute_line_offsets(source);
-        compute_complexity(&parser_return.program, &line_offsets)
+        compute_complexity(&parser_return.program, source, &line_offsets)
     }
 
     fn find_fn<'a>(results: &'a [FunctionComplexity], name: &str) -> &'a FunctionComplexity {

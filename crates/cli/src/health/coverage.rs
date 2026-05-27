@@ -718,6 +718,7 @@ fn static_function(
     test_covered: bool,
     caller_count: u32,
     owner_count: Option<u32>,
+    source_hash: Option<String>,
 ) -> StaticFunction {
     let identity = FunctionIdentity {
         file: relative_posix.to_owned(),
@@ -726,7 +727,11 @@ fn static_function(
         start_column: None,
         end_line: None,
         end_column: None,
-        source_hash: None,
+        // Content digest of the function's full-span source slice (from
+        // `FunctionComplexity.source_hash`). Carried on the wire so the sidecar
+        // can echo it back, letting runtime-coverage baselines survive line
+        // moves. Excluded from `stable_id`.
+        source_hash,
         resolution: IdentityResolution::Unresolved,
         stable_id: function_identity_id(relative_posix, name, start_line),
     };
@@ -846,6 +851,7 @@ fn build_request(
                     test_covered,
                     caller_count,
                     owner_count,
+                    function.source_hash.clone(),
                 )
             })
             .collect();
@@ -1750,12 +1756,27 @@ fn convert_response(
             if matches!(verdict, RuntimeCoverageVerdict::Active) {
                 return None;
             }
+            // Pull both the cross-surface join key and the line-move-immune
+            // content digest off the sidecar's FunctionIdentity in one move
+            // (`identity` is consumed; `None` for 0.5-shape responses).
+            let (stable_id, source_hash) = finding.identity.map_or((None, None), |identity| {
+                (Some(identity.stable_id), identity.source_hash)
+            });
+            // The sidecar backfills source_hash onto its finding identities
+            // from the static index the CLI sends (joined by stable_id), so the
+            // wire value is authoritative. It is None only for pre-#742
+            // sidecars; such a finding then degrades to stable_id / legacy-id
+            // baseline keying (no line-move tolerance for that finding).
             Some(RuntimeCoverageFinding {
                 id: finding.id,
                 // Cross-surface join key from the sidecar's FunctionIdentity
                 // when present; `None` for 0.5-shape responses (legacy
                 // fallback). Baseline keying prefers this over `id`.
-                stable_id: finding.identity.map(|identity| identity.stable_id),
+                stable_id,
+                // Content digest from the sidecar's FunctionIdentity (the
+                // sidecar backfills it from the static index); stable across
+                // line moves so baselines suppress after a pure line shift.
+                source_hash,
                 path: PathBuf::from(finding.file),
                 function: finding.function,
                 line: finding.line,
@@ -2550,13 +2571,26 @@ mod tests {
         // protocol revision adds a required-without-default field to
         // StaticFunction, this fails in CI rather than the `.expect()`
         // panicking in the paid runtime-coverage path.
-        let sf = static_function("src/render.tsx", "render", 42, 50, 4, true, false, 0, None);
+        let sf = static_function(
+            "src/render.tsx",
+            "render",
+            42,
+            50,
+            4,
+            true,
+            false,
+            0,
+            None,
+            Some("0123456789abcdef".to_owned()),
+        );
         let value = serde_json::to_value(&sf).expect("serialize StaticFunction");
         assert_eq!(value["name"], "render");
         assert_eq!(value["start_line"], 42);
         assert_eq!(value["end_line"], 50);
         assert_eq!(value["identity"]["resolution"], "unresolved");
         assert_eq!(value["identity"]["stable_id"], "fallow:fn:43629542");
+        // source_hash is carried on the wire so the sidecar can echo it back.
+        assert_eq!(value["identity"]["source_hash"], "0123456789abcdef");
         // Columns are deliberately absent on the health path (Unresolved).
         assert!(value["identity"].get("start_column").is_none());
     }

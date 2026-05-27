@@ -1624,6 +1624,13 @@
           ],
           "description": "Cross-surface join key of the form `fallow:fn:<hash>`\n(`fallow_cov_protocol::function_identity_id`, hashes file + name +\nstart_line). The same function shares ONE value across findings, hot\npaths, blast-radius, and importance entries (the per-finding `id` uses a\nper-surface salt, so it differs by surface), and across V8, Istanbul,\nand oxc producers (columns are excluded from the hash). Like `id`, it\nchanges when the function's file, name, or start line changes; it is a\ncross-surface / cross-producer join key, not a line-move-immune one.\n`null` when the producing surface (or an un-migrated cloud) supplied no\n`FunctionIdentity`."
         },
+        "source_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Content digest of the function's full-span source slice\n(`fallow_cov_protocol::source_hash_for`: first 8 bytes of SHA-256 as 16\nlowercase hex). Unlike `stable_id`, this is stable across line moves: a\nmoved-but-unedited function keeps the same value, so baselines can\nsuppress it after a pure line shift. `null` when the producing surface\nsupplied no `source_hash`."
+        },
         "path": {
           "type": "string",
           "description": "File path relative to the project root."

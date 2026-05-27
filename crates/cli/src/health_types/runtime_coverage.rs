@@ -347,6 +347,15 @@ pub struct RuntimeCoverageFinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schemars(default))]
     pub stable_id: Option<String>,
+    /// Content digest of the function's full-span source slice
+    /// (`fallow_cov_protocol::source_hash_for`: first 8 bytes of SHA-256 as 16
+    /// lowercase hex). Unlike `stable_id`, this is stable across line moves: a
+    /// moved-but-unedited function keeps the same value, so baselines can
+    /// suppress it after a pure line shift. `null` when the producing surface
+    /// supplied no `source_hash`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(default))]
+    pub source_hash: Option<String>,
     /// File path relative to the project root.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,

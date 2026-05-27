@@ -130,7 +130,7 @@ fn parse_source_to_module_inner(
     // Per-function complexity metrics: only computed when the caller needs them
     // (e.g. the `health` command).  The dead-code pipeline never reads this.
     let mut complexity = if need_complexity {
-        crate::complexity::compute_complexity(&parser_return.program, &line_offsets)
+        crate::complexity::compute_complexity(&parser_return.program, parser_source, &line_offsets)
     } else {
         Vec::new()
     };
@@ -186,8 +186,11 @@ fn parse_source_to_module_inner(
             );
             // Recompute complexity from the successful retry parse (only if requested)
             if need_complexity {
-                complexity =
-                    crate::complexity::compute_complexity(&retry_return.program, &line_offsets);
+                complexity = crate::complexity::compute_complexity(
+                    &retry_return.program,
+                    parser_source,
+                    &line_offsets,
+                );
                 append_inline_template_complexity(
                     &mut complexity,
                     &retry_extractor.inline_template_findings,
