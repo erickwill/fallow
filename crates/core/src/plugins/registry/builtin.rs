@@ -35,7 +35,7 @@ use super::super::{
     typedoc::TypedocPlugin, typeorm::TypeormPlugin, typescript::TypeScriptPlugin,
     unocss::UnoCssPlugin, varlock::VarlockPlugin, vite::VitePlugin, vitepress::VitePressPlugin,
     vitest::VitestPlugin, webdriverio::WebdriverioPlugin, webpack::WebpackPlugin,
-    wrangler::WranglerPlugin, wuchale::WuchalePlugin,
+    wrangler::WranglerPlugin, wuchale::WuchalePlugin, wxt::WxtPlugin,
 };
 
 /// Create all built-in plugin instances, categorized by domain.
@@ -47,6 +47,7 @@ pub fn create_builtin_plugins() -> Vec<Box<dyn Plugin>> {
         Box::new(RemixPlugin),
         Box::new(AstroPlugin),
         Box::new(BrowserExtensionPlugin),
+        Box::new(WxtPlugin),
         Box::new(AngularPlugin),
         Box::new(ReactRouterPlugin),
         Box::new(RedwoodSdkPlugin),
