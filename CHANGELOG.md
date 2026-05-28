@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.84.0] - 2026-05-28
+
 ### Fixed
 
 - **`@sanity/pkg-utils` build configs no longer report as unused.** Projects built with [`@sanity/pkg-utils`](https://github.com/sanity-io/pkg-utils) keep their `package.config.{ts,js,mts,mjs,cts,cjs}` and `package.bundle.{ts,js,mts,mjs,cts,cjs}` build configs reachable automatically, at the repo root and in every workspace package. The tool discovers these files by filename rather than importing them from source, so previously each one surfaced as an `unused-file` and had to be listed manually in `entry`. A new `pkg-utils` plugin (activated only by an exact `@sanity/pkg-utils` dependency, so plain `@sanity/client` consumers are unaffected) marks them always-used and credits `@sanity/pkg-utils` as a tooling dependency. pkg-utils monorepos can now drop the `package.config.ts` / `package.bundle.ts` lines from their `entry` config.
@@ -2641,7 +2643,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.83.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.84.0...HEAD
+[2.84.0]: https://github.com/fallow-rs/fallow/compare/v2.83.0...v2.84.0
 [2.83.0]: https://github.com/fallow-rs/fallow/compare/v2.82.0...v2.83.0
 [2.82.0]: https://github.com/fallow-rs/fallow/compare/v2.81.0...v2.82.0
 [2.81.0]: https://github.com/fallow-rs/fallow/compare/v2.80.0...v2.81.0
