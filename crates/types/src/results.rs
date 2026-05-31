@@ -17,219 +17,64 @@ use crate::output_dead_code::{
 use crate::serde_path;
 use crate::suppress::{IssueKind, closest_known_kind_name};
 
-/// Summary of detected entry points, grouped by discovery source.
-///
-/// Used to surface entry-point detection status in human and JSON output,
-/// so library authors can verify that fallow found the right entry points.
+/// Summary of detected entry points grouped by discovery source.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EntryPointSummary {
-    /// Total number of entry points detected.
     pub total: usize,
-    /// Breakdown by source category (e.g., "package.json" -> 3, "plugin" -> 12).
-    /// Sorted by key for deterministic output.
     pub by_source: Vec<(String, usize)>,
 }
 
 /// Complete analysis results.
-///
-/// # Examples
-///
-/// ```
-/// use fallow_types::output_dead_code::UnusedFileFinding;
-/// use fallow_types::results::{AnalysisResults, UnusedFile};
-/// use std::path::PathBuf;
-///
-/// let mut results = AnalysisResults::default();
-/// assert_eq!(results.total_issues(), 0);
-/// assert!(!results.has_issues());
-///
-/// results
-///     .unused_files
-///     .push(UnusedFileFinding::with_actions(UnusedFile {
-///         path: PathBuf::from("src/dead.ts"),
-///     }));
-/// assert_eq!(results.total_issues(), 1);
-/// assert!(results.has_issues());
-/// ```
 #[derive(Debug, Default, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AnalysisResults {
-    /// Files not reachable from any entry point. Wrapped in
-    /// [`UnusedFileFinding`] so each entry carries a typed `actions` array
-    /// natively, replacing the pre-2.76 post-pass injection.
     pub unused_files: Vec<UnusedFileFinding>,
-    /// Exports never imported by other modules. Wrapped in
-    /// [`UnusedExportFinding`] so each entry carries a typed `actions`
-    /// array natively.
     pub unused_exports: Vec<UnusedExportFinding>,
-    /// Type exports never imported by other modules. Wrapped in
-    /// [`UnusedTypeFinding`]: the inner [`UnusedExport`] struct is shared
-    /// with `unused_exports` but the wrapper emits a type-targeted fix
-    /// description.
     pub unused_types: Vec<UnusedTypeFinding>,
-    /// Exported symbols whose public signature references same-file private
-    /// types. Wrapped in [`PrivateTypeLeakFinding`] so each entry carries a
-    /// typed `actions` array natively.
     pub private_type_leaks: Vec<PrivateTypeLeakFinding>,
-    /// Dependencies listed in package.json but never imported. Wrapped in
-    /// [`UnusedDependencyFinding`] so each entry carries a typed `actions`
-    /// array natively. The fix action swaps from `remove-dependency` to
-    /// `move-dependency` when `used_in_workspaces` is non-empty.
     pub unused_dependencies: Vec<UnusedDependencyFinding>,
-    /// Dev dependencies listed in package.json but never imported. Wrapped
-    /// in [`UnusedDevDependencyFinding`]: same bare struct as
-    /// `unused_dependencies` with a `devDependencies`-targeted fix
-    /// description.
     pub unused_dev_dependencies: Vec<UnusedDevDependencyFinding>,
-    /// Optional dependencies listed in package.json but never imported.
-    /// Wrapped in [`UnusedOptionalDependencyFinding`] with an
-    /// `optionalDependencies`-targeted fix description.
     pub unused_optional_dependencies: Vec<UnusedOptionalDependencyFinding>,
-    /// Enum members never accessed. Wrapped in
-    /// [`UnusedEnumMemberFinding`] so each entry carries a typed `actions`
-    /// array natively.
     pub unused_enum_members: Vec<UnusedEnumMemberFinding>,
-    /// Class members never accessed. Wrapped in
-    /// [`UnusedClassMemberFinding`]: same inner [`UnusedMember`] struct as
-    /// `unused_enum_members`, with a class-targeted fix description and the
-    /// `auto_fixable: false` default to reflect dependency-injection
-    /// patterns.
     pub unused_class_members: Vec<UnusedClassMemberFinding>,
-    /// Import specifiers that could not be resolved. Wrapped in
-    /// [`UnresolvedImportFinding`] so each entry carries a typed `actions`
-    /// array natively.
     pub unresolved_imports: Vec<UnresolvedImportFinding>,
-    /// Dependencies used in code but not listed in package.json. Wrapped in
-    /// [`UnlistedDependencyFinding`].
     pub unlisted_dependencies: Vec<UnlistedDependencyFinding>,
-    /// Exports with the same name across multiple modules. Wrapped in
-    /// [`DuplicateExportFinding`] so each entry carries a typed `actions`
-    /// array natively, with the position-0 `add-to-config` `ignoreExports`
-    /// snippet wired in at wrapper construction.
     pub duplicate_exports: Vec<DuplicateExportFinding>,
-    /// Production dependencies only used via type-only imports (could be
-    /// devDependencies). Only populated in production mode. Wrapped in
-    /// [`TypeOnlyDependencyFinding`].
     pub type_only_dependencies: Vec<TypeOnlyDependencyFinding>,
-    /// Production dependencies only imported by test files (could be
-    /// devDependencies). Wrapped in [`TestOnlyDependencyFinding`].
     #[serde(default)]
     pub test_only_dependencies: Vec<TestOnlyDependencyFinding>,
-    /// Circular dependency chains detected in the module graph. Wrapped in
-    /// [`CircularDependencyFinding`] so each entry carries a typed `actions`
-    /// array natively.
     pub circular_dependencies: Vec<CircularDependencyFinding>,
-    /// Cycles or self-loops in the re-export edge subgraph (barrel files
-    /// re-exporting from each other in a loop). Wrapped in
-    /// [`ReExportCycleFinding`] so each entry carries a typed `actions`
-    /// array natively (a `refactor-re-export-cycle` informational primary
-    /// plus a `suppress-file` secondary; cycles are file-scoped so a single
-    /// suppression breaks the cycle).
     #[serde(default)]
     pub re_export_cycles: Vec<ReExportCycleFinding>,
-    /// Imports that cross architecture boundary rules. Wrapped in
-    /// [`BoundaryViolationFinding`] so each entry carries a typed `actions`
-    /// array natively.
     #[serde(default)]
     pub boundary_violations: Vec<BoundaryViolationFinding>,
-    /// Suppression comments or JSDoc tags that no longer match any issue.
     #[serde(default)]
     pub stale_suppressions: Vec<StaleSuppression>,
-    /// Entries in pnpm-workspace.yaml's catalog: or catalogs: sections not
-    /// referenced by any workspace package via the catalog: protocol. Wrapped
-    /// in [`UnusedCatalogEntryFinding`] so each entry carries a typed
-    /// `actions` array natively, with per-instance `auto_fixable` derived
-    /// from `hardcoded_consumers`.
     #[serde(default)]
     pub unused_catalog_entries: Vec<UnusedCatalogEntryFinding>,
-    /// Named groups under pnpm-workspace.yaml's catalogs: section that declare
-    /// no package entries. The top-level catalog: map is not reported. Wrapped
-    /// in [`EmptyCatalogGroupFinding`].
     #[serde(default)]
     pub empty_catalog_groups: Vec<EmptyCatalogGroupFinding>,
-    /// Workspace package.json references to catalogs (`catalog:` or
-    /// `catalog:<name>`) that do not declare the consumed package. pnpm install
-    /// will error until the named catalog grows to include the package or the
-    /// reference is switched / removed. Wrapped in
-    /// [`UnresolvedCatalogReferenceFinding`] with the discriminated
-    /// `add-catalog-entry` / `update-catalog-reference` primary at position 0.
     #[serde(default)]
     pub unresolved_catalog_references: Vec<UnresolvedCatalogReferenceFinding>,
-    /// Entries in pnpm-workspace.yaml's overrides: section, or package.json's
-    /// pnpm.overrides block, whose target package is not declared by any
-    /// workspace package and is not present in pnpm-lock.yaml. Default severity
-    /// is warn because projects without a readable lockfile fall back to
-    /// manifest-only checks; the hint field flags those conservative cases.
-    /// Wrapped in [`UnusedDependencyOverrideFinding`].
     #[serde(default)]
     pub unused_dependency_overrides: Vec<UnusedDependencyOverrideFinding>,
-    /// pnpm.overrides entries whose key or value does not parse as a valid
-    /// override spec (empty key, empty value, malformed selector, unbalanced
-    /// parent matcher). pnpm install will reject these. Default severity is
-    /// error. Wrapped in [`MisconfiguredDependencyOverrideFinding`].
     #[serde(default)]
     pub misconfigured_dependency_overrides: Vec<MisconfiguredDependencyOverrideFinding>,
-    /// Number of suppression entries that matched an issue during analysis.
-    /// Human output uses this for the suppression footer; it is skipped in
-    /// machine output to avoid changing the public JSON issue contract.
     #[serde(skip)]
     pub suppression_count: usize,
-    /// Suppression comments present in analyzed files this run (every present
-    /// marker, all kinds, not only consumed ones). Internal: read in-process by
-    /// `fallow impact` to distinguish a genuinely resolved finding from one
-    /// silenced by a `fallow-ignore`. Skipped during serialization, like
-    /// [`Self::suppression_count`], so the public JSON output contract is
-    /// unchanged.
     #[serde(skip)]
     pub active_suppressions: Vec<ActiveSuppression>,
-    /// Detected feature flag patterns. Advisory output, not included in issue counts.
-    /// Skipped during default serialization: injected separately in JSON output when enabled.
     #[serde(skip)]
     pub feature_flags: Vec<FeatureFlag>,
-    /// Usage counts for all exports across the project. Used by the LSP for Code Lens.
-    /// Not included in issue counts -- this is metadata, not an issue type.
-    /// Skipped during serialization: this is internal LSP data, not part of the JSON output schema.
     #[serde(skip)]
     pub export_usages: Vec<ExportUsage>,
-    /// Summary of detected entry points, grouped by discovery source.
-    /// Not included in issue counts -- this is informational metadata.
-    /// Skipped during serialization: rendered separately in JSON output.
     #[serde(skip)]
     pub entry_point_summary: Option<EntryPointSummary>,
 }
 
 impl AnalysisResults {
     /// Total number of issues found.
-    ///
-    /// Sums across all issue categories (unused files, exports, types,
-    /// dependencies, members, unresolved imports, unlisted deps, duplicates,
-    /// type-only deps, circular deps, and boundary violations).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fallow_types::output_dead_code::{UnresolvedImportFinding, UnusedFileFinding};
-    /// use fallow_types::results::{AnalysisResults, UnresolvedImport, UnusedFile};
-    /// use std::path::PathBuf;
-    ///
-    /// let mut results = AnalysisResults::default();
-    /// results
-    ///     .unused_files
-    ///     .push(UnusedFileFinding::with_actions(UnusedFile {
-    ///         path: PathBuf::from("a.ts"),
-    ///     }));
-    /// results
-    ///     .unresolved_imports
-    ///     .push(UnresolvedImportFinding::with_actions(UnresolvedImport {
-    ///         path: PathBuf::from("b.ts"),
-    ///         specifier: "./missing".to_string(),
-    ///         line: 1,
-    ///         col: 0,
-    ///         specifier_col: 0,
-    ///     }));
-    /// assert_eq!(results.total_issues(), 2);
-    /// ```
     #[must_use]
     pub const fn total_issues(&self) -> usize {
         self.unused_files.len()
@@ -257,24 +102,12 @@ impl AnalysisResults {
             + self.misconfigured_dependency_overrides.len()
     }
 
-    /// Whether any issues were found.
     #[must_use]
     pub const fn has_issues(&self) -> bool {
         self.total_issues() > 0
     }
 
     /// Merge `other` into `self`, taking the union of every field.
-    ///
-    /// This is the single canonical way to combine two [`AnalysisResults`]
-    /// (the LSP merges per-project-root results through it). The method
-    /// exhaustively destructures `Self`, so adding a field to the struct
-    /// becomes a compile error here instead of a silently-dropped field. See
-    /// issue #444.
-    ///
-    /// Every `Vec` field is appended (callers dedup downstream where needed,
-    /// e.g. the LSP's identity-keyed `dedup_results`). `suppression_count`
-    /// sums; `entry_point_summary` keeps `self`'s value when present and
-    /// otherwise adopts `other`'s.
     pub fn merge_into(&mut self, other: Self) {
         let Self {
             unused_files,
@@ -344,11 +177,6 @@ impl AnalysisResults {
     }
 
     /// Sort all result arrays for deterministic output ordering.
-    ///
-    /// Parallel collection (rayon, `FxHashMap` iteration) does not guarantee
-    /// insertion order, so the same project can produce different orderings
-    /// across runs. This method canonicalises every result list by sorting on
-    /// (path, line, col, name) so that JSON/SARIF/human output is stable.
     #[expect(
         clippy::too_many_lines,
         reason = "one short sort_by per result array; splitting would add indirection without clarity"
@@ -576,7 +404,7 @@ impl AnalysisResults {
     }
 }
 
-/// Sort key for catalog names: the default catalog ("default") sorts before any named catalog.
+/// Sort key for catalog names.
 fn catalog_sort_key(name: &str) -> (u8, &str) {
     if name == "default" {
         (0, name)
@@ -589,7 +417,6 @@ fn catalog_sort_key(name: &str) -> (u8, &str) {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedFile {
-    /// Absolute path to the unused file.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
 }
@@ -598,20 +425,13 @@ pub struct UnusedFile {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedExport {
-    /// File containing the unused export.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// Name of the unused export.
     pub export_name: String,
-    /// Whether this is a type-only export.
     pub is_type_only: bool,
-    /// 1-based line number of the export.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
-    /// Byte offset into the source file (used by the fix command).
     pub span_start: u32,
-    /// Whether this finding comes from a barrel/index re-export rather than the source definition.
     pub is_re_export: bool,
 }
 
@@ -619,18 +439,12 @@ pub struct UnusedExport {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrivateTypeLeak {
-    /// File containing the exported symbol.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// Export whose public signature leaks the private type.
     pub export_name: String,
-    /// Private type referenced by the public signature.
     pub type_name: String,
-    /// 1-based line number of the leaking type reference.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
-    /// Byte offset of the type reference.
     pub span_start: u32,
 }
 
@@ -638,17 +452,11 @@ pub struct PrivateTypeLeak {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedDependency {
-    /// Package name, including internal workspace package names.
     pub package_name: String,
-    /// Whether this is in `dependencies`, `devDependencies`, or `optionalDependencies`.
     pub location: DependencyLocation,
-    /// Path to the package.json where this dependency is listed.
-    /// For root deps this is `<root>/package.json`, for workspace deps it is `<ws>/package.json`.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the dependency entry in package.json.
     pub line: u32,
-    /// Workspace roots that import this package even though the declaring workspace does not.
     #[serde(
         serialize_with = "serde_path::serialize_vec",
         skip_serializing_if = "Vec::is_empty"
@@ -657,31 +465,12 @@ pub struct UnusedDependency {
     pub used_in_workspaces: Vec<PathBuf>,
 }
 
-/// Where in package.json a dependency is listed.
-///
-/// # Examples
-///
-/// ```
-/// use fallow_types::results::DependencyLocation;
-///
-/// // All three variants are constructible
-/// let loc = DependencyLocation::Dependencies;
-/// let dev = DependencyLocation::DevDependencies;
-/// let opt = DependencyLocation::OptionalDependencies;
-/// // Debug output includes the variant name
-/// assert!(format!("{loc:?}").contains("Dependencies"));
-/// assert!(format!("{dev:?}").contains("DevDependencies"));
-/// assert!(format!("{opt:?}").contains("OptionalDependencies"));
-/// ```
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum DependencyLocation {
-    /// Listed in `dependencies`.
     Dependencies,
-    /// Listed in `devDependencies`.
     DevDependencies,
-    /// Listed in `optionalDependencies`.
     OptionalDependencies,
 }
 
@@ -689,18 +478,12 @@ pub enum DependencyLocation {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedMember {
-    /// File containing the unused member.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// Name of the parent enum or class.
     pub parent_name: String,
-    /// Name of the unused member.
     pub member_name: String,
-    /// Whether this is an enum member, class method, or class property.
     pub kind: MemberKind,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
 }
 
@@ -708,17 +491,11 @@ pub struct UnusedMember {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnresolvedImport {
-    /// File containing the unresolved import.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// The import specifier that could not be resolved.
     pub specifier: String,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset of the import statement.
     pub col: u32,
-    /// 0-based byte column offset of the source string literal (the specifier in quotes).
-    /// Used by the LSP to underline just the specifier, not the entire import line.
     pub specifier_col: u32,
 }
 
@@ -726,10 +503,7 @@ pub struct UnresolvedImport {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnlistedDependency {
-    /// Package name, including internal workspace package names, that is
-    /// imported but not listed in package.json.
     pub package_name: String,
-    /// Import sites where this unlisted dependency is used (file path, line, column).
     pub imported_from: Vec<ImportSite>,
 }
 
@@ -737,12 +511,9 @@ pub struct UnlistedDependency {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ImportSite {
-    /// File containing the import.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
 }
 
@@ -750,9 +521,7 @@ pub struct ImportSite {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DuplicateExport {
-    /// The duplicated export name.
     pub export_name: String,
-    /// Locations where this export name appears.
     pub locations: Vec<DuplicateLocation>,
 }
 
@@ -760,52 +529,32 @@ pub struct DuplicateExport {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DuplicateLocation {
-    /// File containing the duplicate export.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
 }
 
 /// A production dependency that is only used via type-only imports.
-/// In production builds, type imports are erased, so this dependency
-/// is not needed at runtime and could be moved to devDependencies.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TypeOnlyDependency {
-    /// Production dependency that is only used via type-only imports.
     pub package_name: String,
-    /// Path to the package.json where the dependency is listed.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the dependency entry in package.json.
     pub line: u32,
 }
 
 /// A pnpm catalog entry declared in pnpm-workspace.yaml that no workspace package
 /// references via the `catalog:` protocol.
-///
-/// The default catalog (top-level `catalog:` key) uses `catalog_name: "default"`.
-/// Named catalogs (under `catalogs.<name>:`) use their declared name.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedCatalogEntry {
-    /// Package name declared in the catalog (e.g. `"react"`, `"@scope/lib"`).
     pub entry_name: String,
-    /// Catalog group: `"default"` for the top-level `catalog:` map, or the
-    /// named catalog key for entries declared under `catalogs.<name>:`.
     pub catalog_name: String,
-    /// Path to `pnpm-workspace.yaml`, relative to the analyzed root.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the catalog entry within `pnpm-workspace.yaml`.
     pub line: u32,
-    /// Workspace `package.json` files that declare the same package with a
-    /// hardcoded version range instead of `catalog:`. Empty when no consumer
-    /// uses a hardcoded version. Sorted lexicographically for deterministic
-    /// output.
     #[serde(
         default,
         serialize_with = "serde_path::serialize_vec",
@@ -814,72 +563,40 @@ pub struct UnusedCatalogEntry {
     pub hardcoded_consumers: Vec<PathBuf>,
 }
 
-/// A named `catalogs.<name>:` group in `pnpm-workspace.yaml` with no package entries.
+/// A named `catalogs.<name>:` group with no entries.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EmptyCatalogGroup {
-    /// Catalog group name declared under the top-level `catalogs:` map.
     pub catalog_name: String,
-    /// Path to `pnpm-workspace.yaml`, relative to the analyzed root.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the empty group header within `pnpm-workspace.yaml`.
     pub line: u32,
 }
 
-/// A workspace package.json reference (`catalog:` or `catalog:<name>`) that points
-/// at a catalog which does not declare the consumed package.
-///
-/// `pnpm install` errors at install time with `ERR_PNPM_CATALOG_ENTRY_NOT_FOUND_FOR_CATALOG_PROTOCOL`
-/// when this happens. fallow surfaces it statically so the failure is caught at
-/// `fallow check` time, before any install.
-///
-/// The default catalog (bare `catalog:` references the top-level `catalog:` map)
-/// uses `catalog_name: "default"`. Named catalogs (`catalog:react17`) use the
-/// declared catalog name.
+/// A workspace package.json reference pointing at a catalog missing the package.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnresolvedCatalogReference {
-    /// Package name being referenced via the catalog protocol (e.g. `"react"`).
     pub entry_name: String,
-    /// Catalog group the reference points at: `"default"` for bare `catalog:` references,
-    /// or the named catalog key for `catalog:<name>` references.
     pub catalog_name: String,
-    /// Absolute path to the consumer `package.json`. Matches the storage
-    /// convention used by every path-anchored finding type (`UnusedFile`,
-    /// `UnresolvedImport`, `UnusedExport`, etc.) so the shared filtering
-    /// pipelines (`filter_results_by_changed_files`, per-file overrides,
-    /// audit attribution) work without a separate root-join pass. JSON
-    /// output strips the project-root prefix via `serde_path::serialize`.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the dependency entry in the consumer `package.json`.
     pub line: u32,
-    /// Other catalogs (in the same `pnpm-workspace.yaml`) that DO declare this
-    /// package. Empty when no catalog has the package. Sorted lexicographically.
-    /// Lets agents and humans decide whether to switch the reference to a
-    /// different catalog or to add the entry to the named catalog.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_in_catalogs: Vec<String>,
 }
 
-/// Where an override entry was declared. Serialized as the filename label
-/// (`"pnpm-workspace.yaml"` or `"package.json"`) so the value in JSON output
-/// matches the value users write in `ignoreDependencyOverrides[].source`.
+/// Where an override entry was declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DependencyOverrideSource {
-    /// Top-level `overrides:` key in `pnpm-workspace.yaml`.
     #[serde(rename = "pnpm-workspace.yaml")]
     PnpmWorkspaceYaml,
-    /// `pnpm.overrides` in a root `package.json`.
     #[serde(rename = "package.json")]
     PnpmPackageJson,
 }
 
 impl DependencyOverrideSource {
-    /// Stable string label matching the serde rename. Used in baseline keys,
-    /// audit keys, jq comparisons, and `ignoreDependencyOverrides[].source`.
     #[must_use]
     pub const fn as_label(&self) -> &'static str {
         match self {
@@ -895,67 +612,36 @@ impl std::fmt::Display for DependencyOverrideSource {
     }
 }
 
-/// An entry in pnpm's `overrides:` map (or the legacy `pnpm.overrides` in
-/// `package.json`) whose target package is not declared in any workspace
-/// `package.json` and is not present in `pnpm-lock.yaml`. Projects without a
-/// readable lockfile fall back to package manifest checks; the `hint` field
-/// flags that conservative mode.
+/// An entry in pnpm's `overrides:` map whose target package is not declared in any workspace
+/// `package.json` and is not present in `pnpm-lock.yaml`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedDependencyOverride {
-    /// The full original override key as written in the source (e.g.
-    /// `"react>react-dom"`, `"@types/react@<18"`). Preserved for round-trip
-    /// reporting so agents see the unmodified spelling.
     pub raw_key: String,
-    /// The target package the override rewrites (e.g. `"react-dom"` for
-    /// `"react>react-dom"`, `"@types/react"` for `"@types/react@<18"`).
     pub target_package: String,
-    /// Optional parent package (left side of `>`). `None` for bare-target keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_package: Option<String>,
-    /// Optional version selector on the target (e.g. `Some("<18")` for
-    /// `"@types/react@<18"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_constraint: Option<String>,
-    /// The right-hand side of the entry: the version pnpm should force.
     pub version_range: String,
-    /// File the override was declared in. Matches the value users write in
-    /// `ignoreDependencyOverrides[].source`.
     pub source: DependencyOverrideSource,
-    /// Path to the source file. `pnpm-workspace.yaml` or a `package.json`,
-    /// stored as an absolute filesystem path so `--changed-since` and
-    /// per-file `overrides.rules` can compare directly against the analyzer's
-    /// changed-set / per-path rule lookups. JSON serialization strips the
-    /// project root via `serde_path::serialize`, matching the
-    /// `UnresolvedCatalogReference` convention.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the entry within the source file.
     pub line: u32,
-    /// Soft hint reminding consumers to verify the override before removal.
-    /// Emitted on every unused-override finding (both bare-target and
-    /// parent-chain shapes) because projects without a readable lockfile still
-    /// use the conservative package-manifest fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
 
-/// Why a dependency-override entry is misconfigured. `pnpm install` would
-/// either fail at install time or silently no-op on these entries; surfacing
-/// them statically catches the issue before pnpm does.
+/// Why a dependency-override entry is misconfigured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum DependencyOverrideMisconfigReason {
-    /// The override key could not be parsed into a recognised pnpm shape
-    /// (e.g. dangling `>`, missing target, garbage characters).
     UnparsableKey,
-    /// The override value is missing, empty, or contains line breaks.
     EmptyValue,
 }
 
 impl DependencyOverrideMisconfigReason {
-    /// Human-readable summary of the reason.
     #[must_use]
     pub const fn describe(self) -> &'static str {
         match self {
@@ -965,53 +651,28 @@ impl DependencyOverrideMisconfigReason {
     }
 }
 
-/// An override entry whose key or value is malformed. Default severity is
-/// `error` because pnpm refuses to install (or silently produces a no-op
-/// override) when it encounters these shapes.
+/// An override entry whose key or value is malformed.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MisconfiguredDependencyOverride {
-    /// The full original override key as written in the source.
     pub raw_key: String,
-    /// Parsed target package name when the key was syntactically valid (the
-    /// `EmptyValue` reason path). `None` for `UnparsableKey` findings whose
-    /// key could not be parsed at all. Used by JSON `add-to-config` actions to
-    /// emit a paste-ready `ignoreDependencyOverrides` value that matches the
-    /// suppression matcher (which also keys on `target_package`); avoids the
-    /// pitfall where `raw_key` like `"react@<18"` would not match the rule
-    /// that targets package `"react"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_package: Option<String>,
-    /// The right-hand side of the entry, exactly as written. Empty when the
-    /// value was missing.
     pub raw_value: String,
-    /// Classifier for the misconfiguration. 'unparsable-key' = the key is not a
-    /// valid pnpm shape; 'empty-value' = the value is missing, empty, or
-    /// contains line breaks.
     pub reason: DependencyOverrideMisconfigReason,
-    /// Where the override entry was declared.
     pub source: DependencyOverrideSource,
-    /// Path to the source file. Stored as an absolute filesystem path so
-    /// `--changed-since` and per-file `overrides.rules` can compare directly.
-    /// JSON serialization strips the project root via `serde_path::serialize`.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the entry within the source file.
     pub line: u32,
 }
 
 /// A production dependency that is only imported by test files.
-/// Since it is never used in production code, it could be moved to devDependencies.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TestOnlyDependency {
-    /// Production dependency that is only imported by test files — consider
-    /// moving to devDependencies.
     pub package_name: String,
-    /// Path to the package.json where the dependency is listed.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the dependency entry in package.json.
     pub line: u32,
 }
 
@@ -1029,51 +690,31 @@ pub struct TestOnlyDependency {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(extend("required" = ["files", "length", "line", "col"])))]
 pub struct CircularDependency {
-    /// Files forming the cycle, in import order.
     #[serde(serialize_with = "serde_path::serialize_vec")]
     pub files: Vec<PathBuf>,
-    /// Number of files in the cycle.
     pub length: usize,
-    /// 1-based line number of the import that starts the cycle (in the first file).
     #[serde(default)]
     pub line: u32,
-    /// 0-based byte column offset of the import that starts the cycle.
     #[serde(default)]
     pub col: u32,
-    /// Whether this cycle crosses workspace package boundaries.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_cross_package: bool,
 }
 
 /// A cycle or self-loop in the re-export edge subgraph.
-///
-/// Detected by Tarjan SCC over `(barrel, source)` re-export edges in
-/// `crates/graph/src/graph/re_exports/`. A multi-node cycle is a strongly
-/// connected component of size >= 2; a self-loop is a barrel that re-exports
-/// from itself (often a rename leftover or accidental `export * from './'`).
-/// Both are structural bugs because chain propagation through the loop is a
-/// no-op: any symbol consumers think they are re-exporting through the cycle
-/// silently fails to resolve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReExportCycle {
-    /// Files participating in the cycle, sorted lexicographically. For a
-    /// self-loop, exactly one entry.
     #[serde(serialize_with = "serde_path::serialize_vec")]
     pub files: Vec<PathBuf>,
-    /// Which structural shape this finding describes.
     pub kind: ReExportCycleKind,
 }
 
-/// Discriminator for [`ReExportCycle`]: which structural shape was detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum ReExportCycleKind {
-    /// Two or more barrel files re-export from each other in a loop
-    /// (SCC of size >= 2).
     MultiNode,
-    /// A single barrel file re-exports from itself.
     SelfLoop,
 }
 
@@ -1081,21 +722,14 @@ pub enum ReExportCycleKind {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoundaryViolation {
-    /// The file making the disallowed import.
     #[serde(serialize_with = "serde_path::serialize")]
     pub from_path: PathBuf,
-    /// The file being imported that violates the boundary.
     #[serde(serialize_with = "serde_path::serialize")]
     pub to_path: PathBuf,
-    /// The zone the importing file belongs to.
     pub from_zone: String,
-    /// The zone the imported file belongs to.
     pub to_zone: String,
-    /// The raw import specifier from the source file.
     pub import_specifier: String,
-    /// 1-based line number of the import statement in the source file.
     pub line: u32,
-    /// 0-based byte column offset of the import statement.
     pub col: u32,
 }
 
@@ -1104,25 +738,14 @@ pub struct BoundaryViolation {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum SuppressionOrigin {
-    /// A `// fallow-ignore-next-line` or `// fallow-ignore-file` comment.
     Comment {
-        /// The issue kind token from the comment (e.g., "unused-exports"), or None for blanket.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         issue_kind: Option<String>,
-        /// Whether this was a file-level suppression.
         is_file_level: bool,
-        /// Whether `issue_kind` parses to a known `IssueKind`. False when the
-        /// token is a typo or refers to a kind that was renamed or removed in
-        /// a newer fallow release. JSON consumers (CI annotations, MCP agents,
-        /// VS Code) branch on this to choose the right next-step text.
-        /// Omitted from the wire when `true` so producers that have not yet
-        /// adopted the field stay byte-compatible. See issue #449.
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         kind_known: bool,
     },
-    /// An `@expected-unused` JSDoc tag on an export.
     JsdocTag {
-        /// The name of the export that was tagged.
         export_name: String,
     },
 }
@@ -1164,14 +787,10 @@ const fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StaleSuppression {
-    /// File containing the stale suppression.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number of the suppression comment or tag.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
-    /// The origin and details of the stale suppression.
     pub origin: SuppressionOrigin,
 }
 
@@ -1289,13 +908,8 @@ impl StaleSuppression {
 /// `fallow impact`.
 #[derive(Debug, Clone)]
 pub struct ActiveSuppression {
-    /// Absolute path to the file carrying the suppression comment.
     pub path: PathBuf,
-    /// The suppressed issue kind in kebab-case (e.g. `"unused-export"`), or
-    /// `None` for a blanket marker that suppresses every kind on its target.
     pub kind: Option<String>,
-    /// Whether this is a `fallow-ignore-file` (file-level) marker rather than a
-    /// `fallow-ignore-next-line` marker.
     pub is_file_level: bool,
 }
 
@@ -1304,11 +918,8 @@ pub struct ActiveSuppression {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FlagKind {
-    /// Environment variable check (e.g., `process.env.FEATURE_X`).
     EnvironmentVariable,
-    /// Feature flag SDK call (e.g., `useFlag('name')`, `variation('name', false)`).
     SdkCall,
-    /// Config object property access (e.g., `config.features.newCheckout`).
     ConfigObject,
 }
 
@@ -1317,11 +928,8 @@ pub enum FlagKind {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FlagConfidence {
-    /// Low confidence: heuristic match (config object patterns).
     Low,
-    /// Medium confidence: pattern match with some ambiguity.
     Medium,
-    /// High confidence: unambiguous pattern (env vars, direct SDK calls).
     High,
 }
 
@@ -1329,42 +937,27 @@ pub enum FlagConfidence {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FeatureFlag {
-    /// File containing the feature flag usage.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// Name or identifier of the flag (e.g., `ENABLE_NEW_CHECKOUT`, `new-checkout`).
     pub flag_name: String,
-    /// How the flag was detected.
     pub kind: FlagKind,
-    /// Detection confidence level.
     pub confidence: FlagConfidence,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
-    /// Start byte offset of the guarded code block (if-branch span), if detected.
     #[serde(skip)]
     pub guard_span_start: Option<u32>,
-    /// End byte offset of the guarded code block (if-branch span), if detected.
     #[serde(skip)]
     pub guard_span_end: Option<u32>,
-    /// SDK or provider name (e.g., "LaunchDarkly", "Statsig"), if detected from SDK call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk_name: Option<String>,
-    /// Line range of the guarded code block (derived from guard_span + line_offsets).
-    /// Used for cross-reference with dead code findings.
     #[serde(skip)]
     pub guard_line_start: Option<u32>,
-    /// End line of the guarded code block.
     #[serde(skip)]
     pub guard_line_end: Option<u32>,
-    /// Unused exports found within the guarded code block.
-    /// Populated by cross-reference with dead code analysis.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guarded_dead_exports: Vec<String>,
 }
 
-// Size assertion: FeatureFlag is stored in a Vec per analysis run.
 const _: () = assert!(std::mem::size_of::<FeatureFlag>() <= 160);
 
 /// Usage count for an export symbol. Used by the LSP Code Lens to show
@@ -1372,19 +965,12 @@ const _: () = assert!(std::mem::size_of::<FeatureFlag>() <= 160);
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExportUsage {
-    /// File containing the export.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// Name of the exported symbol.
     pub export_name: String,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
-    /// Number of files that reference this export.
     pub reference_count: usize,
-    /// Locations where this export is referenced. Used by the LSP Code Lens
-    /// to enable click-to-navigate via `editor.action.showReferences`.
     pub reference_locations: Vec<ReferenceLocation>,
 }
 
@@ -1392,12 +978,9 @@ pub struct ExportUsage {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReferenceLocation {
-    /// File containing the import that references the export.
     #[serde(serialize_with = "serde_path::serialize")]
     pub path: PathBuf,
-    /// 1-based line number.
     pub line: u32,
-    /// 0-based byte column offset.
     pub col: u32,
 }
 
@@ -1579,12 +1162,9 @@ mod tests {
             ..Default::default()
         };
 
-        // 15 categories, one of each
         assert_eq!(results.total_issues(), 15);
         assert!(results.has_issues());
     }
-
-    // ── total_issues / has_issues consistency ──────────────────
 
     #[test]
     fn total_issues_and_has_issues_are_consistent() {
@@ -1593,8 +1173,6 @@ mod tests {
         assert!(!results.has_issues());
         assert_eq!(results.total_issues() > 0, results.has_issues());
     }
-
-    // ── total_issues counts each category independently ─────────
 
     #[test]
     fn total_issues_sums_all_categories_independently() {
@@ -1625,8 +1203,6 @@ mod tests {
         assert_eq!(results.total_issues(), 3);
     }
 
-    // ── default is truly empty ──────────────────────────────────
-
     #[test]
     fn default_results_all_fields_empty() {
         let r = AnalysisResults::default();
@@ -1649,8 +1225,6 @@ mod tests {
         assert!(r.unresolved_catalog_references.is_empty());
         assert!(r.export_usages.is_empty());
     }
-
-    // ── EntryPointSummary ────────────────────────────────────────
 
     #[test]
     fn entry_point_summary_default() {
@@ -1680,8 +1254,6 @@ mod tests {
         assert_eq!(summary.by_source[0], ("package.json".to_string(), 2));
     }
 
-    // ── sort: unused_files by path ──────────────────────────────
-
     #[test]
     fn sort_unused_files_by_path() {
         let mut r = AnalysisResults::default();
@@ -1705,8 +1277,6 @@ mod tests {
             .collect();
         assert_eq!(paths, vec!["a.ts", "m.ts", "z.ts"]);
     }
-
-    // ── sort: unused_exports by path, line, name ────────────────
 
     #[test]
     fn sort_unused_exports_by_path_line_name() {
@@ -1750,8 +1320,6 @@ mod tests {
         );
     }
 
-    // ── sort: unused_types (same sort as unused_exports) ────────
-
     #[test]
     fn sort_unused_types_by_path_line_name() {
         let mut r = AnalysisResults::default();
@@ -1772,8 +1340,6 @@ mod tests {
         assert_eq!(r.unused_types[0].export.path, PathBuf::from("a.ts"));
         assert_eq!(r.unused_types[1].export.path, PathBuf::from("z.ts"));
     }
-
-    // ── sort: unused_dependencies by path, line, name ───────────
 
     #[test]
     fn sort_unused_dependencies_by_path_line_name() {
@@ -1799,8 +1365,6 @@ mod tests {
         assert_eq!(names, vec!["axios", "react", "zlib"]);
     }
 
-    // ── sort: unused_dev_dependencies ───────────────────────────
-
     #[test]
     fn sort_unused_dev_dependencies() {
         let mut r = AnalysisResults::default();
@@ -1824,8 +1388,6 @@ mod tests {
         assert_eq!(r.unused_dev_dependencies[0].dep.package_name, "jest");
         assert_eq!(r.unused_dev_dependencies[1].dep.package_name, "vitest");
     }
-
-    // ── sort: unused_optional_dependencies ──────────────────────
 
     #[test]
     fn sort_unused_optional_dependencies() {
@@ -1855,8 +1417,6 @@ mod tests {
         assert_eq!(r.unused_optional_dependencies[1].dep.package_name, "zod");
     }
 
-    // ── sort: unused_enum_members by path, line, parent, member ─
-
     #[test]
     fn sort_unused_enum_members_by_path_line_parent_member() {
         let mut r = AnalysisResults::default();
@@ -1882,8 +1442,6 @@ mod tests {
         assert_eq!(keys, vec!["Direction:Up", "Status:A", "Status:Z"]);
     }
 
-    // ── sort: unused_class_members by path, line, parent, member
-
     #[test]
     fn sort_unused_class_members() {
         let mut r = AnalysisResults::default();
@@ -1903,8 +1461,6 @@ mod tests {
         assert_eq!(r.unused_class_members[0].member.path, PathBuf::from("a.ts"));
         assert_eq!(r.unused_class_members[1].member.path, PathBuf::from("b.ts"));
     }
-
-    // ── sort: unresolved_imports by path, line, col, specifier ──
 
     #[test]
     fn sort_unresolved_imports_by_path_line_col_specifier() {
@@ -1929,8 +1485,6 @@ mod tests {
             .collect();
         assert_eq!(specs, vec!["./m", "./a", "./z"]);
     }
-
-    // ── sort: unlisted_dependencies + inner imported_from ───────
 
     #[test]
     fn sort_unlisted_dependencies_by_name_and_inner_sites() {
@@ -1966,11 +1520,9 @@ mod tests {
             ));
         r.sort();
 
-        // Outer sort: by package_name
         assert_eq!(r.unlisted_dependencies[0].dep.package_name, "axios");
         assert_eq!(r.unlisted_dependencies[1].dep.package_name, "zod");
 
-        // Inner sort: imported_from sorted by path, then line
         let zod_sites: Vec<_> = r.unlisted_dependencies[1]
             .dep
             .imported_from
@@ -1979,8 +1531,6 @@ mod tests {
             .collect();
         assert_eq!(zod_sites, vec!["a.ts", "b.ts"]);
     }
-
-    // ── sort: duplicate_exports + inner locations ───────────────
 
     #[test]
     fn sort_duplicate_exports_by_name_and_inner_locations() {
@@ -2012,11 +1562,9 @@ mod tests {
             }));
         r.sort();
 
-        // Outer sort: by export_name
         assert_eq!(r.duplicate_exports[0].export.export_name, "a");
         assert_eq!(r.duplicate_exports[1].export.export_name, "z");
 
-        // Inner sort: locations sorted by path, then line
         let z_locs: Vec<_> = r.duplicate_exports[1]
             .export
             .locations
@@ -2025,8 +1573,6 @@ mod tests {
             .collect();
         assert_eq!(z_locs, vec!["a.ts", "c.ts"]);
     }
-
-    // ── sort: type_only_dependencies ────────────────────────────
 
     #[test]
     fn sort_type_only_dependencies() {
@@ -2052,8 +1598,6 @@ mod tests {
         assert_eq!(r.type_only_dependencies[1].dep.package_name, "zod");
     }
 
-    // ── sort: test_only_dependencies ────────────────────────────
-
     #[test]
     fn sort_test_only_dependencies() {
         let mut r = AnalysisResults::default();
@@ -2077,8 +1621,6 @@ mod tests {
         assert_eq!(r.test_only_dependencies[0].dep.package_name, "jest");
         assert_eq!(r.test_only_dependencies[1].dep.package_name, "vitest");
     }
-
-    // ── sort: circular_dependencies by files, then length ───────
 
     #[test]
     fn sort_circular_dependencies_by_files_then_length() {
@@ -2114,8 +1656,6 @@ mod tests {
         );
     }
 
-    // ── sort: boundary_violations by from_path, line, col, to_path
-
     #[test]
     fn sort_boundary_violations() {
         let mut r = AnalysisResults::default();
@@ -2147,8 +1687,6 @@ mod tests {
             .collect();
         assert_eq!(from_paths, vec!["a.ts:1", "a.ts:5", "z.ts:1"]);
     }
-
-    // ── sort: export_usages + inner reference_locations ─────────
 
     #[test]
     fn sort_export_usages_and_inner_reference_locations() {
@@ -2186,11 +1724,9 @@ mod tests {
         });
         r.sort();
 
-        // Outer sort: by path, then line, then export_name
         assert_eq!(r.export_usages[0].path, PathBuf::from("a.ts"));
         assert_eq!(r.export_usages[1].path, PathBuf::from("z.ts"));
 
-        // Inner sort: reference_locations sorted by path, line, col
         let refs: Vec<_> = r.export_usages[1]
             .reference_locations
             .iter()
@@ -2199,16 +1735,12 @@ mod tests {
         assert_eq!(refs, vec!["a.ts", "c.ts"]);
     }
 
-    // ── sort: empty results does not panic ──────────────────────
-
     #[test]
     fn sort_empty_results_is_noop() {
         let mut r = AnalysisResults::default();
         r.sort(); // should not panic
         assert_eq!(r.total_issues(), 0);
     }
-
-    // ── sort: single-element lists remain stable ────────────────
 
     #[test]
     fn sort_single_element_lists_stable() {
@@ -2221,19 +1753,15 @@ mod tests {
         assert_eq!(r.unused_files[0].file.path, PathBuf::from("only.ts"));
     }
 
-    // ── serialization ──────────────────────────────────────────
-
     #[test]
     fn serialize_empty_results() {
         let r = AnalysisResults::default();
         let json = serde_json::to_value(&r).unwrap();
 
-        // All arrays should be present and empty
         assert!(json["unused_files"].as_array().unwrap().is_empty());
         assert!(json["unused_exports"].as_array().unwrap().is_empty());
         assert!(json["circular_dependencies"].as_array().unwrap().is_empty());
 
-        // Skipped fields should be absent
         assert!(json.get("export_usages").is_none());
         assert!(json.get("entry_point_summary").is_none());
     }
@@ -2290,7 +1818,6 @@ mod tests {
             is_cross_package: false,
         };
         let json = serde_json::to_value(&cd).unwrap();
-        // skip_serializing_if = "std::ops::Not::not" means false is skipped
         assert!(json.get("is_cross_package").is_none());
     }
 
@@ -2451,11 +1978,8 @@ mod tests {
         assert_eq!(json["specifier_col"], 21);
     }
 
-    // ── deserialize: CircularDependency serde(default) fields ──
-
     #[test]
     fn deserialize_circular_dependency_with_defaults() {
-        // CircularDependency derives Deserialize; line/col/is_cross_package have #[serde(default)]
         let json = r#"{"files":["a.ts","b.ts"],"length":2}"#;
         let cd: CircularDependency = serde_json::from_str(json).unwrap();
         assert_eq!(cd.files.len(), 2);
@@ -2475,8 +1999,6 @@ mod tests {
         assert!(cd.is_cross_package);
     }
 
-    // ── clone produces independent copies ───────────────────────
-
     #[test]
     fn clone_results_are_independent() {
         let mut r = AnalysisResults::default();
@@ -2494,8 +2016,6 @@ mod tests {
         assert_eq!(cloned.total_issues(), 2);
     }
 
-    // ── export_usages not counted in total_issues ───────────────
-
     #[test]
     fn export_usages_not_counted_in_total_issues() {
         let mut r = AnalysisResults::default();
@@ -2507,12 +2027,9 @@ mod tests {
             reference_count: 3,
             reference_locations: vec![],
         });
-        // export_usages is metadata, not an issue type
         assert_eq!(r.total_issues(), 0);
         assert!(!r.has_issues());
     }
-
-    // ── entry_point_summary not counted in total_issues ─────────
 
     #[test]
     fn entry_point_summary_not_counted_in_total_issues() {

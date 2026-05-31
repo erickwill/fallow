@@ -1,31 +1,4 @@
-//! Typed envelope wrappers for the simple 1:1 dead-code findings whose
-//! actions are entirely determined by the wrapper type (no per-instance
-//! discriminants beyond what the bare finding already exposes).
-//!
-//! Each wrapper flattens the bare finding via `#[serde(flatten)]` so the
-//! wire shape matches the previous `actions`-grafted output byte-for-byte.
-//! `actions` is populated at construction time via each wrapper's
-//! `with_actions` constructor and replaces the per-finding `inject_actions`
-//! post-pass in `crates/cli/src/report/json.rs`. `introduced` carries the optional audit
-//! breadcrumb that `crates/cli/src/audit.rs::annotate_issue_array` inserts
-//! into the JSON object via `map.insert`; the wrapper-level field stays
-//! `None` when serialized directly from Rust and is set by the audit pass
-//! only when the issue was introduced relative to the merge-base.
-//!
-//! All nine wrappers ship with `IssueAction` arrays today; they pay the
-//! `serde_json` dependency cost because `IssueAction` transitively
-//! references `AddToConfigValue::RuleObject(serde_json::Map<...>)`. The
-//! variants the wrappers actually emit (`Fix`, `SuppressLine`,
-//! `SuppressFile`, `AddToConfig`) are small, but reusing the existing enum
-//! keeps the wire-shape contract identical to the legacy post-pass.
-//!
-//! `introduced` is typed as `Option<AuditIntroduced>` (transparent newtype
-//! over `bool`) so the regenerated schema renders the field via
-//! `$ref: #/definitions/AuditIntroduced`, matching the reference the prior
-//! post-pass augmentation graft used. The audit pass continues to inject a
-//! bare bool via `map.insert("introduced", ...)`; serde reads it back into
-//! `AuditIntroduced` transparently. The field stays absent at the wire when
-//! `None` (`skip_serializing_if`).
+//! Typed wrappers for dead-code findings with fixed action sets.
 
 use serde::Serialize;
 
@@ -43,49 +16,28 @@ use crate::results::{
     UnusedDependencyOverride, UnusedExport, UnusedFile, UnusedMember,
 };
 
-/// Shared note for the `duplicate-exports` fix action. Mirrors the const used
-/// by the human report (see `crates/cli/src/report/shared.rs`); kept here so
-/// the wire-format builder reads from the same source of truth.
+/// Shared note for the `duplicate-exports` fix action.
 pub const NAMESPACE_BARREL_HINT: &str = "If every location is the sole `index.*` of its directory, this is likely an intentional namespace-barrel API. Prefer adding these files to `ignoreExports` over removing exports.";
 
-/// JSON Schema fragment URL for the `add-to-config` `ignoreExports` action's
-/// `value` payload. Pinned to the main branch so users browsing the action
-/// value can navigate directly to the rule shape.
 const IGNORE_EXPORTS_VALUE_SCHEMA: &str =
     "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json#/properties/ignoreExports";
 
-/// JSON Schema fragment URL for the `ignoreCatalogReferences` rule items
-/// referenced by `add-to-config` actions on `unresolved-catalog-references`.
 const IGNORE_CATALOG_REFERENCES_VALUE_SCHEMA: &str = "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json#/properties/ignoreCatalogReferences/items";
 
-/// JSON Schema fragment URL for the `ignoreDependencyOverrides` rule items
-/// referenced by `add-to-config` actions on both the unused- and
-/// misconfigured-override findings.
 const IGNORE_DEPENDENCY_OVERRIDES_VALUE_SCHEMA: &str = "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json#/properties/ignoreDependencyOverrides/items";
 
-/// Wire-shape envelope for an [`UnusedFile`] finding. The bare finding
-/// flattens in via `#[serde(flatten)]`, with a typed `actions` array
-/// populated at construction time and the audit-pass `introduced` flag
-/// attached as an optional sibling.
+/// Actions wrapper for an [`UnusedFile`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedFileFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub file: UnusedFile,
-    /// Suggested next steps: a `delete-file` primary and a `suppress-file`
-    /// secondary. Always emitted (possibly empty for forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base. `None` when serialized directly from Rust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedFileFinding {
-    /// Build the wrapper from a raw [`UnusedFile`], computing the typed
-    /// `actions` array inline. `introduced` stays `None` and is set later
-    /// by `annotate_dead_code_json` if the audit pass runs.
     #[must_use]
     pub fn with_actions(file: UnusedFile) -> Self {
         let actions = vec![
@@ -116,26 +68,18 @@ impl UnusedFileFinding {
     }
 }
 
-/// Wire-shape envelope for a [`PrivateTypeLeak`] finding. Mirrors
-/// [`UnusedFileFinding`]: flattens the bare finding and carries a typed
-/// `actions` array (`export-type` primary plus `suppress-line` secondary).
+/// Actions wrapper for a [`PrivateTypeLeak`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrivateTypeLeakFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub leak: PrivateTypeLeak,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl PrivateTypeLeakFinding {
-    /// Build the wrapper from a raw [`PrivateTypeLeak`].
     #[must_use]
     pub fn with_actions(leak: PrivateTypeLeak) -> Self {
         let actions = vec![
@@ -165,27 +109,18 @@ impl PrivateTypeLeakFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnresolvedImport`] finding. Mirrors
-/// [`UnusedFileFinding`]: flattens the bare finding and carries a typed
-/// `actions` array (`resolve-import` primary plus config and inline
-/// suppression actions).
+/// Actions wrapper for an [`UnresolvedImport`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnresolvedImportFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub import: UnresolvedImport,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnresolvedImportFinding {
-    /// Build the wrapper from a raw [`UnresolvedImport`].
     #[must_use]
     pub fn with_actions(import: UnresolvedImport) -> Self {
         let actions = vec![
@@ -229,27 +164,18 @@ impl UnresolvedImportFinding {
     }
 }
 
-/// Wire-shape envelope for a [`CircularDependency`] finding. Mirrors
-/// [`UnusedFileFinding`]: flattens the bare finding and carries a typed
-/// `actions` array (`refactor-cycle` primary plus `suppress-line`
-/// secondary).
+/// Actions wrapper for a [`CircularDependency`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CircularDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub cycle: CircularDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl CircularDependencyFinding {
-    /// Build the wrapper from a raw [`CircularDependency`].
     #[must_use]
     pub fn with_actions(cycle: CircularDependency) -> Self {
         let actions = vec![
@@ -281,42 +207,20 @@ impl CircularDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for a [`ReExportCycle`] finding. Mirrors
-/// [`CircularDependencyFinding`]: flattens the bare finding and carries a
-/// typed `actions` array (`refactor-re-export-cycle` informational primary
-/// plus `suppress-file` secondary; cycles are file-scoped so a single
-/// file-level suppression on the alphabetically-first member breaks the
-/// cycle, and no `// fallow-ignore-next-line` form makes sense because the
-/// diagnostic is anchored at line 1 col 0 of each member).
+/// Actions wrapper for a [`ReExportCycle`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReExportCycleFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub cycle: ReExportCycle,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl ReExportCycleFinding {
-    /// Build the wrapper from a raw [`ReExportCycle`].
-    ///
-    /// The `SuppressFile` action targets the alphabetically-first member
-    /// (`cycle.files[0]`; the `files` Vec is already sorted at graph layer);
-    /// for multi-node cycles the description names the other members so
-    /// consumers see context for why one file-level suppression suffices.
     #[must_use]
     pub fn with_actions(cycle: ReExportCycle) -> Self {
-        // The description is a path-free hint about the suppression's
-        // structural effect; the cycle's member list already ships in the
-        // sibling `files` field, so consumers can correlate without
-        // re-reading the description (and absolute paths cannot leak in
-        // here, which the wrapper has no root-prefix context to strip).
         let suppress_description = match cycle.kind {
             ReExportCycleKind::SelfLoop => {
                 "Suppress with a file-level comment at the top of this file. \
@@ -361,27 +265,18 @@ impl ReExportCycleFinding {
     }
 }
 
-/// Wire-shape envelope for a [`BoundaryViolation`] finding. Mirrors
-/// [`UnusedFileFinding`]: flattens the bare finding and carries a typed
-/// `actions` array (`refactor-boundary` primary plus `suppress-line`
-/// secondary).
+/// Actions wrapper for a [`BoundaryViolation`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoundaryViolationFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub violation: BoundaryViolation,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl BoundaryViolationFinding {
-    /// Build the wrapper from a raw [`BoundaryViolation`].
     #[must_use]
     pub fn with_actions(violation: BoundaryViolation) -> Self {
         let actions = vec![
@@ -413,29 +308,18 @@ impl BoundaryViolationFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedExport`] finding consumed under the
-/// `unused_exports` key. Same Rust struct as [`UnusedTypeFinding`], with a
-/// different fix description so consumers can tell value-export from
-/// type-export removal at the action level.
+/// Actions wrapper for an [`UnusedExport`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedExportFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub export: UnusedExport,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedExportFinding {
-    /// Build the wrapper. When `export.is_re_export` is true, the fix
-    /// action's `note` warns about possible public-API surface; otherwise
-    /// `note` is absent on the fix action.
     #[must_use]
     pub fn with_actions(export: UnusedExport) -> Self {
         let note = if export.is_re_export {
@@ -471,28 +355,18 @@ impl UnusedExportFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedExport`] finding consumed under the
-/// `unused_types` key. Wraps the same bare [`UnusedExport`] struct as
-/// [`UnusedExportFinding`] but emits a fix action targeted at type-only
-/// declarations, with the same `is_re_export`-aware note swap.
+/// Actions wrapper for an [`UnusedExport`] finding consumed under `unused_types`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedTypeFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub export: UnusedExport,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedTypeFinding {
-    /// Build the wrapper. `is_re_export` swaps the fix note the same way as
-    /// [`UnusedExportFinding::with_actions`].
     #[must_use]
     pub fn with_actions(export: UnusedExport) -> Self {
         let note = if export.is_re_export {
@@ -530,25 +404,18 @@ impl UnusedTypeFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedMember`] finding consumed under the
-/// `unused_enum_members` key.
+/// Actions wrapper for an [`UnusedMember`] finding consumed under `unused_enum_members`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedEnumMemberFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub member: UnusedMember,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedEnumMemberFinding {
-    /// Build the wrapper from a raw [`UnusedMember`].
     #[must_use]
     pub fn with_actions(member: UnusedMember) -> Self {
         let actions = vec![
@@ -576,30 +443,18 @@ impl UnusedEnumMemberFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedMember`] finding consumed under the
-/// `unused_class_members` key. Same Rust struct as
-/// [`UnusedEnumMemberFinding`]; the fix action and suppress comment carry
-/// the class-member kebab-case identifier instead.
+/// Actions wrapper for an [`UnusedMember`] finding consumed under `unused_class_members`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedClassMemberFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub member: UnusedMember,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedClassMemberFinding {
-    /// Build the wrapper from a raw [`UnusedMember`]. Class-member fixes
-    /// are not auto-applied (members can be used via dependency injection
-    /// or decorators), so `auto_fixable` is `false` and a context note is
-    /// attached.
     #[must_use]
     pub fn with_actions(member: UnusedMember) -> Self {
         let actions = vec![
@@ -629,16 +484,6 @@ impl UnusedClassMemberFinding {
     }
 }
 
-/// Build the `IssueAction` vec for the three `unused_dependencies`,
-/// `unused_dev_dependencies`, `unused_optional_dependencies` views over the
-/// same bare [`UnusedDependency`] struct. Each wrapper differs only in the
-/// `package_json_location` string (`"dependencies"` / `"devDependencies"` /
-/// `"optionalDependencies"`) baked into the fix-action description and in
-/// the `suppress_issue_kind` used by the inline-suppress comment. All three
-/// share the cross-workspace swap (when `dep.used_in_workspaces` is
-/// non-empty the primary fix flips from `remove-dependency` to
-/// `move-dependency` because the dep is imported by ANOTHER workspace and
-/// `fallow fix` cannot safely remove it).
 fn build_unused_dependency_actions(
     dep: &UnusedDependency,
     package_json_location: &str,
@@ -676,13 +521,6 @@ fn build_unused_dependency_actions(
     actions
 }
 
-/// Build the standard `add-to-config` `ignoreDependencies` suppress action
-/// for any finding whose primary key is a package name. Used by the four
-/// dependency-family wrappers (unused / unlisted / type-only / test-only).
-/// The `_suppress_issue_kind` argument is currently unused; the pre-2.76
-/// `inject_actions` post-pass also did not embed the issue kind in this
-/// shape (no inline `// fallow-ignore-next-line ...` comment because the
-/// finding is anchored at a package.json line, not at a source-file line).
 fn build_ignore_dependencies_suppress_action(
     package_name: &str,
     _suppress_issue_kind: &str,
@@ -700,29 +538,18 @@ fn build_ignore_dependencies_suppress_action(
     })
 }
 
-/// Wire-shape envelope for an [`UnusedDependency`] finding consumed under
-/// the `unused_dependencies` key (production deps). Flattens the bare
-/// finding; the typed `actions` array carries either a `remove-dependency`
-/// or `move-dependency` primary depending on
-/// `inner.used_in_workspaces`.
+/// Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_dependencies`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: UnusedDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedDependencyFinding {
-    /// Build the wrapper. Switches the primary fix from `remove-dependency`
-    /// to `move-dependency` when the dep is imported by another workspace.
     #[must_use]
     pub fn with_actions(dep: UnusedDependency) -> Self {
         let actions = build_unused_dependency_actions(&dep, "dependencies", "unused-dependency");
@@ -734,28 +561,18 @@ impl UnusedDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedDependency`] finding consumed under
-/// the `unused_dev_dependencies` key. Same bare struct as
-/// [`UnusedDependencyFinding`]; the fix description points at
-/// `devDependencies` and the suppress comment uses
-/// `unused-dev-dependency`.
+/// Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_dev_dependencies`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedDevDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: UnusedDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedDevDependencyFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(dep: UnusedDependency) -> Self {
         let actions =
@@ -768,28 +585,18 @@ impl UnusedDevDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnusedDependency`] finding consumed under
-/// the `unused_optional_dependencies` key. Same bare struct as
-/// [`UnusedDependencyFinding`]; the fix description points at
-/// `optionalDependencies`. Reuses the `unused-dependency` suppress
-/// `IssueKind` because there is no dedicated variant for optional deps.
+/// Actions wrapper for an [`UnusedDependency`] finding consumed under `unused_optional_dependencies`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedOptionalDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: UnusedDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedOptionalDependencyFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(dep: UnusedDependency) -> Self {
         let actions =
@@ -802,26 +609,18 @@ impl UnusedOptionalDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnlistedDependency`] finding. Carries an
-/// `install-dependency` primary (non-auto-fixable) plus the standard
-/// `ignoreDependencies` config suppress.
+/// Actions wrapper for an [`UnlistedDependency`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnlistedDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: UnlistedDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnlistedDependencyFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(dep: UnlistedDependency) -> Self {
         let actions = vec![
@@ -845,26 +644,18 @@ impl UnlistedDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for a [`TypeOnlyDependency`] finding. Carries a
-/// `move-to-dev` primary plus the standard `ignoreDependencies` config
-/// suppress.
+/// Actions wrapper for a [`TypeOnlyDependency`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TypeOnlyDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: TypeOnlyDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl TypeOnlyDependencyFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(dep: TypeOnlyDependency) -> Self {
         let actions = vec![
@@ -889,26 +680,18 @@ impl TypeOnlyDependencyFinding {
     }
 }
 
-/// Wire-shape envelope for a [`TestOnlyDependency`] finding. Carries a
-/// `move-to-dev` primary (different prose than [`TypeOnlyDependencyFinding`])
-/// plus the standard `ignoreDependencies` config suppress.
+/// Actions wrapper for a [`TestOnlyDependency`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TestOnlyDependencyFinding {
-    /// The underlying dead-code entry.
     #[serde(flatten)]
     pub dep: TestOnlyDependency,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl TestOnlyDependencyFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(dep: TestOnlyDependency) -> Self {
         let actions = vec![
@@ -933,50 +716,18 @@ impl TestOnlyDependencyFinding {
     }
 }
 
-// ── Catalog / dep-override family ───────────────────────────────
-//
-// These six wrappers replace the legacy `inject_actions` post-pass in
-// `crates/cli/src/report/json.rs` for the catalog and dependency-override
-// findings. Each `with_actions(...)` builds the typed `actions` array
-// directly from the inner struct (and any per-call context such as
-// `config_fixable`), so the wire shape is identical to the pre-2.76
-// post-pass output but the Rust compiler now owns the action contract.
-
-/// Wire-shape envelope for a [`DuplicateExport`] finding. Carries up to
-/// three actions in position-locked order: an `add-to-config` `ignoreExports`
-/// snippet (only when `locations[]` carries at least one path) followed by
-/// the `remove-duplicate` fix and the multi-location suppress.
-///
-/// The `add-to-config` action sits at position 0 because the documented
-/// primary slot points at the safe, non-destructive path: the shadcn /
-/// Radix / bits-ui namespace-barrel case where every `index.*` reexports
-/// the directory's neighbours. The `remove-duplicate` fix stays as the
-/// secondary so consumers that pattern-match on `actions[0].type` for
-/// "primary fix" never propose deletion of an intentional barrel surface.
+/// Actions wrapper for a [`DuplicateExport`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DuplicateExportFinding {
-    /// The underlying finding.
     #[serde(flatten)]
     pub export: DuplicateExport,
-    /// Suggested next steps. Always emitted (possibly empty for
-    /// forward-compat).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl DuplicateExportFinding {
-    /// Build the wrapper with the `add-to-config` action's `auto_fixable`
-    /// defaulting to `false`. The CLI's `build_json_with_config_fixable`
-    /// path layers the actual `config_fixable` signal via
-    /// [`Self::set_config_fixable`] right before serialization (the
-    /// fix-applier readiness check lives in `fallow-cli::fix` and is not
-    /// reachable from the analyzer layer where wrappers are first built).
-    /// Embedders that build `AnalysisResults` directly and never route
-    /// through the CLI's JSON path keep the conservative default.
     #[must_use]
     pub fn with_actions(export: DuplicateExport) -> Self {
         let mut actions: Vec<IssueAction> = Vec::with_capacity(3);
@@ -1016,11 +767,6 @@ impl DuplicateExportFinding {
         }
     }
 
-    /// Update the position-0 `add-to-config` action's `auto_fixable` flag.
-    /// Idempotent and a no-op when position 0 is not an `add-to-config`
-    /// action (happens when the finding has no locations). Called by the
-    /// CLI's JSON serializer with the result of
-    /// `crate::fix::is_config_fixable` before emitting bytes.
     pub fn set_config_fixable(&mut self, fixable: bool) {
         if let Some(IssueAction::AddToConfig(action)) = self.actions.first_mut() {
             action.auto_fixable = fixable;
@@ -1028,21 +774,11 @@ impl DuplicateExportFinding {
     }
 }
 
-/// Build a paste-ready `ignoreExports` config value from a duplicate-export
-/// finding's locations. Returns one `{ file, exports: ["*"] }` entry per
-/// distinct file in insertion order. `None` when no locations carry a path.
 fn build_duplicate_exports_ignore_rules(
     export: &DuplicateExport,
 ) -> Option<Vec<IgnoreExportsRule>> {
     let mut entries: Vec<IgnoreExportsRule> = Vec::with_capacity(export.locations.len());
     for loc in &export.locations {
-        // Normalize separators to forward slashes so pasting the action value
-        // into `.fallowrc.json` produces a portable rule. On Windows
-        // `to_string_lossy` preserves backslashes, which the old
-        // `inject_actions` post-pass implicitly normalized because it read
-        // the path AFTER `strip_root_prefix` had already run through
-        // `normalize_uri`; the typed wrapper builds the value before
-        // serialization, so the normalization has to be explicit here.
         let path = loc.path.to_string_lossy().replace('\\', "/");
         if path.is_empty() {
             continue;
@@ -1062,28 +798,18 @@ fn build_duplicate_exports_ignore_rules(
     }
 }
 
-/// Wire-shape envelope for an [`UnusedCatalogEntry`] finding. Per-instance
-/// `auto_fixable` flips to `false` when `hardcoded_consumers` is non-empty:
-/// the entry cannot be removed safely while a workspace package still pins
-/// the same package via a hardcoded version range.
+/// Actions wrapper for an [`UnusedCatalogEntry`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnusedCatalogEntryFinding {
-    /// The underlying finding.
     #[serde(flatten)]
     pub entry: UnusedCatalogEntry,
-    /// Suggested next steps. Always emitted.
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnusedCatalogEntryFinding {
-    /// Build the wrapper. Per-instance `auto_fixable` is `true` only when
-    /// `hardcoded_consumers` is empty; otherwise `fallow fix` skips the
-    /// entry to avoid breaking `pnpm install` on the holdout consumer.
     #[must_use]
     pub fn with_actions(entry: UnusedCatalogEntry) -> Self {
         let auto_fixable = entry.hardcoded_consumers.is_empty();
@@ -1115,25 +841,18 @@ impl UnusedCatalogEntryFinding {
     }
 }
 
-/// Wire-shape envelope for an [`EmptyCatalogGroup`] finding. Carries a
-/// straightforward `remove-empty-catalog-group` primary plus a YAML-comment
-/// suppress.
+/// Actions wrapper for an [`EmptyCatalogGroup`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EmptyCatalogGroupFinding {
-    /// The underlying finding.
     #[serde(flatten)]
     pub group: EmptyCatalogGroup,
-    /// Suggested next steps. Always emitted.
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl EmptyCatalogGroupFinding {
-    /// Build the wrapper.
     #[must_use]
     pub fn with_actions(group: EmptyCatalogGroup) -> Self {
         let actions = vec![
@@ -1165,38 +884,20 @@ impl EmptyCatalogGroupFinding {
     }
 }
 
-/// Wire-shape envelope for an [`UnresolvedCatalogReference`] finding. The
-/// primary action at position 0 discriminates on `available_in_catalogs`:
-/// `add-catalog-entry` when the array is empty (no other catalog declares
-/// the package), or `update-catalog-reference` when at least one
-/// alternative exists. When exactly one alternative exists, the action
-/// also carries `suggested_target` so deterministic agents can land the
-/// edit without picking from a list.
+/// Actions wrapper for an [`UnresolvedCatalogReference`] finding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UnresolvedCatalogReferenceFinding {
-    /// The underlying finding.
     #[serde(flatten)]
     pub reference: UnresolvedCatalogReference,
-    /// Suggested next steps. Always emitted; position 0 is the discriminated
-    /// primary (see struct docs).
     pub actions: Vec<IssueAction>,
-    /// Set by the audit pass when this finding is introduced relative to
-    /// the merge-base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduced: Option<AuditIntroduced>,
 }
 
 impl UnresolvedCatalogReferenceFinding {
-    /// Build the wrapper. The discriminator at position 0 is the
-    /// `add-catalog-entry` vs `update-catalog-reference` pick documented on
-    /// the struct.
     #[must_use]
     pub fn with_actions(reference: UnresolvedCatalogReference) -> Self {
-        // Normalize separators to forward slashes so the
-        // `ignoreCatalogReferences.consumer` action value is portable when
-        // pasted into a Windows-authored config. See
-        // `build_duplicate_exports_ignore_rules` for the same pattern.
         let consumer_path = reference.path.to_string_lossy().replace('\\', "/");
         let primary = if reference.available_in_catalogs.is_empty() {
             IssueAction::Fix(FixAction {
@@ -1411,15 +1112,6 @@ fn build_ignore_dependency_overrides_suppress(
     }))
 }
 
-// ── Position-0 invariant golden tests ───────────────────────────
-//
-// These tests document the load-bearing position-0 semantics that flow
-// downstream into the GitHub Action / GitLab CI jq scripts, the MCP server
-// `actions[0].type` pattern-match, and the VS Code LSP code-action
-// rendering. Snapshot tests assert structural equality; these named tests
-// document WHY position 0 has a specific value, so a future refactor that
-// re-orders actions tells you what broke instead of just "the snapshot
-// changed".
 #[cfg(test)]
 mod position_0_invariants {
     use super::*;
@@ -1492,16 +1184,6 @@ mod position_0_invariants {
         );
     }
 
-    /// Invariant: when no other catalog declares the package, position 0
-    /// of `unresolved_catalog_references[].actions` is `add-catalog-entry`,
-    /// directing the agent to grow the targeted catalog.
-    ///
-    /// Downstream consumers (MCP `actions[0].type` dispatch, jq scripts in
-    /// `action/jq/review-comments-check.jq` and `ci/jq/review-check.jq`)
-    /// pattern-match on this string. A future refactor that puts the
-    /// generic `remove-catalog-reference` fallback at position 0 would
-    /// flip every CI annotation from "add this entry" to "remove this
-    /// reference", reversing the recommended action.
     #[test]
     fn unresolved_catalog_position_0_is_add_when_no_alternatives() {
         let inner = UnresolvedCatalogReference {
@@ -1530,12 +1212,6 @@ mod position_0_invariants {
         );
     }
 
-    /// Invariant: when at least one alternative catalog declares the
-    /// package, position 0 flips to `update-catalog-reference` and carries
-    /// the alternative list. When exactly one alternative exists, the
-    /// action also carries `suggested_target` so deterministic agents can
-    /// land the edit without picking from the list. This is the
-    /// counterpart to `unresolved_catalog_position_0_is_add_when_no_alternatives`.
     #[test]
     fn unresolved_catalog_position_0_is_update_when_alternatives_exist() {
         let inner = UnresolvedCatalogReference {
@@ -1565,7 +1241,6 @@ mod position_0_invariants {
             "single-alternative case must surface `suggested_target` for deterministic agents"
         );
 
-        // Two alternatives: still update, but no unambiguous target.
         let inner_two = UnresolvedCatalogReference {
             entry_name: "react".to_string(),
             catalog_name: "default".to_string(),
@@ -1587,20 +1262,6 @@ mod position_0_invariants {
         );
     }
 
-    /// Invariant: position 0 of `duplicate_exports[].actions` is
-    /// `add-to-config` (the safe `ignoreExports` rule for the
-    /// namespace-barrel case), NOT the destructive `remove-duplicate`.
-    ///
-    /// This protects the shadcn / Radix / bits-ui pattern where every
-    /// `components/ui/<name>/index.ts` intentionally re-exports the same
-    /// short names. Any consumer that reads `actions[0].type` as "the
-    /// recommended fix" must see the non-destructive path first; flipping
-    /// position 0 to `remove-duplicate` would propose deleting an
-    /// intentional API surface.
-    ///
-    /// This test pins position 0 across both possible auto_fixable values
-    /// for the add-to-config action (the per-instance flip flag handled
-    /// by `set_config_fixable`).
     #[test]
     fn duplicate_exports_position_0_is_add_to_config_not_remove_duplicate() {
         let inner = DuplicateExport {
@@ -1630,8 +1291,6 @@ mod position_0_invariants {
             "position-1 must be the destructive `remove-duplicate` fallback"
         );
 
-        // `set_config_fixable(true)` flips the position-0 add-to-config
-        // bool but must NOT re-order positions.
         let mut promoted = finding;
         promoted.set_config_fixable(true);
         assert_eq!(action_type(&promoted.actions[0]), "add-to-config");
@@ -1644,10 +1303,6 @@ mod position_0_invariants {
         );
     }
 
-    /// Invariant: a duplicate-exports finding with empty `locations`
-    /// degenerate input drops the `add-to-config` action entirely, so
-    /// position 0 falls through to `remove-duplicate`. Documents the
-    /// degenerate-case contract.
     #[test]
     fn duplicate_exports_no_locations_falls_through_to_remove_duplicate() {
         let inner = DuplicateExport {
@@ -1661,7 +1316,6 @@ mod position_0_invariants {
             "with no locations there is no ignoreExports rule to suggest; the destructive remove becomes position-0"
         );
 
-        // `set_config_fixable(true)` is a no-op on this shape.
         let mut promoted = finding;
         promoted.set_config_fixable(true);
         assert_eq!(
@@ -1671,11 +1325,6 @@ mod position_0_invariants {
         );
     }
 
-    /// Invariant: misconfigured-dependency-override with empty
-    /// `target_package` AND empty `raw_key` drops the suppress action
-    /// (no usable package name for the `ignoreDependencyOverrides`
-    /// matcher; emitting `package: ""` would be silently dropped by the
-    /// config parser). Documents the suppress-omission contract.
     #[test]
     fn misconfigured_override_drops_suppress_when_no_package_name() {
         let inner = MisconfiguredDependencyOverride {
@@ -1688,7 +1337,6 @@ mod position_0_invariants {
             line: 12,
         };
         let finding = MisconfiguredDependencyOverrideFinding::with_actions(inner);
-        // Only the primary fix-dependency-override action: no suppress.
         assert_eq!(finding.actions.len(), 1);
         assert_eq!(action_type(&finding.actions[0]), "fix-dependency-override");
     }
