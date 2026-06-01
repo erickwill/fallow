@@ -1056,4 +1056,179 @@ mod tests {
             Some("network error: connection refused")
         );
     }
+
+    fn candidate(bytes: u64, path: PathBuf) -> SourceMapCandidate {
+        SourceMapCandidate {
+            rel_path: PathBuf::from("app.js.map"),
+            file_name: "app.js.map".to_owned(),
+            map_path: Some("app.js.map".to_owned()),
+            path,
+            bytes,
+        }
+    }
+
+    fn dry_run_args(dir: &Path) -> UploadSourceMapsArgs {
+        UploadSourceMapsArgs {
+            dir: dir.to_path_buf(),
+            include: "**/*.map".to_owned(),
+            exclude: Vec::new(),
+            repo: Some("acme/widgets".to_owned()),
+            git_sha: Some("abcdef1".to_owned()),
+            endpoint: Some("http://localhost:3000".to_owned()),
+            strip_path: true,
+            dry_run: true,
+            concurrency: 4,
+            fail_fast: false,
+        }
+    }
+
+    #[test]
+    fn into_exit_maps_each_variant_to_its_exit_code() {
+        assert_eq!(
+            UploadSourceMapsError::Validation("x".to_owned()).into_exit(),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            UploadSourceMapsError::Network("x".to_owned()).into_exit(),
+            ExitCode::from(NETWORK_EXIT_CODE)
+        );
+        let failed = MapOutcome::failed(
+            &candidate(10, PathBuf::from("app.js.map")),
+            FailureKind::Http,
+            "server rejected".to_owned(),
+        );
+        assert_eq!(
+            UploadSourceMapsError::Partial(vec![failed]).into_exit(),
+            ExitCode::from(1)
+        );
+    }
+
+    #[test]
+    fn run_dry_run_on_temp_build_dir_exits_zero() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("app.js.map"), "{}").expect("map");
+        // Explicit repo + git_sha + endpoint keep the dry run env- and git-free.
+        let code = run(&dry_run_args(dir.path()), dir.path());
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_reports_missing_directory_as_validation_exit_2() {
+        let dir = tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let code = run(&dry_run_args(&missing), dir.path());
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn run_reports_no_maps_as_validation_exit_2() {
+        let dir = tempdir().expect("tempdir");
+        // Directory exists but holds no .map files.
+        let code = run(&dry_run_args(dir.path()), dir.path());
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn validate_repo_name_accepts_clean_and_rejects_unsafe() {
+        assert_eq!(validate_repo_name("acme/widgets").unwrap(), "acme/widgets");
+        assert!(validate_repo_name("").is_err());
+        assert!(validate_repo_name("acme/../widgets").is_err());
+        assert!(validate_repo_name("acme\\widgets").is_err());
+    }
+
+    #[test]
+    fn take_last_two_segments_needs_two_nonempty_segments() {
+        assert_eq!(take_last_two_segments("widgets"), None);
+        assert_eq!(
+            take_last_two_segments("acme/widgets"),
+            Some("acme/widgets".to_owned())
+        );
+        // Trailing slashes and empty interior segments are ignored.
+        assert_eq!(
+            take_last_two_segments("group/acme/widgets/"),
+            Some("acme/widgets".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_repo_name_reads_package_json_repository_url() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","repository":{"url":"https://github.com/acme/widgets.git"}}"#,
+        )
+        .expect("package.json");
+        assert_eq!(resolve_repo_name(None, dir.path()).unwrap(), "acme/widgets");
+    }
+
+    #[test]
+    fn prepare_source_map_classifies_size_json_and_read_failures() {
+        let dir = tempdir().expect("tempdir");
+
+        // Oversize is rejected before the file is even read.
+        let too_big = candidate(MAX_MAP_BYTES + 1, dir.path().join("big.js.map"));
+        assert!(matches!(
+            prepare_source_map(&too_big),
+            MapOutcome::Failed { kind: FailureKind::Validation, ref reason, .. } if reason.contains("too large")
+        ));
+
+        // Valid JSON parses into a Ready outcome.
+        let ok_path = dir.path().join("ok.js.map");
+        std::fs::write(&ok_path, r#"{"version":3,"sources":[],"mappings":""}"#).expect("ok map");
+        assert!(matches!(
+            prepare_source_map(&candidate(40, ok_path)),
+            MapOutcome::Ready(_)
+        ));
+
+        // Non-JSON content is a validation failure.
+        let bad_path = dir.path().join("bad.js.map");
+        std::fs::write(&bad_path, "not json at all").expect("bad map");
+        assert!(matches!(
+            prepare_source_map(&candidate(15, bad_path)),
+            MapOutcome::Failed { kind: FailureKind::Validation, ref reason, .. } if reason.contains("not valid JSON")
+        ));
+
+        // A missing file is a read failure (also a validation failure).
+        let missing = candidate(10, dir.path().join("missing.js.map"));
+        assert!(matches!(
+            prepare_source_map(&missing),
+            MapOutcome::Failed { kind: FailureKind::Validation, ref reason, .. } if reason.contains("read failed")
+        ));
+    }
+
+    #[test]
+    fn url_encode_path_segment_percent_encodes_reserved_bytes() {
+        assert_eq!(url_encode_path_segment("owner/repo"), "owner%2Frepo");
+        // Unreserved characters pass through unchanged.
+        assert_eq!(url_encode_path_segment("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(url_encode_path_segment("a b"), "a%20b");
+    }
+
+    #[test]
+    fn display_endpoint_url_uses_override_and_trims_trailing_slash() {
+        assert_eq!(
+            display_endpoint_url(Some("http://localhost:3000/"), "owner/repo"),
+            "http://localhost:3000/v1/coverage/owner%2Frepo/source-maps"
+        );
+    }
+
+    #[test]
+    fn format_bytes_scales_through_units() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2 * 1024), "2 KiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn to_posix_string_normalizes_separators() {
+        assert_eq!(to_posix_string(Path::new("a/b/c.map")), "a/b/c.map");
+    }
+
+    #[test]
+    fn compile_glob_set_rejects_an_invalid_pattern() {
+        let err = compile_glob_set(&["a[b".to_owned()], "--include")
+            .expect_err("an unterminated character class must be rejected");
+        assert!(matches!(err, UploadSourceMapsError::Validation(_)));
+    }
 }
