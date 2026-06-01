@@ -3000,6 +3000,68 @@ fn pattern_collision_no_false_positive_for_self_repeated_pattern() {
 }
 
 #[test]
+fn pattern_collision_silent_for_builtin_only() {
+    // Two built-in plugins legitimately share `vite.config.{ts,js,mts,mjs}`:
+    // `vite` for its own config-export analysis and `tanstack-router` for
+    // parsing the `tanstackRouter({...})` call to find a custom
+    // `generatedRouteTree` path. The collision is benign (Phase 3a runs each
+    // plugin's `resolve_config` independently) and un-actionable for the user,
+    // so it must not warn (#808). Using the real plugins makes this regression
+    // fail if either the pattern is dropped from tanstack-router or the
+    // built-in-only suppression is reverted.
+    let vite = crate::plugins::vite::VitePlugin;
+    let tanstack = crate::plugins::tanstack_router::TanstackRouterPlugin;
+    let builtins: [&dyn Plugin; 2] = [&vite, &tanstack];
+    let findings = detect_pattern_collisions(&builtins, &[]);
+    assert!(
+        findings.is_empty(),
+        "built-in-only collision must be silent, got {findings:?}"
+    );
+}
+
+#[test]
+fn pattern_collision_silent_when_external_shadows_builtin_name() {
+    // Edge case: a user-authored external plugin shares a built-in's `name`
+    // (`vite`) but claims no overlapping pattern. The built-in-only collision
+    // between `vite` and `tanstack-router` must still be silent; the external
+    // owner alone is what re-enables the warning, never the built-in's name.
+    let vite = crate::plugins::vite::VitePlugin;
+    let tanstack = crate::plugins::tanstack_router::TanstackRouterPlugin;
+    let builtins: [&dyn Plugin; 2] = [&vite, &tanstack];
+    let shadow = make_external("vite", &["acme"], &["unrelated.config.js"]);
+    let actives = [&shadow];
+    let findings = detect_pattern_collisions(&builtins, &actives[..]);
+    assert!(
+        findings.is_empty(),
+        "an external sharing a built-in name must not re-enable a built-in-only collision, got {findings:?}"
+    );
+}
+
+#[test]
+fn pattern_collision_warns_for_builtin_vs_external() {
+    // An external (user-authored) plugin colliding with a built-in is
+    // actionable: the user can edit the external side. The finding must still
+    // surface, with both owners listed.
+    let vite = crate::plugins::vite::VitePlugin;
+    let builtins: [&dyn Plugin; 1] = [&vite];
+    let ext = make_external("my-vite-addon", &["acme"], &["vite.config.{ts,js,mts,mjs}"]);
+    let actives = [&ext];
+    let findings = detect_pattern_collisions(&builtins, &actives[..]);
+
+    assert_eq!(findings.len(), 1);
+    match &findings[0] {
+        PluginDiagnostic::PatternCollision { pattern, owners } => {
+            assert_eq!(pattern, "vite.config.{ts,js,mts,mjs}");
+            assert!(owners.contains(&"vite".to_string()));
+            assert!(owners.contains(&"my-vite-addon".to_string()));
+        }
+        other @ PluginDiagnostic::EnablerTypo { .. } => {
+            panic!("expected PatternCollision, got {other:?}")
+        }
+    }
+}
+
+#[test]
 fn enabler_typo_warns_with_suggestion() {
     let plugin = make_external("my-vue", &["@vue/cor"], &[]);
     let deps = vec!["@vue/core".to_string(), "react".to_string()];

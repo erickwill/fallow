@@ -711,10 +711,21 @@ pub(crate) enum PluginDiagnostic {
 ///
 /// Detection is byte-equal on the pattern string. Overlapping but non-identical
 /// globs (e.g. `vite.config.{ts,js}` vs `vite.config.ts`) require pattern
-/// intersection logic and are intentionally out of scope; there are no known
-/// collisions in the built-in plugin set. The warning's purpose is to surface
-/// USER-AUTHORED collisions between external plugins or between an external
-/// plugin and a built-in, so the user can disambiguate by editing one side.
+/// intersection logic and are intentionally out of scope. The warning's purpose
+/// is to surface USER-AUTHORED collisions between external plugins or between an
+/// external plugin and a built-in, so the user can disambiguate by editing one
+/// side.
+///
+/// Built-in-vs-built-in collisions are intentionally NOT reported: they are
+/// curated and benign (Phase 3a config matching runs every matching plugin's
+/// `resolve_config` independently, so there is no data loss), and the warning's
+/// remediation advice ("rename one of the patterns or remove the duplicate
+/// plugin") is impossible to follow for a built-in. Such a collision exists by
+/// design, e.g. both `vite` and `tanstack-router` claim
+/// `vite.config.{ts,js,mts,mjs}` because tanstack-router parses the
+/// `tanstackRouter({...})` call inside the vite config to find a custom
+/// `generatedRouteTree` path (#808). A finding is therefore emitted only when
+/// at least one owner is an external (user-authored) plugin.
 ///
 /// Precedence rule when two plugins claim the same pattern: the one registered
 /// first wins. For built-in plugins, registration order is defined in
@@ -754,10 +765,18 @@ pub(crate) fn detect_pattern_collisions(
         }
     }
 
+    // Names of built-in plugins. Built-in-only collisions are curated + benign
+    // (every matching plugin runs `resolve_config` independently), so they must
+    // not surface an un-actionable warning (#808). Keying on the built-in set
+    // and emitting only when an owner is NOT built-in is robust even if a
+    // user-authored external plugin happens to share a built-in's name: the
+    // built-in owner alone never re-enables the warning.
+    let builtin_names: FxHashSet<&str> = builtin_active.iter().map(|p| p.name()).collect();
+
     let mut findings: Vec<PluginDiagnostic> = pattern_owners
         .into_iter()
         .filter_map(|(pattern, (owners, _seen))| {
-            if owners.len() < 2 {
+            if owners.len() < 2 || owners.iter().all(|o| builtin_names.contains(o.as_str())) {
                 None
             } else {
                 Some(PluginDiagnostic::PatternCollision { pattern, owners })
