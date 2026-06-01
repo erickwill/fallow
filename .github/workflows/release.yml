@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -36,10 +37,14 @@ jobs:
       # cleanly in CI on the commit that produced this tag, so the verify build
       # is a redundant safety net we can drop on the privileged path.
 
+      - name: Authenticate to crates.io
+        id: crates_io_auth
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
       - name: Publish fallow-types
         run: cargo publish -p fallow-types --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -47,7 +52,7 @@ jobs:
       - name: Publish fallow-config
         run: cargo publish -p fallow-config --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -55,7 +60,7 @@ jobs:
       - name: Publish fallow-extract
         run: cargo publish -p fallow-extract --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -63,7 +68,7 @@ jobs:
       - name: Publish fallow-graph
         run: cargo publish -p fallow-graph --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -71,7 +76,7 @@ jobs:
       - name: Publish fallow-core
         run: cargo publish -p fallow-core --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -79,7 +84,7 @@ jobs:
       - name: Publish fallow-license
         run: cargo publish -p fallow-license --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -87,7 +92,7 @@ jobs:
       - name: Publish fallow-v8-coverage
         run: cargo publish -p fallow-v8-coverage --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -95,7 +100,7 @@ jobs:
       - name: Publish fallow-cli
         run: cargo publish -p fallow-cli --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -103,7 +108,7 @@ jobs:
       - name: Publish fallow-mcp
         run: cargo publish -p fallow-mcp --no-verify || echo "Already published, skipping"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
 
   build:
     name: Build (${{ matrix.target }})
