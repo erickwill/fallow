@@ -93,9 +93,6 @@ export type SchemaVersion = 6
  * a bare string (e.g. `"2.74.0"`).
  */
 export type ToolVersion = string
-/**
- * Singleton `command` discriminator for [`AuditOutput`].
- */
 export type AuditCommand = "audit"
 /**
  * Verdict for the audit command.
@@ -106,9 +103,6 @@ export type AuditVerdict = ("pass" | "warn" | "fail")
  * integer.
  */
 export type ElapsedMs = number
-/**
- * Gating mode for `fallow audit`.
- */
 export type AuditGate = ("new-only" | "all")
 /**
  * A suggested action attached to a finding in the JSON output. Each finding
@@ -220,17 +214,6 @@ export type AuditIntroduced = boolean
 export type DependencyLocation = ("dependencies" | "devDependencies" | "optionalDependencies")
 /**
  * The kind of member.
- *
- * # Examples
- *
- * ```
- * use fallow_types::extract::MemberKind;
- *
- * let kind = MemberKind::EnumMember;
- * assert_eq!(kind, MemberKind::EnumMember);
- * assert_ne!(kind, MemberKind::ClassMethod);
- * assert_ne!(MemberKind::ClassMethod, MemberKind::ClassProperty);
- * ```
  */
 export type MemberKind = ("enum_member" | "class_method" | "class_property" | "namespace_member")
 /**
@@ -354,43 +337,10 @@ export type ExceededThreshold = ("cyclomatic" | "cognitive" | "both" | "crap" | 
 export type FindingSeverity = ("moderate" | "high" | "critical")
 /**
  * Coverage tier classification for CRAP findings.
- *
- * Bucketed coverage signal that lets action consumers (AI agents, IDE
- * extensions, CI integrations) pick the right remediation without knowing
- * the underlying coverage values:
- * - `None`: file has no test reachability (estimated model 0% band) or
- *   Istanbul data shows 0% statement coverage. The right action is
- *   "add tests from scratch."
- * - `Partial`: some coverage exists (estimated model 40% band, or
- *   Istanbul shows >0% but below the high watermark). The right
- *   action is "increase coverage on uncovered branches."
- * - `High`: coverage is at or above the high watermark (estimated model
- *   85% band, or Istanbul shows >= 70%). Action selection still checks
- *   the CRAP formula before deciding whether coverage or refactoring is
- *   the better remediation.
- *
- * The high watermark default is 70 (matches Istanbul `lines: 70`).
- * Partial is anything in `(0, 70)`. None is `<= 0`.
  */
 export type CoverageTier = ("none" | "partial" | "high")
 /**
  * Provenance of a CRAP finding's coverage signal.
- *
- * Discriminates whether the `coverage_tier` and `crap` score were derived
- * from real Istanbul data, the graph-based estimated model evaluated against
- * the finding's own file, or the graph-based estimated model evaluated
- * against a different file (today: an Angular component `.ts` reached via
- * the inverse `templateUrl` edge from a synthetic `<template>` finding on
- * the component's `.html` template).
- *
- * Consumers reading this field:
- * - AI agents picking remediation actions ("the score is inherited, the fix
- *   may need to land on the component file, not the template").
- * - Dashboards plotting CRAP trends ("the discriminator changed shape;
- *   absorb the rollout rather than flagging a step change").
- * - Future tier 2 (AOT source-map back-mapping) will introduce
- *   `MeasuredAotSourceMap` so consumers can distinguish measured-AOT from
- *   inherited-JIT without parsing the score itself.
  */
 export type CoverageSource = ("istanbul" | "estimated" | "estimated_component_inherited")
 /**
@@ -420,13 +370,7 @@ export type UntestedExportActionType = ("add-test-import" | "suppress-file")
  * Churn trend indicator based on comparing recent vs older halves of the analysis period.
  */
 export type ChurnTrend = ("accelerating" | "stable" | "cooling")
-/**
- * Format discriminator for [`ContributorEntry::identifier`].
- */
 export type ContributorIdentifierFormat = ("raw" | "handle" | "anonymized" | "hash")
-/**
- * Machine-readable ownership state for a hotspot.
- */
 export type OwnershipState = ("active" | "unowned" | "declared_inactive" | "drifting")
 /**
  * Discriminant for [`HotspotAction::kind`].
@@ -594,34 +538,13 @@ export type ReviewCheckConclusion = ("success" | "neutral" | "failure")
  * Schema-version discriminator for the review reconcile envelope.
  */
 export type ReviewReconcileSchema = "fallow-review-reconcile/v1"
-/**
- * Singleton schema-version discriminator for [`CoverageSetupOutput`].
- */
 export type CoverageSetupSchemaVersion = "1"
-/**
- * Framework label inside coverage setup output.
- */
 export type CoverageSetupFramework = ("nextjs" | "nestjs" | "nuxt" | "sveltekit" | "astro" | "remix" | "vite" | "plain_node" | "unknown")
-/**
- * Package manager label inside coverage setup output.
- */
 export type CoverageSetupPackageManager = ("npm" | "pnpm" | "yarn" | "bun")
-/**
- * Runtime target inside coverage setup output.
- */
 export type CoverageSetupRuntimeTarget = ("node" | "browser")
-/**
- * Singleton schema-version discriminator for [`CoverageAnalyzeOutput`].
- * Independent from the global [`SchemaVersion`] because the runtime
- * coverage envelope versions independently from the rest of the
- * JSON contract.
- */
 export type CoverageAnalyzeSchemaVersion = "1"
 /**
- * Discovery outcome for a [`LogicalGroup`]. Discriminates "no children" into
- * "the directory exists and is empty" versus "at least one `autoDiscover`
- * path was invalid or unreadable", so consumers can render an actionable
- * hint instead of "0 children, mystery".
+ * Discovery outcome for a [`LogicalGroup`].
  */
 export type LogicalGroupStatus = ("ok" | "empty" | "invalid_path")
 /**
@@ -661,69 +584,22 @@ export type CodeClimateSeverity = ("info" | "minor" | "major" | "critical" | "bl
 export type CodeClimateOutput = CodeClimateIssue[]
 
 /**
- * Envelope emitted by `fallow audit --format json`. Combines dead code,
- * complexity, and duplication scoped to changed files with a verdict
- * (`pass` / `warn` / `fail`), a per-category summary, optional
- * new-vs-inherited attribution, and full sub-results.
- *
- * Like [`CombinedOutput`], `audit`'s `duplication` and `complexity`
- * sub-keys hold body shapes rather than per-command envelopes:
- * `duplication` is [`DupesReportPayload`] (the typed wrapper payload
- * emitted via `crate::output_dupes::DupesReportPayload::from_report`),
- * `complexity` is [`HealthReport`]. `dead_code` is the full
- * [`CheckOutput`] envelope. The committed schema points `duplication`
- * at `#/definitions/DupesReportPayload` and `complexity` at
- * `#/definitions/HealthReport` so the documented shape matches the
- * wire; the `committed_property_refs_match_derived_property_refs`
- * drift test enforces the alignment.
+ * `fallow audit --format json` envelope.
  */
 export interface AuditOutput {
 schema_version: SchemaVersion
 version: ToolVersion
 command: AuditCommand
 verdict: AuditVerdict
-/**
- * Number of files changed between base ref and HEAD.
- */
 changed_files_count: number
-/**
- * Git ref used as comparison base (explicit or auto-detected).
- */
 base_ref: string
-/**
- * Short SHA of HEAD. Omitted when git is unavailable.
- */
 head_sha?: (string | null)
 elapsed_ms: ElapsedMs
-/**
- * Only emitted when --performance is set. true means audit reused the
- * current run's keys as the base snapshot because every changed file was
- * either a non-behavioral doc or token-equivalent at the base ref (the
- * docs-only-diff fast path); false means the regular base worktree
- * analysis ran.
- */
 base_snapshot_skipped?: (boolean | null)
 summary: AuditSummary
 attribution: AuditAttribution
-/**
- * Full dead code results (omitted if no changed files). Issue objects
- * include introduced: true/false when audit can compare against the base
- * ref.
- */
 dead_code?: (CheckOutput | null)
-/**
- * Full duplication results (omitted if no changed files). Clone groups
- * include introduced: true/false when audit can compare against the base
- * ref. Carries typed [`crate::output_dupes::CloneGroupFinding`] and
- * [`crate::output_dupes::CloneFamilyFinding`] wrappers (matches what
- * `crates/cli/src/audit.rs` emits via
- * `crate::output_dupes::DupesReportPayload::from_report`).
- */
 duplication?: (DupesReportPayload | null)
-/**
- * Full complexity results (omitted if no changed files). Findings include
- * introduced: true/false when audit can compare against the base ref.
- */
 complexity?: (HealthReport | null)
 }
 /**
@@ -763,14 +639,7 @@ export interface CheckOutput {
 schema_version: SchemaVersion
 version: ToolVersion
 elapsed_ms: ElapsedMs
-/**
- * Total number of issues found across all categories.
- */
 total_issues: number
-/**
- * Entry-point detection summary. Present when the analysis populated
- * the metadata block; absent in synthesised fixtures.
- */
 entry_points?: (EntryPoints | null)
 summary: CheckSummary
 /**
@@ -925,34 +794,10 @@ unused_dependency_overrides?: UnusedDependencyOverrideFinding[]
  * error. Wrapped in [`MisconfiguredDependencyOverrideFinding`].
  */
 misconfigured_dependency_overrides?: MisconfiguredDependencyOverrideFinding[]
-/**
- * Per-category delta comparison against a saved baseline. Only present
- * when `--baseline` is used (today only via the combined invocation).
- */
 baseline_deltas?: (BaselineDeltas | null)
-/**
- * Baseline match statistics. Only present when `--baseline` is used.
- */
 baseline?: (BaselineMatch | null)
-/**
- * Regression check result. Only present when `--fail-on-regression` is
- * used.
- */
 regression?: (RegressionResult | null)
-/**
- * `_meta` block with metric / rule definitions, emitted when `--explain`
- * is passed (always present in MCP responses).
- */
 _meta?: (Meta | null)
-/**
- * Workspace-discovery diagnostics surfaced by
- * `discover_workspaces_with_diagnostics` (issue #473): malformed
- * declared-workspace `package.json`, glob matches with no `package.json`,
- * malformed `tsconfig.json`, missing tsconfig reference paths. Omitted
- * when empty so consumers on monorepos without discovery noise see no
- * new field. Pairing of `#[serde(default, skip_serializing_if = ...)]`
- * is required for schemars to mark the field non-required.
- */
 workspace_diagnostics?: WorkspaceDiagnostic[]
 }
 /**
@@ -2643,177 +2488,41 @@ actions_meta?: (HealthActionsMeta | null)
 }
 /**
  * Wire envelope for a single complexity finding.
- *
- * Flattens [`ComplexityViolation`] for wire continuity and adds the typed
- * `actions` list plus the audit-mode `introduced` flag. The
- * `#[serde(flatten)]` keeps each `findings[]` item byte-identical to the
- * pre-wrapper shape: inner fields (`path`, `name`, `line`, `cyclomatic`,
- * ...) sit at the top level alongside `actions` and optional `introduced`.
- *
- * Construct via [`HealthFinding::with_actions`] in the typical health
- * pipeline (the wrapper computes its own `actions` from a
- * [`HealthActionContext`]) or via [`HealthFinding::new`] when the caller
- * already has the action list (e.g., tests, audit cross-attribution).
  */
 export interface HealthFinding {
-/**
- * Absolute file path.
- */
 path: string
-/**
- * Function name, `"<anonymous>"` for unnamed functions/arrows, or
- * `"<template>"` for synthetic Angular template findings.
- */
 name: string
-/**
- * 1-based line number.
- */
 line: number
-/**
- * 0-based column.
- */
 col: number
-/**
- * Cyclomatic complexity.
- */
 cyclomatic: number
-/**
- * SonarSource cognitive complexity (structural + nesting penalty).
- */
 cognitive: number
-/**
- * Number of lines in the function.
- */
 line_count: number
-/**
- * Number of parameters (excluding TypeScript's this parameter).
- */
 param_count: number
 exceeded: ExceededThreshold
 severity: FindingSeverity
-/**
- * CRAP score (`CC^2 * (1 - cov/100)^3 + CC`), rounded to one decimal.
- * Present when the function also exceeded `--max-crap`, otherwise absent.
- */
 crap?: (number | null)
-/**
- * Per-function statement coverage percentage (0.0 to 100.0) used to
- * derive `crap`. Present when Istanbul data matched the function,
- * otherwise absent (estimated model or unmatched functions).
- */
 coverage_pct?: (number | null)
-/**
- * Bucketed coverage tier used to drive action selection. Present whenever
- * CRAP triggered the finding (Istanbul or estimated), absent otherwise.
- * `none` = coverage is at most 0% (file not test-reachable, or Istanbul
- * reports 0); `partial` = coverage is in `(0, 70)`; `high` = coverage is
- * at or above the high watermark (default `>= 70`, or the estimated 85%
- * band).
- */
 coverage_tier?: (CoverageTier | null)
-/**
- * Provenance of the coverage signal. Present whenever CRAP triggered the
- * finding. `istanbul` = direct fnMap match; `estimated` = graph-based
- * estimate against the finding's own file; `estimated_component_inherited`
- * = graph-based estimate inherited from an Angular component `.ts`
- * reached via the inverse `templateUrl` edge (synthetic `<template>`
- * findings on `.html` files only).
- */
 coverage_source?: (CoverageSource | null)
-/**
- * Owning component file that contributed reachability when
- * `coverage_source == "estimated_component_inherited"`. Always paired
- * with that variant of `coverage_source` and absent otherwise. The
- * value is the `.ts` file fallow walked to via the inverse `templateUrl`
- * edge (e.g. `permissions.component.ts`); the JSON serializer strips it
- * to project-relative form just like other path fields. Lets human and
- * AI consumers explain "the template scored partial because the
- * component it belongs to is tested" without re-deriving the link.
- */
 inherited_from?: (string | null)
-/**
- * Breakdown of a synthetic `<component>` rollup finding into its
- * worst-class-function and template contributions. Present only on
- * findings whose [`name`](Self::name) is the literal string
- * `"<component>"` (Angular components whose class AND template both
- * contributed to a per-component complexity rollup); absent on every
- * other finding kind.
- *
- * The owning [`HealthFinding`](crate::health_types::HealthFinding)'s
- * [`cyclomatic`](Self::cyclomatic) / [`cognitive`](Self::cognitive)
- * totals are `class_worst_function + template`, so consumers ranking
- * by complexity see the component as one unit. The breakdown carries
- * the pre-summation numbers plus the worst class function's name so
- * consumers can explain "this component ranked high because the
- * template added 6 cyclomatic on top of the worst class function's 3".
- */
 component_rollup?: (ComponentRollup | null)
 /**
- * Machine-actionable fix and suppress hints. Always populated; never
- * empty in the typical pipeline (the action selector emits at least
- * `suppress-line` or `suppress-file` unless suppressed by the
- * context).
+ * Machine-actionable fix and suppress hints.
  */
 actions: HealthFindingAction[]
 /**
- * Audit-mode flag indicating whether the finding is new versus the
- * audit base snapshot. `Some(true)` when introduced in the diff,
- * `Some(false)` when present in both snapshots, `None` outside audit
- * mode (the field is skipped from the wire).
+ * Audit-mode flag indicating whether the finding is new versus the base
+ * snapshot.
  */
 introduced?: (boolean | null)
 }
-/**
- * Per-component breakdown attached to a synthetic `<component>`
- * [`HealthFinding`](crate::health_types::HealthFinding). See
- * [`ComplexityViolation::component_rollup`] for the owning-finding
- * contract; the wrapper flattens the inner type's
- * [`component_rollup`](ComplexityViolation::component_rollup) field
- * onto its own wire shape.
- */
 export interface ComponentRollup {
-/**
- * Angular component class name (e.g. `"HostGameComponent"`). Derived
- * from the worst class function's `ClassName.methodName` identifier.
- */
 component: string
-/**
- * Name of the worst class function/method whose individual cyclomatic
- * is the largest among the component's class findings (e.g.
- * `"ngOnInit"`). When two methods tie on cyclomatic the first by
- * iteration order wins; consumers should treat the choice as
- * representative, not authoritative.
- */
 class_worst_function: string
-/**
- * Cyclomatic complexity of the worst class function alone (the
- * `class_worst_function`).
- */
 class_cyclomatic: number
-/**
- * Cognitive complexity of the worst class function alone.
- */
 class_cognitive: number
-/**
- * Path of the Angular template that contributed to the rollup.
- * External-template components use the `.html` template file path;
- * inline-template components use the owning `.ts` itself (since the
- * `<template>` finding for inline templates is anchored at the
- * component's `@Component` decorator on the same file). Stored
- * absolute internally; the JSON output strips it to project-relative
- * form via the global `strip_root_prefix` post-pass (as with every
- * other `PathBuf` field in this crate).
- */
 template_path: string
-/**
- * Cyclomatic complexity contributed by the template alone (control
- * flow on `*ngIf` / `*ngFor` / `@if` / `@for` / `@switch` etc.).
- */
 template_cyclomatic: number
-/**
- * Cognitive complexity contributed by the template alone (nesting +
- * branching penalty on the same constructs as `template_cyclomatic`).
- */
 template_cognitive: number
 }
 /**
@@ -2882,77 +2591,19 @@ target_path?: (string | null)
  * Summary statistics for the health report.
  */
 export interface HealthSummary {
-/**
- * Number of files analyzed.
- */
 files_analyzed: number
-/**
- * Total number of functions found.
- */
 functions_analyzed: number
-/**
- * Number of functions exceeding at least one threshold (before --top
- * truncation).
- */
 functions_above_threshold: number
-/**
- * Configured cyclomatic threshold.
- */
 max_cyclomatic_threshold: number
-/**
- * Configured cognitive threshold.
- */
 max_cognitive_threshold: number
-/**
- * Configured CRAP (Change Risk Anti-Patterns) score threshold. Functions
- * meeting or exceeding this score appear as findings with the `crap` and
- * optional `coverage_pct` fields populated.
- */
 max_crap_threshold: number
-/**
- * Number of files with health scores. Only present when --file-scores is
- * used. 0 indicates the flag was set but scoring failed.
- */
 files_scored?: (number | null)
-/**
- * Average maintainability index across all scored files (before --top
- * truncation). Only present when --file-scores is used and at least one
- * file was scored.
- */
 average_maintainability?: (number | null)
-/**
- * Coverage model used for CRAP score computation. 'static_estimated'
- * (default) uses per-function graph-based estimation from export
- * references: directly test-referenced = 85%, indirectly reachable = 40%,
- * untested = 0%. 'istanbul' uses real per-function statement coverage from
- * a coverage-final.json file (--coverage flag or auto-detected).
- * 'static_binary' is the legacy binary model. Only present when file
- * scores are computed.
- */
 coverage_model?: (CoverageModel | null)
-/**
- * Number of functions matched against Istanbul coverage data.
- * Only present when `coverage_model` is `istanbul`.
- */
 istanbul_matched?: (number | null)
-/**
- * Total functions that could potentially be matched.
- * Only present when `coverage_model` is `istanbul`.
- */
 istanbul_total?: (number | null)
-/**
- * Number of findings with critical severity (cognitive >= 40 or cyclomatic
- * >= 50).
- */
 severity_critical_count: number
-/**
- * Number of findings with high severity (cognitive 25-39 or cyclomatic
- * 30-49).
- */
 severity_high_count: number
-/**
- * Number of findings with moderate severity.
- */
 severity_moderate_count: number
 }
 /**
@@ -3103,173 +2754,43 @@ high_risk: number
  */
 very_high_risk: number
 }
-/**
- * Project-level health score. Score = 100 minus available penalties from dead
- * code, complexity, maintainability, hotspots, unused deps, circular deps,
- * unit size, coupling, and duplication. Missing metrics do not penalize;
- * --score computes the score and duplication penalty, while churn-backed
- * hotspot penalties require hotspot analysis (--hotspots, or --targets with
- * --score).
- */
 export interface HealthScore {
-/**
- * Health score formula version. Version 2 uses scale-invariant
- * density/tail metrics for monorepo-safe scoring.
- */
 formula_version: number
-/**
- * Overall score (0-100, higher is better). Reproducible: 100 -
- * sum(penalties) == score.
- */
 score: number
-/**
- * Letter grade. A: score >= 85, B: 70-84, C: 55-69, D: 40-54, F: below 40.
- */
 grade: string
 penalties: HealthScorePenalties
 }
 /**
  * Per-component penalty breakdown for the health score.
- *
- * Each field shows how many points were subtracted for that component.
- * `None` means the metric was not available (pipeline didn't run).
  */
 export interface HealthScorePenalties {
-/**
- * Points lost from dead files (max 15). Null if dead code pipeline not
- * run.
- */
 dead_files?: (number | null)
-/**
- * Points lost from dead exports (max 15). Null if dead code pipeline not
- * run.
- */
 dead_exports?: (number | null)
-/**
- * Points lost from critical-complexity density (max 20). Older snapshots
- * without density fields fall back to average cyclomatic complexity above
- * 1.5.
- */
 complexity: number
-/**
- * Points lost from legacy p90 cyclomatic complexity above 10. Current
- * scale-invariant runs report 0 because tail complexity is folded into
- * complexity.
- */
 p90_complexity: number
-/**
- * Points lost from low maintainability index density (max 15).
- */
 maintainability?: (number | null)
-/**
- * Points lost from top-percentile hotspot density (max 10). Null if
- * hotspots not computed.
- */
 hotspots?: (number | null)
-/**
- * Points lost from unused dependency density (max 25). Null if dead code
- * pipeline not run.
- */
 unused_deps?: (number | null)
-/**
- * Points lost from circular dependency density (max 25). Null if dead code
- * pipeline not run.
- */
 circular_deps?: (number | null)
-/**
- * Points lost from oversized-function density (max 10). Null if no
- * functions analyzed.
- */
 unit_size?: (number | null)
-/**
- * Points lost from coupling concentration density (max 5). Null if file
- * scores not computed.
- */
 coupling?: (number | null)
-/**
- * Points lost from code duplication (max 10). Penalty = min(max(0,
- * duplication_pct - 5) * 1, 10). Null if duplication pipeline not run.
- */
 duplication?: (number | null)
 }
 /**
  * Per-file health score combining complexity, coupling, and dead code metrics.
- *
- * Files with zero functions (barrel files, re-export files) are excluded by default.
- *
- * ## Maintainability Index Formula
- *
- * ```text
- * dampening = min(lines / 50, 1.0)
- * fan_out_penalty = min(ln(fan_out + 1) × 4, 15)
- * maintainability = 100
- *     - (complexity_density × 30 × dampening)
- *     - (dead_code_ratio × 20)
- *     - fan_out_penalty
- * ```
- *
- * Clamped to \[0, 100\]. Higher is better. The dampening factor prevents
- * complexity density from dominating the score on small files (< 50 lines).
- *
- * - **complexity_density**: total cyclomatic complexity / lines of code
- * - **dead_code_ratio**: fraction of value exports (excluding type-only exports) with zero references (0.0–1.0)
- * - **fan_out_penalty**: logarithmic scaling with cap at 15 points; reflects diminishing marginal risk of additional imports
  */
 export interface FileHealthScore {
-/**
- * File path (absolute; stripped to relative in output).
- */
 path: string
-/**
- * Number of files that import this file.
- */
 fan_in: number
-/**
- * Number of files this file imports.
- */
 fan_out: number
-/**
- * Fraction of value exports with zero references (0.0–1.0). Files with no value exports get 0.0.
- * Type-only exports (interfaces, type aliases) are excluded from both numerator and denominator
- * to avoid inflating the ratio for well-typed codebases that export props types alongside components.
- */
 dead_code_ratio: number
-/**
- * Total cyclomatic complexity / lines of code.
- */
 complexity_density: number
-/**
- * Weighted composite score (0–100, higher is better).
- */
 maintainability_index: number
-/**
- * Sum of cyclomatic complexity across all functions.
- */
 total_cyclomatic: number
-/**
- * Sum of cognitive complexity across all functions.
- */
 total_cognitive: number
-/**
- * Number of functions in this file.
- */
 function_count: number
-/**
- * Total lines of code (from line_offsets).
- */
 lines: number
-/**
- * Maximum CRAP score among functions in this file. Computed via the active
- * `coverage_model` per the canonical formula CC^2 * (1 - cov/100)^3 + CC
- * (Savoia & Evans, 2007). Coverage source: `static_estimated` (default,
- * graph-based per-function estimate), `istanbul` (real per-function
- * statement coverage from --coverage), or the legacy `static_binary`
- * (whole-file 0%/100%, retained for compatibility).
- */
 crap_max: number
-/**
- * Count of functions with CRAP >= 30 (CC >= 5 without test path).
- */
 crap_above_threshold: number
 }
 /**
@@ -3453,51 +2974,16 @@ comment?: (string | null)
  * test code.
  */
 export interface HotspotFinding {
-/**
- * File path (absolute; stripped to relative in output).
- */
 path: string
-/**
- * Hotspot score (0–100). Higher means more risk.
- */
 score: number
-/**
- * Number of commits in the analysis window.
- */
 commits: number
-/**
- * Recency-weighted commit count (exponential decay, half-life 90 days).
- */
 weighted_commits: number
-/**
- * Total lines added across all commits.
- */
 lines_added: number
-/**
- * Total lines deleted across all commits.
- */
 lines_deleted: number
-/**
- * Cyclomatic complexity / lines of code.
- */
 complexity_density: number
-/**
- * Number of files that import this file (blast radius).
- */
 fan_in: number
 trend: ChurnTrend
-/**
- * Ownership signals (bus factor, contributors, declared owner, drift).
- * Populated only when `--ownership` is requested.
- */
 ownership?: (OwnershipMetrics | null)
-/**
- * True when the file path matches a test/mock convention (e.g.
- * `** /__tests__/**`, `** /*.test.*`, `** /*.spec.*`, `** /__mocks__/**`).
- * Test files are intentionally included in hotspot ranking (test
- * maintenance IS real work), but tagging them lets consumers decide
- * whether to weight or filter them downstream.
- */
 is_test_path?: boolean
 /**
  * Machine-actionable refactor and review hints. Always populated;
@@ -3509,89 +2995,23 @@ is_test_path?: boolean
  */
 actions: HotspotAction[]
 }
-/**
- * Per-file ownership signals attached to hotspot entries when the user
- * passes `--ownership`. All fields are derived from git history and the
- * repository's CODEOWNERS file (if any).
- */
 export interface OwnershipMetrics {
-/**
- * Avelino truck factor: minimum contributors covering at least 50% of
- * recency-weighted commits in the analysis window. Lower = higher
- * knowledge-loss risk.
- */
 bus_factor: number
-/**
- * Distinct authors in the analysis window after bot filtering.
- */
 contributor_count: number
 top_contributor: ContributorEntry
-/**
- * Up to three additional contributors by share, ordered desc.
- * Useful for "who else could review this file" routing.
- */
 recent_contributors?: ContributorEntry[]
-/**
- * Contributors whose last touch is within 90 days, ordered by share
- * descending. First-class field so AI agents do not have to
- * reconstruct it from [`recent_contributors`](Self::recent_contributors)
- * filtered by [`ContributorEntry::stale_days`]. Excludes the top
- * contributor (they are the sole author being flagged); consumers
- * wanting the full list can union with `top_contributor`.
- */
 suggested_reviewers?: ContributorEntry[]
-/**
- * CODEOWNERS-resolved owner for this file, if a rule matched.
- * Only the primary (first) owner of the matched rule is reported.
- */
 declared_owner?: (string | null)
-/**
- * Tristate: `Some(true)` = CODEOWNERS file exists but no rule matches
- * this file; `Some(false)` = a CODEOWNERS rule matches; `None` = no
- * CODEOWNERS file was discovered for the repository (cannot determine).
- */
 unowned?: (boolean | null)
 ownership_state: OwnershipState
-/**
- * True when ownership has drifted from the original author to a new
- * top contributor. Pairs with [`drift_reason`](Self::drift_reason).
- */
 drift: boolean
-/**
- * Human-readable explanation of the drift, populated only when
- * [`drift`](Self::drift) is true.
- */
 drift_reason?: (string | null)
 }
-/**
- * Per-author contribution summary. The identifier is rendered per the
- * configured ownership.emailMode (handle, anonymized/hash, or raw); the format field
- * discriminates the modes so type-aware consumers can branch without
- * re-parsing.
- */
 export interface ContributorEntry {
-/**
- * Display string per the configured email mode: raw email
- * (`alice@example.com`), local-part handle (`alice`), or stable anonymized hash
- * pseudonym (`xxh3:<16hex>`). The format depends on `format`.
- *
- * Renamed from `email` because in `handle` and `anonymized`/`hash` modes the value
- * is no longer an email address; consumers tempted to use it as one
- * (e.g. `mailto:`) would be wrong.
- */
 identifier: string
 format: ContributorIdentifierFormat
-/**
- * Recency-weighted share of total weighted commits (0..1, three decimals).
- */
 share: number
-/**
- * Days since this contributor last touched the file.
- */
 stale_days: number
-/**
- * Total commits by this contributor in the analysis window.
- */
 commits: number
 }
 /**
@@ -3634,29 +3054,11 @@ suggested_pattern?: (string | null)
  */
 heuristic?: (HotspotActionHeuristic | null)
 }
-/**
- * Summary statistics for hotspot analysis.
- */
 export interface HotspotSummary {
-/**
- * Analysis window display string (e.g., "6 months").
- */
 since: string
-/**
- * Minimum commits threshold.
- */
 min_commits: number
-/**
- * Number of files with churn data meeting the threshold.
- */
 files_analyzed: number
-/**
- * Number of files excluded (below min_commits).
- */
 files_excluded: number
-/**
- * Whether the repository is a shallow clone.
- */
 shallow_clone: boolean
 }
 /**
@@ -4110,21 +3512,9 @@ auto_fixable: boolean
  * A function exceeding the very-high-risk size threshold (>60 LOC).
  */
 export interface LargeFunctionEntry {
-/**
- * Absolute file path.
- */
 path: string
-/**
- * Function name, or `"<anonymous>"` for unnamed functions/arrows.
- */
 name: string
-/**
- * 1-based line number.
- */
 line: number
-/**
- * Number of lines in the function.
- */
 line_count: number
 }
 /**
@@ -4443,181 +3833,51 @@ scope: string
  * fallow JSON-producing command.
  */
 export interface ExplainOutput {
-/**
- * Canonical rule id, for example `fallow/unused-export`.
- */
 id: string
-/**
- * Human-readable rule name.
- */
 name: string
-/**
- * Short one-line explanation of the issue.
- */
 summary: string
-/**
- * Why the issue matters and what fallow checks.
- */
 rationale: string
-/**
- * Concrete example of the finding.
- */
 example: string
-/**
- * Recommended fix or suppression guidance.
- */
 how_to_fix: string
-/**
- * Docs URL for the rule.
- */
 docs: string
 }
 /**
  * Envelope emitted by `fallow --format review-github` / `review-gitlab`.
- * Consumed by `action/scripts/review.sh` and `ci/scripts/review.sh` to
- * post inline PR / MR review comments.
  */
 export interface ReviewEnvelopeOutput {
-/**
- * GitHub review event. Omitted for GitLab.
- */
 event?: (ReviewEnvelopeEvent | null)
-/**
- * Review summary body (rendered above per-line comments). Deprecated in
- * v2 envelopes: prefer [`summary.body`](`ReviewEnvelopeSummary::body`),
- * which is byte-identical to this field but carries a stable
- * fingerprint for reconciliation. Kept on v2 emit so v1 consumers that
- * only look at `body` keep working.
- */
 body: string
 summary?: ReviewEnvelopeSummary
-/**
- * Per-line comments. Each is either a [`GitHubReviewComment`] or a
- * [`GitLabReviewComment`] depending on `meta.provider`.
- */
 comments: ReviewComment[]
-/**
- * Regex consumers run against every existing PR/MR comment body to
- * extract a fallow-emitted fingerprint marker. Capture group 1 is the
- * fingerprint string (a bare 16-char hex hash for single-finding
- * comments, or `<kind>:<16-char-hex>` for compositions such as
- * `merged:` for same-line collapsed comments).
- *
- * The pattern is anchored with `^` / `$` and relies on multiline
- * matching to anchor at line boundaries inside a multi-line comment
- * body. Multiline is NOT baked into the pattern via `(?m)` (which
- * JavaScript RegExp rejects as `Invalid group`); instead the consumer
- * passes [`Self::marker_regex_flags`] as the flags argument to its
- * regex engine. JavaScript: `new RegExp(env.marker_regex,
- * env.marker_regex_flags)`. Rust: `regex::RegexBuilder::new(pat)
- * .multi_line(flags.contains('m')).build()` (or any equivalent).
- */
 marker_regex?: string
-/**
- * Flags consumers pass alongside [`Self::marker_regex`] when
- * constructing their regex engine. Currently always `"m"` (multiline
- * so the anchored `^` / `$` match at every line boundary within a
- * comment body). Emitting flags as a separate field instead of
- * baking `(?m)` into the pattern keeps the wire compatible with
- * JavaScript RegExp, which rejects inline flag groups outside a
- * `(?flags:X)` grouping.
- */
 marker_regex_flags?: string
 meta: ReviewEnvelopeMeta
 }
 /**
- * Summary block on [`ReviewEnvelopeOutput`]. Always present on v2 emit;
- * `serde(default)` keeps schemars from marking it required so a future
- * Deserialize derivation against v1 historical input synthesizes an empty
- * value rather than erroring.
+ * Summary block on [`ReviewEnvelopeOutput`].
  */
 export interface ReviewEnvelopeSummary {
-/**
- * Markdown body of the summary. Byte-identical to the legacy top-level
- * [`ReviewEnvelopeOutput::body`] field; the duplication is intentional
- * so v1 consumers see no behavior change.
- */
 body: string
-/**
- * FNV-1a 64-bit hash (16 lowercase hex chars) of the summary body
- * BEFORE the trailing fallow-fingerprint marker line is appended.
- * (Computing the hash from the post-marker body would be circular:
- * the marker contains the fingerprint, so the fingerprint cannot
- * depend on the marker.) To reproduce from [`Self::body`], strip the
- * line matching [`ReviewEnvelopeOutput::marker_regex`] together with
- * its leading separator newlines and hash the remainder. Stable
- * across runs that produce the same summary content; consumers
- * upsert the sticky summary comment by matching this fingerprint
- * against the marker_regex extraction of every existing comment body.
- */
 fingerprint: string
 }
 /**
  * GitHub pull-request review comment.
  */
 export interface GitHubReviewComment {
-/**
- * File path the comment targets, repo-root relative.
- */
 path: string
-/**
- * 1-indexed line number the comment targets.
- */
 line: number
 side: GitHubReviewSide
-/**
- * Markdown body of the comment.
- */
 body: string
-/**
- * Stable fingerprint for the comment, used by `fallow ci
- * reconcile-review` to detect carryover comments across PR revisions.
- * For single-finding comments the value is a bare 16-char hex FNV-1a
- * hash. For merged comments (multiple findings on the same path:line)
- * the value is `merged:<16-char hex>` over the sorted constituent
- * fingerprints, so the identity shifts whenever constituent findings
- * change membership. Bundled wrappers and `fallow ci reconcile-review`
- * dedupe on this primary fingerprint only; consumers wanting
- * update-in-place reconciliation (preserving reviewer reply threads
- * across content changes) implement their own identity tracking via
- * `marker_regex`.
- */
 fingerprint: string
-/**
- * True when [`Self::body`] was truncated to fit a downstream provider's
- * note-size budget (today: 65,536 bytes). The body retains the closing
- * fallow-fingerprint marker so reconciliation continues to work after
- * truncation.
- *
- * Co-presence invariant: `truncated == true` always implies the body
- * contains an inline `<!-- fallow-truncated -->` HTML marker and the
- * `> Body truncated by fallow.` blockquote breadcrumb, and vice versa.
- * All three signals are emitted together; consumers may use any one
- * (the typed boolean is the authoritative machine-readable signal).
- */
 truncated?: boolean
 }
 /**
  * GitLab merge-request discussion comment.
  */
 export interface GitLabReviewComment {
-/**
- * Markdown body of the comment.
- */
 body: string
 position: GitLabReviewPosition
-/**
- * Stable fingerprint for the comment. See
- * [`GitHubReviewComment::fingerprint`] for the single vs `merged:`
- * shape contract; semantics are identical across providers.
- */
 fingerprint: string
-/**
- * True when [`Self::body`] was truncated to fit GitLab's note-size
- * budget. See [`GitHubReviewComment::truncated`] for the full
- * co-presence invariant with the inline HTML marker and human
- * blockquote breadcrumb.
- */
 truncated?: boolean
 }
 /**
@@ -4625,30 +3885,12 @@ truncated?: boolean
  * merge-request discussion-position API.
  */
 export interface GitLabReviewPosition {
-/**
- * Merge-request base SHA.
- */
 base_sha?: (string | null)
-/**
- * Merge-request start SHA.
- */
 start_sha?: (string | null)
-/**
- * Merge-request head SHA.
- */
 head_sha?: (string | null)
 position_type: GitLabReviewPositionType
-/**
- * File path on the base side.
- */
 old_path: string
-/**
- * File path on the head side.
- */
 new_path: string
-/**
- * 1-indexed line on the head side.
- */
 new_line: number
 }
 /**
@@ -4657,10 +3899,6 @@ new_line: number
 export interface ReviewEnvelopeMeta {
 schema: ReviewEnvelopeSchema
 provider: ReviewProvider
-/**
- * Check conclusion derived from the underlying findings. Emitted only
- * for GitHub envelopes today.
- */
 check_conclusion?: (ReviewCheckConclusion | null)
 }
 /**
@@ -4671,240 +3909,66 @@ check_conclusion?: (ReviewCheckConclusion | null)
 export interface ReviewReconcileOutput {
 schema: ReviewReconcileSchema
 provider: ReviewProvider
-/**
- * PR / MR target identifier supplied to `fallow ci reconcile-review`.
- * `null` when the command ran without an explicit target.
- */
 target?: (string | null)
-/**
- * Whether the reconcile ran in dry-run mode.
- */
 dry_run: boolean
-/**
- * Number of comments in the supplied review envelope.
- */
 comments: number
-/**
- * Total fingerprints discovered in the supplied envelope.
- */
 current_fingerprints: number
-/**
- * Existing fingerprints already posted on the PR / MR.
- */
 existing_fingerprints: number
-/**
- * Newly-introduced fingerprints (current minus existing).
- */
 new_fingerprints: number
-/**
- * Stale fingerprints (existing minus current).
- */
 stale_fingerprints: number
-/**
- * Identifiers of the new fingerprints (subset of comments).
- */
 new: string[]
-/**
- * Identifiers of the stale fingerprints (subset of existing).
- */
 stale: string[]
-/**
- * Optional warning when the provider API was unreachable or
- * auth-rejected. `null` on the happy path.
- */
 provider_warning?: (string | null)
-/**
- * Resolution comments actually posted (zero on dry runs).
- */
 resolution_comments_posted: number
-/**
- * Stale review threads actually resolved (zero on dry runs).
- */
 threads_resolved: number
-/**
- * Operator-facing retry hint when apply stopped early.
- */
 apply_hint?: (string | null)
-/**
- * Errors collected during apply, one entry per failure.
- */
 apply_errors: string[]
-/**
- * Stale fingerprints whose provider mutation failed.
- */
 failed_fingerprints?: string[]
-/**
- * Stale fingerprints not fully applied after the fail-fast stop.
- */
 unapplied_fingerprints?: string[]
 }
 /**
- * Envelope emitted by `fallow coverage setup --json`. Deterministic
- * agent-readable runtime coverage setup instructions. In workspaces,
- * `members` carries one entry per detected runtime package; `runtime_targets`
- * is the union of all member targets.
- *
- * Constructed at runtime by
- * `crates/cli/src/coverage/mod.rs::build_setup_envelope`; the wire is
- * `serde_json::to_value(&envelope)`. The drift gate keeps this struct
- * aligned with `docs/output-schema.json`.
+ * `fallow coverage setup --json` envelope.
  */
 export interface CoverageSetupOutput {
 schema_version: CoverageSetupSchemaVersion
 framework_detected: CoverageSetupFramework
-/**
- * Detected JavaScript package manager. `null` when none could be
- * resolved.
- */
 package_manager?: (CoverageSetupPackageManager | null)
-/**
- * Union of runtime targets across emitted members.
- */
 runtime_targets: CoverageSetupRuntimeTarget[]
-/**
- * Per-runtime-workspace setup recipes. Pure aggregator roots and
- * build-only library packages are omitted.
- */
 members: CoverageSetupMember[]
-/**
- * Always `null` today. Reserved for a future "config has been written
- * to disk" indicator.
- */
-config_written?: {
-[k: string]: unknown
-}
-/**
- * Shell commands the agent should run from the workspace root.
- */
+config_written?: unknown
 commands: string[]
-/**
- * Compatibility copy of the primary member's files, with workspace
- * prefixes when the primary member is not the root.
- */
 files_to_edit: CoverageSetupFileToEdit[]
-/**
- * Compatibility copy of the primary member's snippets, with workspace
- * prefixes when the primary member is not the root.
- */
 snippets: CoverageSetupSnippet[]
-/**
- * Optional Dockerfile RUN/COPY snippet to enable the beacon in
- * containerised deployments.
- */
 dockerfile_snippet?: (string | null)
-/**
- * Ordered next-step instructions for the agent / human operator.
- */
 next_steps: string[]
-/**
- * Non-fatal warnings raised during setup detection.
- */
 warnings: string[]
-/**
- * `_meta` block emitted only when `--explain` is passed.
- */
-_meta?: {
-[k: string]: unknown
+_meta?: unknown
 }
-}
-/**
- * Per-workspace setup recipe inside [`CoverageSetupOutput::members`].
- */
 export interface CoverageSetupMember {
-/**
- * Workspace package name (or root marker for single-package projects).
- */
 name: string
-/**
- * Workspace path relative to the analysed root, or `.` for the root
- * member.
- */
 path: string
 framework_detected: CoverageSetupFramework
-/**
- * Package manager detected for this member.
- */
 package_manager?: (CoverageSetupPackageManager | null)
-/**
- * Runtime targets supported by this member's framework.
- */
 runtime_targets: CoverageSetupRuntimeTarget[]
-/**
- * Files the agent should edit to wire in the beacon.
- */
 files_to_edit: CoverageSetupFileToEdit[]
-/**
- * Code snippets the agent should paste into the edited files.
- */
 snippets: CoverageSetupSnippet[]
-/**
- * Optional Dockerfile snippet specific to this member.
- */
 dockerfile_snippet?: (string | null)
-/**
- * Member-scoped warnings.
- */
 warnings: string[]
 }
-/**
- * Single file to edit inside [`CoverageSetupMember::files_to_edit`] or
- * [`CoverageSetupOutput::files_to_edit`].
- */
 export interface CoverageSetupFileToEdit {
-/**
- * Workspace-relative path to the file to edit.
- */
 path: string
-/**
- * Why the file needs editing (e.g. `"Mount the beacon middleware"`).
- */
 reason: string
 }
-/**
- * Single code snippet inside [`CoverageSetupMember::snippets`] or
- * [`CoverageSetupOutput::snippets`].
- */
 export interface CoverageSetupSnippet {
-/**
- * Short label identifying the snippet (used by the human renderer).
- */
 label: string
-/**
- * Workspace-relative path the snippet should be pasted into.
- */
 path: string
-/**
- * Snippet content (literal source text).
- */
 content: string
 }
-/**
- * Envelope emitted by `fallow coverage analyze --format json`.
- *
- * Focused runtime coverage analysis output. Local mode reads
- * `--runtime-coverage <path>`. Cloud mode requires explicit `--cloud` /
- * `--runtime-coverage-cloud` or `FALLOW_RUNTIME_COVERAGE_SOURCE=cloud`;
- * `FALLOW_API_KEY` alone does NOT select cloud mode.
- *
- * Constructed at runtime in
- * `crates/cli/src/coverage/analyze.rs::print_runtime_json`; the wire is
- * `serde_json::to_value(&envelope)`. The drift gate keeps this struct
- * aligned with `docs/output-schema.json`. Carries its own schema-version
- * discriminator ([`CoverageAnalyzeSchemaVersion`]) because runtime
- * coverage iterates independently of the main JSON contract version.
- */
 export interface CoverageAnalyzeOutput {
 schema_version: CoverageAnalyzeSchemaVersion
 version: ToolVersion
 elapsed_ms: ElapsedMs
 runtime_coverage: RuntimeCoverageReport
-/**
- * `_meta` block with metric / rule definitions, emitted when `--explain`
- * is passed. Populated via the post-pass injection in
- * `print_runtime_json` (matches the pattern used by every other typed
- * envelope; the typed struct sets this to `None` and the JSON layer
- * merges in the `crate::explain::coverage_analyze_meta()` payload).
- */
 _meta?: (Meta | null)
 }
 /**
@@ -4921,38 +3985,12 @@ boundaries: BoundariesListing
  * `boundaries` block carried by [`ListBoundariesOutput`].
  */
 export interface BoundariesListing {
-/**
- * `false` when the project has no `boundaries` configured; `true`
- * otherwise. When `false` every array below is empty and every count
- * is `0` (parity is enforced so consumers can read the counts without
- * first branching on this flag).
- */
 configured: boolean
-/**
- * Length of [`Self::zones`]; emitted alongside the array for parity
- * with `rule_count` / `logical_group_count`.
- */
 zone_count: number
-/**
- * Boundary zones after preset and `autoDiscover` expansion.
- */
 zones: BoundariesListZone[]
-/**
- * Length of [`Self::rules`].
- */
 rule_count: number
-/**
- * Boundary import rules, each `from -> allow[]`.
- */
 rules: BoundariesListRule[]
-/**
- * Length of [`Self::logical_groups`]. Always present (issue #373).
- */
 logical_group_count: number
-/**
- * Pre-expansion `autoDiscover` groups carrying the user-authored parent
- * name and grouping intent (issue #373).
- */
 logical_groups: BoundariesListLogicalGroup[]
 }
 /**
@@ -4960,18 +3998,8 @@ logical_groups: BoundariesListLogicalGroup[]
  * classifies files into a single zone via glob patterns.
  */
 export interface BoundariesListZone {
-/**
- * Zone identifier as referenced in rules (e.g. `app`, `features/auth`).
- */
 name: string
-/**
- * Compiled glob patterns. Children of an `autoDiscover` parent each
- * carry a single pattern like `src/features/auth/**`.
- */
 patterns: string[]
-/**
- * Number of discovered files classified into this zone.
- */
 file_count: number
 }
 /**
@@ -4981,14 +4009,7 @@ file_count: number
  * corresponding [`BoundariesListLogicalGroup::authored_rule`].
  */
 export interface BoundariesListRule {
-/**
- * Source zone the rule applies to.
- */
 from: string
-/**
- * Target zones [`Self::from`] is allowed to import from. Self-imports
- * are always allowed implicitly.
- */
 allow: string[]
 }
 /**
@@ -4998,75 +4019,28 @@ allow: string[]
  * would otherwise flatten it out of [`BoundariesListing::zones`].
  */
 export interface BoundariesListLogicalGroup {
-/**
- * Logical parent zone name as authored by the user.
- */
 name: string
-/**
- * Discovered child zone names in stable directory-sorted order.
- */
 children: string[]
-/**
- * Verbatim `autoDiscover` strings from the user's config (not
- * normalized) so round-trip tooling can match byte-for-byte.
- */
 auto_discover: string[]
 status: LogicalGroupStatus
-/**
- * Position of the parent zone in the user's pre-expansion `zones[]`.
- */
 source_zone_index: number
-/**
- * Sum of `file_count` across [`Self::children`] plus the fallback
- * zone's `file_count` when present.
- */
 file_count: number
-/**
- * Pre-expansion rule keyed on the parent name, when the user wrote
- * one.
- */
 authored_rule?: (AuthoredRule | null)
-/**
- * When the parent zone also carried explicit `patterns`, it stayed in
- * [`BoundariesListing::zones`] as a fallback classifier; this is its
- * name. Equal to [`Self::name`] when present.
- */
 fallback_zone?: (string | null)
-/**
- * Parent zone indices merged into this group when the user declared
- * the same parent name multiple times.
- */
 merged_from?: (number[] | null)
-/**
- * Echo of the parent zone's `root` (subtree scope) as the user wrote
- * it. `None` when the parent had no `root` field.
- */
 original_zone_root?: (string | null)
-/**
- * Parallel to [`Self::children`]: for child at index `i`, the index
- * into [`Self::auto_discover`] of the path that produced it. Empty
- * when only one path was authored (every child trivially maps to
- * index 0). `serde(default)` keeps the schema's `required` array in
- * step with the runtime's `skip_serializing_if` behavior.
- */
 child_source_indices?: number[]
 }
 /**
- * Pre-expansion `from`-rule preserved on a [`LogicalGroup`]. Surfaces the
- * user's original intent (`{ from: "features", allow: ["shared"] }`) even
- * after `expand_auto_discover` rewrote it into per-child rules
- * (`features/auth -> shared`, `features/billing -> shared`).
+ * Pre-expansion rule preserved on a [`LogicalGroup`].
  */
 export interface AuthoredRule {
 /**
- * Pre-expansion `allow` list as the user wrote it.
+ * Authored `allow` list.
  */
 allow: string[]
 /**
- * Pre-expansion `allowTypeOnly` list as the user wrote it. Omitted
- * from JSON output when empty; `serde(default)` keeps the derived
- * schema in lock-step (schemars 1 marks any field with a
- * `serde(default)` attribute as non-required).
+ * Authored `allowTypeOnly` list.
  */
 allow_type_only?: string[]
 }
@@ -5167,31 +4141,9 @@ health_trend?: (HealthTrend | null)
  * back to the report root.
  */
 actions_meta?: (HealthActionsMeta | null)
-/**
- * Resolver mode used when --group-by is active. Present only on grouped
- * output. The top-level `vital_signs`, `health_score`, and `summary` keep
- * the active run scope (for example after --workspace); per-group versions
- * live inside each entry of `groups`.
- */
 grouped_by?: (GroupByMode | null)
-/**
- * Per-group health output, present only when `--group-by` is active.
- * Each group recomputes its own `vital_signs` and `health_score` from
- * the files in that group, mirroring how `--workspace` scopes a single
- * subset.
- */
 groups?: (HealthGroup[] | null)
-/**
- * `_meta` block with metric / rule definitions, emitted when `--explain`
- * is passed (always present in MCP responses).
- */
 _meta?: (Meta | null)
-/**
- * Workspace-discovery diagnostics surfaced during config load
- * (issue #473). Mirror of [`CheckOutput::workspace_diagnostics`] so
- * stand-alone `fallow health --format json` consumers see the same
- * signal.
- */
 workspace_diagnostics?: WorkspaceDiagnostic[]
 }
 /**
@@ -5281,19 +4233,15 @@ targets?: RefactoringTargetFinding[]
 actions_meta?: (HealthActionsMeta | null)
 }
 /**
- * Envelope emitted by `fallow dupes --format json` (plus the `dupes` block
- * inside the combined and audit envelopes).
+ * Wire-shape payload for `fallow dupes --format json` (the body that
+ * flattens into [`crate::output_envelope::DupesOutput`] and is also
+ * emitted under the `dupes` / `duplication` key inside the combined and
+ * audit envelopes).
  *
- * The body is the typed [`DupesReportPayload`] flattened into the envelope
- * so the wire shape stays `{ schema_version, version, elapsed_ms,
- * clone_groups, clone_families, stats, ... }` exactly as the existing JSON
- * layer emits. The payload's `clone_groups` and `clone_families` carry
- * typed [`crate::output_dupes::CloneGroupFinding`] /
- * [`crate::output_dupes::CloneFamilyFinding`] wrappers so the `actions[]`
- * field is part of the schema-derived contract.
- * `grouped_by` / `groups` / `total_issues` are populated by the grouped
- * builder; on the ungrouped path they stay `None` and `skip_serializing_if`
- * drops them.
+ * Mirrors [`DuplicationReport`] field-for-field, except `clone_groups`
+ * and `clone_families` carry the typed wrapper envelopes instead of bare
+ * findings, so the schema (and any TS / agent consumer) sees the typed
+ * `actions[]` natively.
  */
 export interface DupesOutput {
 schema_version: SchemaVersion
@@ -5318,29 +4266,8 @@ clone_families: CloneFamilyFinding[]
  */
 mirrored_directories?: MirroredDirectory[]
 stats: DuplicationStats
-/**
- * Resolver mode used for partitioning. Present only when `--group-by` is
- * active.
- */
 grouped_by?: (GroupByMode | null)
-/**
- * Total clone groups across all buckets when `--group-by` is active.
- * Mirrors the grouped check / health envelopes which expose
- * `total_issues` so MCP and CI consumers can read the same key across
- * commands.
- */
 total_issues?: (number | null)
-/**
- * Per-group buckets when `--group-by` is active. Each clone group is
- * attributed to its largest-owner key (most instances; alphabetical
- * tiebreak). Sort: most clone groups first, then alphabetical, with
- * `(unowned)` pinned last.
- *
- * Each bucket's `clone_groups` and `clone_families` carry the typed
- * finding wrappers ([`crate::output_dupes::AttributedCloneGroupFinding`],
- * [`crate::output_dupes::CloneFamilyFinding`]) so the `actions[]`
- * augmentation is part of the schema-derived contract.
- */
 groups?: (DuplicationGroup[] | null)
 /**
  * `_meta` block with metric / rule definitions, emitted when `--explain`
@@ -5466,19 +4393,8 @@ schema_version: SchemaVersion
 version: ToolVersion
 elapsed_ms: ElapsedMs
 grouped_by: GroupByMode
-/**
- * Total number of issues across all groups.
- */
 total_issues: number
-/**
- * One entry per group; each contains the same issue arrays as
- * `CheckOutput` plus the group key and per-group total.
- */
 groups: CheckGroupedEntry[]
-/**
- * `_meta` block with metric / rule definitions, emitted when `--explain`
- * is passed.
- */
 _meta?: (Meta | null)
 }
 /**
@@ -5487,23 +4403,8 @@ _meta?: (Meta | null)
  * `AnalysisResults`.
  */
 export interface CheckGroupedEntry {
-/**
- * Group identifier produced by the resolver. For `package` grouping:
- * workspace package name. For `owner` grouping: the CODEOWNERS team.
- * For `directory` grouping: the top-level directory prefix. For
- * `section` grouping: the GitLab CODEOWNERS section name (or
- * `(no section)` / `(unowned)` for unmatched files).
- */
 key: string
-/**
- * Section default owners (GitLab CODEOWNERS `[Section] @owner1
- * @owner2`). Emitted only when `grouped_by` is `section`. Empty for
- * the `(no section)` and `(unowned)` buckets.
- */
 owners?: (string[] | null)
-/**
- * Total number of issues in this group.
- */
 total_issues: number
 /**
  * Files not reachable from any entry point. Wrapped in
@@ -5746,101 +4647,34 @@ total_delta: number
 previous_total: number
 current_total: number
 }
-/**
- * A blocked-then-cleared containment: fallow stopped a commit until it was fixed.
- */
 export interface ContainmentEvent {
 blocked_at: string
 cleared_at: string
 git_sha?: (string | null)
 blocked_counts: ImpactCounts
 }
-/**
- * A genuinely-resolved finding, recorded for the recent-resolutions display.
- */
 export interface ResolutionEvent {
-/**
- * The resolved finding's kind, kebab-case (e.g. `"unused-export"`).
- */
 kind: string
-/**
- * Workspace-relative, forward-slash path of the file the finding was in.
- */
 path: string
-/**
- * The finding's symbol (export / member / dependency name), when it has
- * one. `None` for file-level and content-hash-keyed findings (duplication).
- */
 symbol?: (string | null)
-/**
- * Short git SHA of the run that recorded the resolution, when in a git repo.
- */
 git_sha?: (string | null)
-/**
- * ISO-8601 timestamp of the recording run.
- */
 timestamp: string
 }
 /**
- * Envelope emitted by bare `fallow --format json` (the combined
- * invocation). Wraps the per-analysis sub-results inside a single envelope
- * with the standard `schema_version` / `version` / `elapsed_ms` header.
- *
- * Each sub-result is `Option<...>` so `--only` / `--skip` can suppress a
- * pass without leaving an empty key on the wire. The `check` sub-result is
- * the full [`CheckOutput`] envelope (including its own `schema_version` /
- * `version` / `elapsed_ms`), `dupes` is the typed [`DupesReportPayload`]
- * emitted via `crate::output_dupes::DupesReportPayload::from_report`, and
- * `health` is the bare [`HealthReport`] body: the runtime emit calls
- * `serde_json::to_value(&report)` directly rather than wrapping it in the
- * per-command envelope. The committed schema points `dupes` at
- * `#/definitions/DupesReportPayload` and `health` at
- * `#/definitions/HealthReport` so the documented shape matches the
- * wire; the `committed_property_refs_match_derived_property_refs`
- * drift test enforces the alignment.
+ * Bare `fallow --format json` envelope.
  */
 export interface CombinedOutput {
 schema_version: SchemaVersion
 version: ToolVersion
 elapsed_ms: ElapsedMs
-/**
- * Sectioned `_meta` block emitted only when `--explain` is passed.
- * Contains `check`, `dupes`, and/or `health` keys matching the analyses
- * enabled for the combined run.
- */
 _meta?: (CombinedMeta | null)
-/**
- * Dead-code analysis sub-envelope. Absent when `--skip check`.
- */
 check?: (CheckOutput | null)
-/**
- * Duplication analysis body (typed [`DupesReportPayload`], not the full
- * `DupesOutput` envelope). Absent when `--skip dupes`. The payload
- * wraps each clone group / family with its typed `actions[]` array via
- * `crate::output_dupes::DupesReportPayload::from_report`.
- */
 dupes?: (DupesReportPayload | null)
-/**
- * Complexity analysis body (bare `HealthReport`, not the full
- * `HealthOutput` envelope). Absent when `--skip health`.
- */
 health?: (HealthReport | null)
 }
-/**
- * Sectioned `_meta` block for the bare combined JSON envelope.
- */
 export interface CombinedMeta {
-/**
- * Dead-code metadata from `crate::explain::check_meta()`.
- */
 check?: (Meta | null)
-/**
- * Duplication metadata from `crate::explain::dupes_meta()`.
- */
 dupes?: (Meta | null)
-/**
- * Health metadata from `crate::explain::health_meta()`.
- */
 health?: (Meta | null)
 }
 /**
@@ -5848,23 +4682,10 @@ health?: (Meta | null)
  */
 export interface CodeClimateIssue {
 type: CodeClimateIssueKind
-/**
- * Fallow rule identifier (always starts with `fallow/`).
- */
 check_name: string
-/**
- * Human-readable description of the finding.
- */
 description: string
-/**
- * Free-form categories applied by the report renderer.
- */
 categories: string[]
 severity: CodeClimateSeverity
-/**
- * Stable fingerprint used by CI dashboards to deduplicate findings
- * across runs.
- */
 fingerprint: string
 location: CodeClimateLocation
 }
