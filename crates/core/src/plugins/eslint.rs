@@ -523,9 +523,10 @@ fn resolve_eslint_extends_name(name: &str) -> Option<String> {
     } else if let Some(rest) = name.strip_prefix("plugin:") {
         let plugin_name = rest.split('/').next()?;
         Some(resolve_eslint_plugin_name(plugin_name))
-    } else if name.starts_with("eslint-config-") || name.contains("/eslint-config") {
-        Some(name.to_string())
-    } else if name.starts_with('@') {
+    } else if name.starts_with("eslint-config-")
+        || name.contains("/eslint-config")
+        || name.starts_with('@')
+    {
         Some(name.to_string())
     } else {
         Some(format!("eslint-config-{name}"))

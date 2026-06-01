@@ -346,8 +346,6 @@ fn expand_patterns_to_workspaces(
     for pattern in &positive {
         let glob_pattern = if pattern.ends_with('/') {
             format!("{pattern}*")
-        } else if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('{') {
-            (*pattern).clone()
         } else {
             (*pattern).clone()
         };

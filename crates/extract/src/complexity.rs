@@ -163,12 +163,8 @@ impl<'a> ComplexityVisitor<'a> {
     fn handle_logical_operator(&mut self, op: LogicalOperator) {
         if let Some(frame) = self.stack.last_mut() {
             match frame.last_logical_operator {
-                None => {
-                    frame.cognitive = frame.cognitive.saturating_add(1);
-                    frame.last_logical_operator = Some(op);
-                }
                 Some(prev) if prev == op => {}
-                Some(_) => {
+                None | Some(_) => {
                     frame.cognitive = frame.cognitive.saturating_add(1);
                     frame.last_logical_operator = Some(op);
                 }
@@ -404,10 +400,8 @@ impl<'ast> Visit<'ast> for ComplexityVisitor<'_> {
 
         self.visit_expression(&expr.right);
 
-        if !Self::is_nested_logical(&expr.right) {
-            if !Self::is_nested_logical(&expr.left) {
-                self.reset_logical_operator();
-            }
+        if !Self::is_nested_logical(&expr.right) && !Self::is_nested_logical(&expr.left) {
+            self.reset_logical_operator();
         }
     }
 

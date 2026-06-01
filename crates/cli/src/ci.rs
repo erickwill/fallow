@@ -1406,10 +1406,13 @@ mod tests {
         let comment = serde_json::json!({
             "user": { "type": "User", "login": "fallow-bot-account" },
         });
+        // SAFETY: This test owns the FALLOW_BOT_LOGIN override and clears it
+        // before returning.
         unsafe {
             std::env::set_var("FALLOW_BOT_LOGIN", "fallow-bot-account");
         }
         assert!(is_github_bot_comment(&comment));
+        // SAFETY: Restore the process environment after the scoped override.
         unsafe {
             std::env::remove_var("FALLOW_BOT_LOGIN");
         }

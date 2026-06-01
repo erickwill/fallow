@@ -817,6 +817,7 @@ fn try_extract_property_callback_import<'a, 'b>(
 }
 
 #[must_use]
+/// Recursively unwrap an expression until it reaches an import expression.
 pub fn extract_import_expression<'a, 'b>(
     expr: &'b Expression<'a>,
 ) -> Option<&'b ImportExpression<'a>> {
@@ -847,6 +848,7 @@ fn try_extract_arrow_wrapped_import<'a, 'b>(
 }
 
 #[must_use]
+/// Extract an import expression from a return statement body.
 pub fn extract_import_from_return_body<'a, 'b>(
     stmts: &'b [Statement<'a>],
 ) -> Option<&'b ImportExpression<'a>> {
@@ -862,6 +864,7 @@ pub fn extract_import_from_return_body<'a, 'b>(
 }
 
 #[must_use]
+/// Extract an import expression from a callable expression body.
 pub fn extract_import_from_callable<'a, 'b>(
     expr: &'b Expression<'a>,
 ) -> Option<&'b ImportExpression<'a>> {

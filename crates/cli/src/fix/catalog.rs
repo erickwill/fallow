@@ -524,8 +524,6 @@ fn rewrite_empty_catalog_parents(
             .map(|(range, _)| {
                 if range.end <= parent_pre_idx {
                     range.end - range.start
-                } else if range.start <= parent_pre_idx {
-                    0
                 } else {
                     0
                 }

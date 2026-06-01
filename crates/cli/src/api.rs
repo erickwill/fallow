@@ -616,6 +616,8 @@ mod tests {
     #[expect(unsafe_code, reason = "env var mutation requires unsafe")]
     fn ca_bundle_read_errors_are_reported_as_client_setup_errors() {
         let prior = std::env::var(CA_BUNDLE_ENV).ok();
+        // SAFETY: This test owns the CA_BUNDLE_ENV mutation and restores the
+        // previous value before returning.
         unsafe {
             std::env::set_var(CA_BUNDLE_ENV, "/definitely/missing/fallow-ca.pem");
         }
@@ -623,6 +625,8 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains(CA_BUNDLE_ENV));
         assert!(message.contains("failed to read PEM bundle"));
+        // SAFETY: Restore the process environment to the value captured before
+        // the test mutation.
         unsafe {
             if let Some(value) = prior {
                 std::env::set_var(CA_BUNDLE_ENV, value);
@@ -822,6 +826,8 @@ mod tests {
     fn api_url_respects_env_override_and_default() {
         let prior = std::env::var("FALLOW_API_URL").ok();
 
+        // SAFETY: This test owns the FALLOW_API_URL mutation while validating
+        // default URL behavior.
         unsafe {
             std::env::remove_var("FALLOW_API_URL");
         }
@@ -830,6 +836,7 @@ mod tests {
             "https://api.fallow.cloud/v1/coverage/repo/inventory",
         );
 
+        // SAFETY: Set a scoped override for this test case only.
         unsafe {
             std::env::set_var("FALLOW_API_URL", "http://127.0.0.1:3000/");
         }
@@ -838,6 +845,8 @@ mod tests {
             "http://127.0.0.1:3000/v1/coverage/a/inventory",
         );
 
+        // SAFETY: Restore the process environment to the value captured before
+        // the test mutation.
         unsafe {
             if let Some(value) = prior {
                 std::env::set_var("FALLOW_API_URL", value);

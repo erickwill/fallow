@@ -138,9 +138,7 @@ pub fn advance_past_package_manager(tokens: &[&str], mut idx: usize) -> Option<u
         let subcmd = tokens[idx];
         if subcmd == "exec" || subcmd == "x" {
             idx += 1;
-        } else if matches!(subcmd, "run" | "run-script") {
-            return None;
-        } else if !saw_runtime_flag {
+        } else if matches!(subcmd, "run" | "run-script") || !saw_runtime_flag {
             return None;
         }
     } else if matches!(token, "yarn" | "pnpm" | "npm") {
@@ -148,8 +146,6 @@ pub fn advance_past_package_manager(tokens: &[&str], mut idx: usize) -> Option<u
             let subcmd = tokens[idx + 1];
             if subcmd == "exec" || subcmd == "dlx" {
                 idx += 2;
-            } else if matches!(subcmd, "run" | "run-script") {
-                return None;
             } else {
                 return None;
             }

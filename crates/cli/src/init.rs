@@ -398,9 +398,7 @@ fn ensure_gitignore(root: &Path) {
     }
 
     let is_new = existing.is_empty();
-    let entry = if is_new {
-        ".fallow/\n"
-    } else if existing.ends_with('\n') {
+    let entry = if is_new || existing.ends_with('\n') {
         ".fallow/\n"
     } else {
         "\n.fallow/\n"

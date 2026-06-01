@@ -175,14 +175,19 @@ async fn run_fallow_stderr_is_trimmed_in_error_message() {
 #[test]
 #[expect(unsafe_code, reason = "env var mutation requires unsafe")]
 fn resolve_binary_behavior() {
+    // SAFETY: These tests intentionally mutate the process environment to
+    // prove the binary resolver respects the override and reset paths.
     unsafe { std::env::remove_var("FALLOW_BIN") };
     let bin = resolve_binary();
     assert!(bin.contains("fallow"));
 
+    // SAFETY: Restore the override to validate that resolve_binary reads the
+    // custom path and does not cache the prior unset state.
     unsafe { std::env::set_var("FALLOW_BIN", "/custom/path/fallow") };
     let bin = resolve_binary();
     assert_eq!(bin, "/custom/path/fallow");
 
+    // SAFETY: Leave the environment clean for the rest of the test suite.
     unsafe { std::env::remove_var("FALLOW_BIN") };
 }
 

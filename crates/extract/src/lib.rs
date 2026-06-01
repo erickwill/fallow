@@ -26,6 +26,7 @@ mod source_map;
 pub mod suppress;
 pub(crate) mod template_complexity;
 mod template_usage;
+/// Visitor utilities for AST extraction.
 pub mod visitor;
 
 use std::path::Path;
@@ -201,15 +202,15 @@ fn parse_single_file_cached(
     {
         let mt = mtime_secs(&metadata);
         let sz = metadata.len();
-        if let Some(cached) = store.get_by_metadata(&file.path, mt, sz) {
-            if !need_complexity || !cached.complexity.is_empty() {
-                cache_hits.fetch_add(1, Ordering::Relaxed);
-                return Some(cache::cached_to_module_opts(
-                    cached,
-                    file.id,
-                    need_complexity,
-                ));
-            }
+        if let Some(cached) = store.get_by_metadata(&file.path, mt, sz)
+            && (!need_complexity || !cached.complexity.is_empty())
+        {
+            cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Some(cache::cached_to_module_opts(
+                cached,
+                file.id,
+                need_complexity,
+            ));
         }
     }
 

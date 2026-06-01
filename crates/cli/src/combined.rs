@@ -1081,33 +1081,31 @@ fn print_orientation_header(
                 )
                 .dimmed()
             );
+        } else if let Some(top) = health
+            .report
+            .targets
+            .iter()
+            .find(|t| !is_test_path(&t.path))
+        {
+            let file_name = report::format_display_path(&top.path, root);
+            eprintln!(
+                "{}",
+                format!(
+                    "  {target_count} refactoring target{} \u{2014} start with {file_name} ({})",
+                    if target_count == 1 { "" } else { "s" },
+                    top.category.label()
+                )
+                .dimmed()
+            );
         } else {
-            if let Some(top) = health
-                .report
-                .targets
-                .iter()
-                .find(|t| !is_test_path(&t.path))
-            {
-                let file_name = report::format_display_path(&top.path, root);
-                eprintln!(
-                    "{}",
-                    format!(
-                        "  {target_count} refactoring target{} \u{2014} start with {file_name} ({})",
-                        if target_count == 1 { "" } else { "s" },
-                        top.category.label()
-                    )
-                    .dimmed()
-                );
-            } else {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "  {target_count} refactoring target{}",
-                        if target_count == 1 { "" } else { "s" },
-                    )
-                    .dimmed()
-                );
-            }
+            eprintln!(
+                "{}",
+                format!(
+                    "  {target_count} refactoring target{}",
+                    if target_count == 1 { "" } else { "s" },
+                )
+                .dimmed()
+            );
         }
     }
 }
