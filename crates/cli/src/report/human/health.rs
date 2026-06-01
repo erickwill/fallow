@@ -1081,31 +1081,38 @@ fn crap_coverage_note(report: &crate::health_types::HealthReport) -> Option<Stri
         return None;
     }
 
-    match report.summary.coverage_model {
-        Some(crate::health_types::CoverageModel::Istanbul) => {
-            let match_info = match (
-                report.summary.istanbul_matched,
-                report.summary.istanbul_total,
-            ) {
-                (Some(matched), Some(total)) if total > 0 && matched < total => {
-                    return Some(format!(
-                        "CRAP scores use Istanbul coverage where matched ({matched}/{total} functions); unmatched functions are estimated from export references."
-                    ));
-                }
-                (Some(matched), Some(total)) if total > 0 => {
-                    format!(" ({matched}/{total} functions matched)")
-                }
-                _ => String::new(),
-            };
-            Some(format!("CRAP scores use Istanbul coverage data{match_info}."))
-        }
-        Some(crate::health_types::CoverageModel::StaticEstimated)
-        | Some(crate::health_types::CoverageModel::StaticBinary)
-        | None => Some(
-            "CRAP scores are estimated from export references; run `fallow health --coverage <coverage-final.json>` for exact scores."
-                .to_string(),
-        ),
+    let istanbul_counts = (
+        report.summary.istanbul_matched,
+        report.summary.istanbul_total,
+    );
+    let has_istanbul_counts = matches!(istanbul_counts, (Some(_), Some(total)) if total > 0);
+
+    if matches!(
+        report.summary.coverage_model,
+        Some(crate::health_types::CoverageModel::Istanbul)
+    ) || has_istanbul_counts
+    {
+        let match_info = match (
+            report.summary.istanbul_matched,
+            report.summary.istanbul_total,
+        ) {
+            (Some(matched), Some(total)) if total > 0 && matched < total => {
+                return Some(format!(
+                    "CRAP scores use Istanbul coverage where matched ({matched}/{total} functions); unmatched functions are estimated from export references."
+                ));
+            }
+            (Some(matched), Some(total)) if total > 0 => {
+                format!(" ({matched}/{total} functions matched)")
+            }
+            _ => String::new(),
+        };
+        return Some(format!("CRAP scores use Istanbul coverage data{match_info}."));
     }
+
+    Some(
+        "CRAP scores are estimated from export references; run `fallow health --coverage <coverage-final.json>` for exact scores."
+            .to_string(),
+    )
 }
 
 /// Detect likely generated code based on function name patterns.
@@ -2173,6 +2180,51 @@ mod tests {
                 "CRAP scores use Istanbul coverage where matched (1/2 functions); unmatched functions are estimated"
             ),
             "mixed Istanbul note missing from output: {text}"
+        );
+    }
+
+    #[test]
+    fn health_findings_explain_istanbul_counts_without_summary_model() {
+        let root = PathBuf::from("/project");
+        let report = crate::health_types::HealthReport {
+            findings: vec![
+                crate::health_types::ComplexityViolation {
+                    path: root.join("src/risky.ts"),
+                    name: "risky".to_string(),
+                    line: 7,
+                    col: 0,
+                    cyclomatic: 25,
+                    cognitive: 20,
+                    line_count: 80,
+                    param_count: 0,
+                    exceeded: crate::health_types::ExceededThreshold::Crap,
+                    severity: crate::health_types::FindingSeverity::High,
+                    crap: Some(45.0),
+                    coverage_pct: None,
+                    coverage_tier: Some(crate::health_types::CoverageTier::None),
+                    coverage_source: Some(crate::health_types::CoverageSource::Estimated),
+                    inherited_from: None,
+                    component_rollup: None,
+                }
+                .into(),
+            ],
+            summary: crate::health_types::HealthSummary {
+                files_analyzed: 1,
+                functions_analyzed: 2,
+                functions_above_threshold: 1,
+                coverage_model: None,
+                istanbul_matched: Some(1),
+                istanbul_total: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let text = plain(&build_health_human_lines(&report, &root));
+        assert!(
+            text.contains(
+                "CRAP scores use Istanbul coverage where matched (1/2 functions); unmatched functions are estimated"
+            ),
+            "Istanbul counts should drive the note even when coverage_model is omitted: {text}"
         );
     }
 
