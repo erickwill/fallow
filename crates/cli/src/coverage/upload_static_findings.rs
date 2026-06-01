@@ -1039,4 +1039,88 @@ mod tests {
             .expect("run git");
         assert!(status.success(), "git {args:?} failed");
     }
+
+    fn project_with_unused_export() -> TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"sf","main":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("src/index.ts"), "export const used = 1;\n").unwrap();
+        // An unreferenced file/export gives the analysis something to report.
+        std::fs::write(root.join("src/orphan.ts"), "export const orphan = 2;\n").unwrap();
+        dir
+    }
+
+    fn dry_run_args() -> UploadStaticFindingsArgs {
+        UploadStaticFindingsArgs {
+            project_id: Some("acme/web".to_owned()),
+            git_sha: Some("abcdef1".to_owned()),
+            api_endpoint: Some("http://localhost:3000".to_owned()),
+            allow_dirty: true,
+            dry_run: true,
+            ..UploadStaticFindingsArgs::default()
+        }
+    }
+
+    #[test]
+    fn run_dry_run_analyzes_and_exits_zero() {
+        let project = project_with_unused_export();
+        // Explicit project_id + git_sha keep this env- and git-free.
+        let code = run(&dry_run_args(), project.path());
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn into_exit_maps_variants_and_soft_fails_transient_when_opted_in() {
+        assert_eq!(
+            UploadError::Validation("v".to_owned()).into_exit(false),
+            ExitCode::from(EXIT_VALIDATION)
+        );
+        assert_eq!(
+            UploadError::PayloadTooLarge("p".to_owned()).into_exit(false),
+            ExitCode::from(EXIT_PAYLOAD_TOO_LARGE)
+        );
+        assert_eq!(
+            UploadError::AuthRejected("a".to_owned()).into_exit(false),
+            ExitCode::from(EXIT_AUTH_REJECTED)
+        );
+        assert_eq!(
+            UploadError::ServerError("s".to_owned()).into_exit(false),
+            ExitCode::from(EXIT_SERVER_ERROR)
+        );
+        assert_eq!(
+            UploadError::Network("n".to_owned()).into_exit(false),
+            ExitCode::from(NETWORK_EXIT_CODE)
+        );
+        // Only transient failures soft-fail under --ignore-upload-errors.
+        assert_eq!(
+            UploadError::ServerError("s".to_owned()).into_exit(true),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            UploadError::Network("n".to_owned()).into_exit(true),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn resolve_git_sha_validates_explicit_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let with_sha = |sha: &str| UploadStaticFindingsArgs {
+            git_sha: Some(sha.to_owned()),
+            ..UploadStaticFindingsArgs::default()
+        };
+        assert_eq!(
+            resolve_git_sha(&with_sha("abcdef1"), root).unwrap(),
+            "abcdef1"
+        );
+        assert!(resolve_git_sha(&with_sha(""), root).is_err());
+        assert!(resolve_git_sha(&with_sha(&"a".repeat(GIT_SHA_MAX_LEN + 1)), root).is_err());
+        assert!(resolve_git_sha(&with_sha("bad sha!"), root).is_err());
+    }
 }
