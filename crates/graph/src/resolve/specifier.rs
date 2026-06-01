@@ -947,7 +947,7 @@ fn try_style_condition_package_resolution(
         return Some(ResolveResult::InternalModule(file_id));
     }
 
-    if let Some(pkg_name) = extract_package_name_from_node_modules_path(resolved_path)
+    if let Some(pkg_name) = package_usage_name_for_resolved_package(specifier, resolved_path)
         && !ctx.workspace_roots.contains_key(pkg_name.as_str())
     {
         return Some(ResolveResult::NpmPackage(pkg_name));
@@ -970,7 +970,7 @@ fn try_style_condition_package_resolution(
         {
             return Some(ResolveResult::InternalModule(file_id));
         }
-        if let Some(pkg_name) = extract_package_name_from_node_modules_path(&canonical)
+        if let Some(pkg_name) = package_usage_name_for_resolved_package(specifier, &canonical)
             && !ctx.workspace_roots.contains_key(pkg_name.as_str())
         {
             return Some(ResolveResult::NpmPackage(pkg_name));
@@ -978,9 +978,32 @@ fn try_style_condition_package_resolution(
         return Some(ResolveResult::ExternalFile(canonical));
     }
 
-    extract_package_name_from_node_modules_path(resolved_path)
+    package_usage_name_for_resolved_package(specifier, resolved_path)
         .map(ResolveResult::NpmPackage)
         .or_else(|| Some(ResolveResult::ExternalFile(resolved_path.to_path_buf())))
+}
+
+/// Package-usage key for an import that resolved into `node_modules`.
+///
+/// pnpm can install a package under a declared name (e.g. `unstorage`) symlinked
+/// to a `.pnpm` store whose inner package has a different "source" name (e.g.
+/// `unstorage-nightly`). For a plain bare specifier we credit the declared import
+/// name so `unused-dependency` / `unlisted-dependency` accounting matches what the
+/// user wrote in `package.json`, not the on-disk source package. Path aliases that
+/// happen to be bare (Node.js `#imports`, `~/`, `@/`, PascalCase scopes) are
+/// excluded: they can map to an external package whose real name is only recoverable
+/// from the resolved path, so they keep the resolved-package name. Returns `None`
+/// when the path is not inside a `node_modules` directory.
+pub(super) fn package_usage_name_for_resolved_package(
+    specifier: &str,
+    resolved_path: &Path,
+) -> Option<String> {
+    let resolved_package = extract_package_name_from_node_modules_path(resolved_path)?;
+    if is_bare_specifier(specifier) && !is_path_alias(specifier) {
+        Some(extract_package_name(specifier))
+    } else {
+        Some(resolved_package)
+    }
 }
 
 /// Resolve a single import specifier to a target.
@@ -1136,7 +1159,8 @@ pub(super) fn resolve_specifier(
                     .as_encoded_bytes()
                     .windows(7)
                     .any(|w| w == b"/.pnpm/" || w == b"\\.pnpm\\")
-                && let Some(pkg_name) = extract_package_name_from_node_modules_path(resolved_path)
+                && let Some(pkg_name) =
+                    package_usage_name_for_resolved_package(specifier, resolved_path)
                 && !ctx.workspace_roots.contains_key(pkg_name.as_str())
             {
                 return if should_preserve_node_modules_style_file(
@@ -1165,7 +1189,7 @@ pub(super) fn resolve_specifier(
                     {
                         ResolveResult::InternalModule(file_id)
                     } else if let Some(pkg_name) =
-                        extract_package_name_from_node_modules_path(&canonical)
+                        package_usage_name_for_resolved_package(specifier, &canonical)
                     {
                         if ctx.workspace_roots.contains_key(pkg_name.as_str())
                             && let Some(result) = try_workspace_package_fallback(ctx, specifier)
@@ -1192,7 +1216,7 @@ pub(super) fn resolve_specifier(
                     ) {
                         ResolveResult::InternalModule(file_id)
                     } else if let Some(pkg_name) =
-                        extract_package_name_from_node_modules_path(resolved_path)
+                        package_usage_name_for_resolved_package(specifier, resolved_path)
                     {
                         if ctx.workspace_roots.contains_key(pkg_name.as_str())
                             && let Some(result) = try_workspace_package_fallback(ctx, specifier)
