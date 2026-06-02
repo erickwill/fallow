@@ -111,11 +111,19 @@ use crate::MemberKind;
 /// script modules. Pre-fix entries can carry stale root-relative imports that
 /// surface as false `unresolved-imports`.
 ///
-/// Bumped to 108 for issue #839: `declare` ambient class properties are no
-/// longer extracted as class members because they emit no JS and cannot be
-/// value-referenced. Pre-fix cache entries carry those phantom members, so they
-/// surface as false `unused-class-member` findings until the file is
-/// re-extracted.
+/// Bumped to 108 for three extraction-semantics changes shipping together:
+/// - issue #839: `declare` ambient class properties are no longer extracted as
+///   class members (they emit no JS and cannot be value-referenced), so pre-fix
+///   entries carry phantom members that surface as false `unused-class-member`.
+/// - issue #840: extensionless `new URL(specifier, import.meta.url)` dynamic
+///   imports now persist `is_speculative = true` so a directory target
+///   (`new URL('./services', import.meta.url)`) is silently dropped when the
+///   resolver finds no module; pre-fix entries carry `is_speculative = false`
+///   and surface as false `unresolved-imports`.
+/// - issue #845: a method call on an `instanceof`-narrowed value now emits a
+///   member access against the narrowed class, changing the persisted
+///   `member_accesses`; pre-fix entries miss the credit and surface as false
+///   `unused-class-member`.
 pub(super) const CACHE_VERSION: u32 = 108;
 
 /// Duplication token cache version. Bump when duplicate tokenization,
