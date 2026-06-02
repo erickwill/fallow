@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.86.0] - 2026-06-02
+
 ### Added
 
 - **`fallow security` now ships local code-level security candidates across 9 CWE categories via a data-driven matcher catalogue.** Beyond the original `client-server-leak` class, fallow now flags syntactic sink-site candidates for dangerous HTML (CWE-79), OS command injection (CWE-78), code injection (CWE-94), SQL injection (CWE-89), server-side request forgery (CWE-918), path traversal (CWE-22), open redirect (CWE-601), runtime-selectable crypto algorithms (CWE-327), and unsafe deserialization (CWE-502). These are candidates for downstream agent verification, not verified vulnerabilities: detection is deterministic and syntactic, never taint-proof. A candidate fires only when the relevant argument is non-literal, so a fully-literal value (`el.innerHTML = "<b>x</b>"`, `child_process.exec("ls")`) is never flagged; fallow prefers false-negatives over false-positives. Node-specific sinks are provenance-gated to their import source (command injection to `node:child_process`, code injection's `vm` form to `node:vm`, path traversal to `node:path`, runtime crypto to `node:crypto`, deserialization to `js-yaml` / `node-serialize`). The category set is a single data file with no regen step; the rule (`security-sink`) defaults to `off` and is surfaced only by `fallow security`, never under bare `fallow` or the `audit` gate. Each candidate carries its category, CWE, and a file-level suppress hint (`// fallow-ignore-file security-sink`). Sink-shaped calls fallow cannot resolve to a static callee are counted in-band, so an empty result with a non-zero count is not a clean bill. Scope which categories run with `security.categories` include / exclude lists.
@@ -2722,7 +2724,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.85.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.86.0...HEAD
+[2.86.0]: https://github.com/fallow-rs/fallow/compare/v2.85.0...v2.86.0
 [2.85.0]: https://github.com/fallow-rs/fallow/compare/v2.84.0...v2.85.0
 [2.84.0]: https://github.com/fallow-rs/fallow/compare/v2.83.0...v2.84.0
 [2.83.0]: https://github.com/fallow-rs/fallow/compare/v2.82.0...v2.83.0
