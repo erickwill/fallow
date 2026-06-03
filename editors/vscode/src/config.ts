@@ -2,6 +2,7 @@ import * as path from "node:path";
 // VS Code injects this module into the extension host at runtime.
 // fallow-ignore-next-line unlisted-dependency
 import * as vscode from "vscode";
+import { MIN_OCCURRENCES_FLOOR, clampMinOccurrences } from "./duplication-utils.js";
 import type { DuplicationMode, IssueTypeConfig, TraceLevel } from "./types.js";
 
 const SECTION = "fallow";
@@ -57,7 +58,9 @@ export const getDuplicationMode = (): DuplicationMode =>
   getConfig().get<DuplicationMode>("duplication.mode", "mild");
 
 export const getDuplicationMinOccurrences = (): number =>
-  getConfig().get<number>("duplication.minOccurrences", 2);
+  clampMinOccurrences(
+    getConfig().get<number>("duplication.minOccurrences", MIN_OCCURRENCES_FLOOR)
+  );
 
 export const getProduction = (): boolean => getConfig().get<boolean>("production", false);
 
