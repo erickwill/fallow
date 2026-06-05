@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.89.0] - 2026-06-05
+
 ### Fixed
 
 - **Framework template HTML injection sinks now appear in `fallow security`.** Non-literal Svelte `{@html ...}`, Vue `v-html="..."`, and Angular `[innerHTML]="..."` bindings now feed the existing `dangerous-html` security candidate flow with source spans on the template or component file. Literal bindings stay quiet, and no new output schema is introduced. Thanks [@BartWaardenburg](https://github.com/BartWaardenburg) for the report. (Closes [#883](https://github.com/fallow-rs/fallow/issues/883).)
