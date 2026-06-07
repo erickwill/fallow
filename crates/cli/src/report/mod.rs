@@ -205,16 +205,16 @@ pub fn print_results(
                     ctx.summary_heading,
                 );
             } else {
-                human::print_human(
+                human::print_human(&human::PrintHumanInput {
                     results,
-                    ctx.root,
-                    ctx.rules,
-                    ctx.elapsed,
-                    ctx.quiet,
-                    ctx.top,
-                    ctx.show_explain_tip,
-                    ctx.explain,
-                );
+                    root: ctx.root,
+                    rules: ctx.rules,
+                    elapsed: ctx.elapsed,
+                    quiet: ctx.quiet,
+                    top: ctx.top,
+                    show_explain_tip: ctx.show_explain_tip,
+                    explain: ctx.explain,
+                });
             }
             ExitCode::SUCCESS
         }

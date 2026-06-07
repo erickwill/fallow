@@ -168,64 +168,78 @@ fn insert_test_src_split<T>(lines: &mut Vec<String>, items: &[T], get_path: impl
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "human renderer entrypoint mirrors ReportContext fields without allocating a wrapper"
-)]
-pub(in crate::report) fn print_human(
-    results: &AnalysisResults,
-    root: &Path,
-    rules: &RulesConfig,
-    elapsed: Duration,
-    quiet: bool,
-    top: Option<usize>,
-    show_explain_tip: bool,
-    explain: bool,
-) {
-    if !quiet {
+pub(in crate::report) struct PrintHumanInput<'a> {
+    pub results: &'a AnalysisResults,
+    pub root: &'a Path,
+    pub rules: &'a RulesConfig,
+    pub elapsed: Duration,
+    pub quiet: bool,
+    pub top: Option<usize>,
+    pub show_explain_tip: bool,
+    pub explain: bool,
+}
+
+pub(in crate::report) fn print_human(input: &PrintHumanInput<'_>) {
+    if !input.quiet {
         eprintln!();
-        emit_config_quality_signal(results, root);
+        emit_config_quality_signal(input.results, input.root);
     }
 
-    let total = results.total_issues();
-    print_explain_tip_if_tty(show_explain_tip && total > 0, quiet);
+    let total = input.results.total_issues();
+    print_explain_tip_if_tty(input.show_explain_tip && total > 0, input.quiet);
 
-    for line in build_human_lines_with_explain(results, root, rules, top, explain) {
+    for line in build_human_lines_with_explain(
+        input.results,
+        input.root,
+        input.rules,
+        input.top,
+        input.explain,
+    ) {
         println!("{line}");
     }
 
-    if !quiet {
+    if !input.quiet {
         if total == 0 {
             eprintln!(
                 "{}",
-                format!("\u{2713} No issues found ({:.2}s)", elapsed.as_secs_f64())
+                format!(
+                    "\u{2713} No issues found ({:.2}s)",
+                    input.elapsed.as_secs_f64()
+                )
                     .green()
                     .bold()
             );
         } else {
-            let unused_file_set: FxHashSet<&std::path::Path> = results
+            let unused_file_set: FxHashSet<&std::path::Path> = input
+                .results
                 .unused_files
                 .iter()
                 .map(|f| f.file.path.as_path())
                 .collect();
-            let suppressed_exports = results
+            let suppressed_exports = input
+                .results
                 .unused_exports
                 .iter()
                 .filter(|e| unused_file_set.contains(e.export.path.as_path()))
                 .count();
-            let suppressed_types = results
+            let suppressed_types = input
+                .results
                 .unused_types
                 .iter()
                 .filter(|e| unused_file_set.contains(e.export.path.as_path()))
                 .count();
-            let summary = build_summary_footer(results, suppressed_exports, suppressed_types);
+            let summary =
+                build_summary_footer(input.results, suppressed_exports, suppressed_types);
             eprintln!(
                 "{}",
-                format!("\u{2717} {summary} ({:.2}s)", elapsed.as_secs_f64())
+                format!(
+                    "\u{2717} {summary} ({:.2}s)",
+                    input.elapsed.as_secs_f64()
+                )
                     .red()
                     .bold()
             );
-            print_suppression_footer(results);
+            print_suppression_footer(input.results);
         }
     }
 }
