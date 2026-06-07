@@ -454,20 +454,7 @@ fn execute_health_inner(
     let total_above_threshold = findings.len();
     let (sev_critical, sev_high, sev_moderate) = count_finding_severities(&findings);
 
-    let loaded_baseline = if let Some(load_path) = opts.baseline {
-        Some(load_health_baseline(
-            load_path,
-            &mut findings,
-            &config.root,
-            opts.quiet,
-            opts.output,
-        )?)
-    } else {
-        None
-    };
-    if let Some(top) = opts.top {
-        findings.truncate(top);
-    }
+    let loaded_baseline = apply_health_baseline_and_top(opts, &config, &mut findings)?;
 
     let t = Instant::now();
     let (mut hotspots, hotspot_summary) = if let Some(churn_data) = churn_fetch {
@@ -934,6 +921,28 @@ fn count_finding_severities(findings: &[ComplexityViolation]) -> (usize, usize, 
         }
     }
     (critical, high, moderate)
+}
+
+fn apply_health_baseline_and_top(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    findings: &mut Vec<ComplexityViolation>,
+) -> Result<Option<HealthBaselineData>, ExitCode> {
+    let loaded_baseline = if let Some(load_path) = opts.baseline {
+        Some(load_health_baseline(
+            load_path,
+            findings,
+            &config.root,
+            opts.quiet,
+            opts.output,
+        )?)
+    } else {
+        None
+    };
+    if let Some(top) = opts.top {
+        findings.truncate(top);
+    }
+    Ok(loaded_baseline)
 }
 
 /// Drop complexity findings whose function body span does NOT overlap any
