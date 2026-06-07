@@ -296,19 +296,31 @@ fn collect_source_maps(
     strip_path: bool,
 ) -> Result<Vec<SourceMapCandidate>, UploadSourceMapsError> {
     let mut maps = Vec::new();
-    collect_source_maps_inner(repo_root, dir, dir, include, exclude, strip_path, &mut maps)?;
+    let mut input = SourceMapWalkInput {
+        repo_root,
+        root: dir,
+        include,
+        exclude,
+        strip_path,
+        maps: &mut maps,
+    };
+    collect_source_maps_inner(&mut input, dir)?;
     maps.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(maps)
 }
 
-fn collect_source_maps_inner(
-    repo_root: &Path,
-    root: &Path,
-    dir: &Path,
-    include: &GlobSet,
-    exclude: &GlobSet,
+struct SourceMapWalkInput<'a> {
+    repo_root: &'a Path,
+    root: &'a Path,
+    include: &'a GlobSet,
+    exclude: &'a GlobSet,
     strip_path: bool,
-    maps: &mut Vec<SourceMapCandidate>,
+    maps: &'a mut Vec<SourceMapCandidate>,
+}
+
+fn collect_source_maps_inner(
+    input: &mut SourceMapWalkInput<'_>,
+    dir: &Path,
 ) -> Result<(), UploadSourceMapsError> {
     let entries = std::fs::read_dir(dir).map_err(|err| {
         UploadSourceMapsError::Validation(format!("failed to read {}: {err}", dir.display()))
@@ -321,21 +333,21 @@ fn collect_source_maps_inner(
         let file_type = entry.file_type().map_err(|err| {
             UploadSourceMapsError::Validation(format!("failed to stat {}: {err}", path.display()))
         })?;
-        let rel_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        if exclude.is_match(&rel_path) {
+        let rel_path = path.strip_prefix(input.root).unwrap_or(&path).to_path_buf();
+        if input.exclude.is_match(&rel_path) {
             continue;
         }
         if file_type.is_dir() {
-            collect_source_maps_inner(repo_root, root, &path, include, exclude, strip_path, maps)?;
+            collect_source_maps_inner(input, &path)?;
             continue;
         }
-        if !include.is_match(&rel_path) || !path.is_file() {
+        if !input.include.is_match(&rel_path) || !path.is_file() {
             continue;
         }
         let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
-        let file_name = map_file_name(&rel_path, strip_path)?;
-        let map_path = repo_relative_map_path(repo_root, &path);
-        maps.push(SourceMapCandidate {
+        let file_name = map_file_name(&rel_path, input.strip_path)?;
+        let map_path = repo_relative_map_path(input.repo_root, &path);
+        input.maps.push(SourceMapCandidate {
             path,
             rel_path,
             file_name,
