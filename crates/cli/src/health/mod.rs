@@ -678,15 +678,16 @@ fn execute_health_inner(
         None
     };
 
-    let mut large_functions = collect_large_functions(
-        &vital_signs,
-        &modules,
-        &file_paths,
-        &config.root,
-        &ignore_set,
-        changed_files.as_ref(),
-        ws_roots.as_deref(),
-    );
+    let large_function_input = LargeFunctionInput {
+        vital_signs: &vital_signs,
+        modules: &modules,
+        file_paths: &file_paths,
+        config_root: &config.root,
+        ignore_set: &ignore_set,
+        changed_files: changed_files.as_ref(),
+        ws_roots: ws_roots.as_deref(),
+    };
+    let mut large_functions = collect_large_functions(&large_function_input);
     if let Some(diff_index) = diff_index {
         filter_large_functions_by_diff(&mut large_functions, diff_index, &config.root);
     }
@@ -1803,16 +1804,20 @@ fn assemble_health_report(
 ///
 /// Only populated when `very_high_risk >= 3%` in the unit size profile (same threshold
 /// that triggers showing the risk profile line). Sorted by line count descending.
-fn collect_large_functions(
-    vital_signs: &crate::health_types::VitalSigns,
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
-    config_root: &std::path::Path,
-    ignore_set: &globset::GlobSet,
-    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
-    ws_roots: Option<&[std::path::PathBuf]>,
-) -> Vec<LargeFunctionEntry> {
-    let dominated = vital_signs
+struct LargeFunctionInput<'a> {
+    vital_signs: &'a crate::health_types::VitalSigns,
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths:
+        &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    config_root: &'a std::path::Path,
+    ignore_set: &'a globset::GlobSet,
+    changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&'a [std::path::PathBuf]>,
+}
+
+fn collect_large_functions(input: &LargeFunctionInput<'_>) -> Vec<LargeFunctionEntry> {
+    let dominated = input
+        .vital_signs
         .unit_size_profile
         .as_ref()
         .is_some_and(|p| p.very_high_risk >= 3.0);
@@ -1821,20 +1826,20 @@ fn collect_large_functions(
     }
 
     let mut entries = Vec::new();
-    for module in modules {
-        let Some(&path) = file_paths.get(&module.file_id) else {
+    for module in input.modules {
+        let Some(&path) = input.file_paths.get(&module.file_id) else {
             continue;
         };
-        let relative = path.strip_prefix(config_root).unwrap_or(path);
-        if ignore_set.is_match(relative) {
+        let relative = path.strip_prefix(input.config_root).unwrap_or(path);
+        if input.ignore_set.is_match(relative) {
             continue;
         }
-        if let Some(changed) = changed_files
+        if let Some(changed) = input.changed_files
             && !changed.contains(path.as_path())
         {
             continue;
         }
-        if let Some(ws) = ws_roots
+        if let Some(ws) = input.ws_roots
             && !ws.iter().any(|r| path.starts_with(r))
         {
             continue;
