@@ -26,6 +26,24 @@ struct GroupBucket {
     paths: FxHashSet<PathBuf>,
 }
 
+pub(super) struct HealthGroupingInput<'a> {
+    pub files: &'a [fallow_types::discover::DiscoveredFile],
+    pub modules: &'a [fallow_core::extract::ModuleInfo],
+    pub file_paths: &'a FxHashMap<fallow_core::discover::FileId, &'a PathBuf>,
+    pub score_output: Option<&'a FileScoreOutput>,
+    pub file_scores: &'a [FileHealthScore],
+    pub findings: &'a [ComplexityViolation],
+    pub hotspots: &'a [HotspotEntry],
+    pub large_functions: &'a [LargeFunctionEntry],
+    pub targets: &'a [RefactoringTarget],
+    pub score_requested: bool,
+    pub duplicates_config: Option<&'a fallow_config::DuplicatesConfig>,
+    pub needs_file_scores: bool,
+    pub needs_hotspots: bool,
+    pub show_vital_signs: bool,
+    pub action_ctx: &'a crate::health_types::HealthActionContext,
+}
+
 /// Build [`HealthGrouping`] for the resolved `--group-by` mode.
 ///
 /// `candidate_paths` is the set of files that already passed
@@ -33,55 +51,17 @@ struct GroupBucket {
 /// contribute to the project-level report. Anything outside this set is
 /// dropped before resolution so groups never include files the user has
 /// excluded from the run.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "build_health_grouping aggregates the full health pipeline state into per-group sub-reports"
-)]
 pub(super) fn build_health_grouping(
     resolver: &OwnershipResolver,
     project_root: &Path,
-    files: &[fallow_types::discover::DiscoveredFile],
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &FxHashMap<fallow_core::discover::FileId, &PathBuf>,
     candidate_paths: &FxHashSet<PathBuf>,
-    score_output: Option<&FileScoreOutput>,
-    file_scores: &[FileHealthScore],
-    findings: &[ComplexityViolation],
-    hotspots: &[HotspotEntry],
-    large_functions: &[LargeFunctionEntry],
-    targets: &[RefactoringTarget],
-    score_requested: bool,
-    duplicates_config: Option<&fallow_config::DuplicatesConfig>,
-    needs_file_scores: bool,
-    needs_hotspots: bool,
-    show_vital_signs: bool,
-    action_ctx: &crate::health_types::HealthActionContext,
+    input: &HealthGroupingInput<'_>,
 ) -> HealthGrouping {
     let buckets = bucket_paths(resolver, project_root, candidate_paths);
 
     let groups: Vec<HealthGroup> = buckets
         .into_iter()
-        .map(|bucket| {
-            build_group(
-                bucket,
-                project_root,
-                files,
-                modules,
-                file_paths,
-                score_output,
-                file_scores,
-                findings,
-                hotspots,
-                large_functions,
-                targets,
-                score_requested,
-                duplicates_config,
-                needs_file_scores,
-                needs_hotspots,
-                show_vital_signs,
-                action_ctx,
-            )
-        })
+        .map(|bucket| build_group(bucket, project_root, input))
         .collect();
 
     HealthGrouping {
@@ -128,66 +108,53 @@ fn is_unowned_label(key: &str) -> bool {
     key == crate::codeowners::UNOWNED_LABEL
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "per-group computation reads the full health pipeline state"
-)]
 fn build_group(
     bucket: GroupBucket,
     project_root: &Path,
-    files: &[fallow_types::discover::DiscoveredFile],
-    modules: &[fallow_core::extract::ModuleInfo],
-    file_paths: &FxHashMap<fallow_core::discover::FileId, &PathBuf>,
-    score_output: Option<&FileScoreOutput>,
-    file_scores: &[FileHealthScore],
-    findings: &[ComplexityViolation],
-    hotspots: &[HotspotEntry],
-    large_functions: &[LargeFunctionEntry],
-    targets: &[RefactoringTarget],
-    score_requested: bool,
-    duplicates_config: Option<&fallow_config::DuplicatesConfig>,
-    needs_file_scores: bool,
-    needs_hotspots: bool,
-    show_vital_signs: bool,
-    action_ctx: &crate::health_types::HealthActionContext,
+    input: &HealthGroupingInput<'_>,
 ) -> HealthGroup {
     let GroupBucket { key, owners, paths } = bucket;
     let subset = SubsetFilter::Paths(&paths);
 
-    let group_findings: Vec<ComplexityViolation> = findings
+    let group_findings: Vec<ComplexityViolation> = input
+        .findings
         .iter()
         .filter(|f| paths.contains(&f.path))
         .cloned()
         .collect();
-    let group_file_scores: Vec<FileHealthScore> = file_scores
+    let group_file_scores: Vec<FileHealthScore> = input
+        .file_scores
         .iter()
         .filter(|s| paths.contains(&s.path))
         .cloned()
         .collect();
-    let group_hotspots: Vec<HotspotEntry> = hotspots
+    let group_hotspots: Vec<HotspotEntry> = input
+        .hotspots
         .iter()
         .filter(|h| paths.contains(&h.path))
         .cloned()
         .collect();
-    let group_large_functions: Vec<LargeFunctionEntry> = large_functions
+    let group_large_functions: Vec<LargeFunctionEntry> = input
+        .large_functions
         .iter()
         .filter(|l| paths.contains(&l.path))
         .cloned()
         .collect();
     let total_files = paths.len();
     let (mut vital_signs, mut counts) = compute_vital_signs_and_counts(
-        score_output,
-        modules,
-        file_paths,
-        needs_file_scores,
+        input.score_output,
+        input.modules,
+        input.file_paths,
+        input.needs_file_scores,
         &group_file_scores,
-        needs_hotspots,
+        input.needs_hotspots,
         &group_hotspots,
         total_files,
         &subset,
     );
-    if let Some(config) = duplicates_config {
-        let group_files: Vec<fallow_types::discover::DiscoveredFile> = files
+    if let Some(config) = input.duplicates_config {
+        let group_files: Vec<fallow_types::discover::DiscoveredFile> = input
+            .files
             .iter()
             .filter(|file| paths.contains(&file.path))
             .cloned()
@@ -196,8 +163,9 @@ fn build_group(
             fallow_core::duplicates::find_duplicates(project_root, &group_files, config);
         apply_duplication_metrics(&mut vital_signs, &mut counts, &dupes_report);
     }
-    let health_score =
-        score_requested.then(|| vital_signs::compute_health_score(&vital_signs, total_files));
+    let health_score = input
+        .score_requested
+        .then(|| vital_signs::compute_health_score(&vital_signs, total_files));
 
     let functions_above_threshold = group_findings.len();
     let coverage_source_consistency = summarize_coverage_source_consistency(
@@ -207,13 +175,14 @@ fn build_group(
     );
     let wrapped_findings: Vec<crate::health_types::HealthFinding> = group_findings
         .into_iter()
-        .map(|v| crate::health_types::HealthFinding::with_actions(v, action_ctx))
+        .map(|v| crate::health_types::HealthFinding::with_actions(v, input.action_ctx))
         .collect();
     let wrapped_hotspots: Vec<crate::health_types::HotspotFinding> = group_hotspots
         .into_iter()
         .map(|h| crate::health_types::HotspotFinding::with_actions(h, project_root))
         .collect();
-    let wrapped_targets: Vec<crate::health_types::RefactoringTargetFinding> = targets
+    let wrapped_targets: Vec<crate::health_types::RefactoringTargetFinding> = input
+        .targets
         .iter()
         .filter(|t| paths.contains(&t.path))
         .cloned()
@@ -226,17 +195,18 @@ fn build_group(
         files_analyzed: total_files,
         functions_above_threshold,
         coverage_source_consistency,
-        vital_signs: show_vital_signs.then_some(vital_signs),
+        vital_signs: input.show_vital_signs.then_some(vital_signs),
         health_score,
         findings: wrapped_findings,
         file_scores: group_file_scores,
         hotspots: wrapped_hotspots,
         large_functions: group_large_functions,
         targets: wrapped_targets,
-        actions_meta: if action_ctx.opts.omit_suppress_line {
+        actions_meta: if input.action_ctx.opts.omit_suppress_line {
             Some(crate::health_types::HealthActionsMeta {
                 suppression_hints_omitted: true,
-                reason: action_ctx
+                reason: input
+                    .action_ctx
                     .opts
                     .omit_reason
                     .unwrap_or("unspecified")
