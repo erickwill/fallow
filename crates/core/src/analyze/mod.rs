@@ -559,50 +559,14 @@ pub fn find_dead_code_full(
             rayon::join(
                 || run_unused_file_detector(graph, config, &suppressions),
                 || {
-                    let mut results = AnalysisResults::default();
-                    if config.rules.unused_exports != Severity::Off
-                        || config.rules.unused_types != Severity::Off
-                        || config.rules.private_type_leaks != Severity::Off
-                    {
-                        let (exports, types, stale_expected) = find_unused_exports(
-                            graph,
-                            modules,
-                            config,
-                            plugin_result,
-                            &suppressions,
-                            &line_offsets_by_file,
-                        );
-                        if config.rules.unused_exports != Severity::Off {
-                            results.unused_exports = exports
-                                .into_iter()
-                                .map(UnusedExportFinding::with_actions)
-                                .collect();
-                        }
-                        if config.rules.unused_types != Severity::Off {
-                            let mut typed = types;
-                            suppress_signature_backing_types(&mut typed, graph, modules);
-                            results.unused_types = typed
-                                .into_iter()
-                                .map(UnusedTypeFinding::with_actions)
-                                .collect();
-                        }
-                        if config.rules.private_type_leaks != Severity::Off {
-                            results.private_type_leaks = find_private_type_leaks(
-                                graph,
-                                modules,
-                                config,
-                                &suppressions,
-                                &line_offsets_by_file,
-                            )
-                            .into_iter()
-                            .map(PrivateTypeLeakFinding::with_actions)
-                            .collect();
-                        }
-                        if config.rules.stale_suppressions != Severity::Off {
-                            results.stale_suppressions.extend(stale_expected);
-                        }
-                    }
-                    results
+                    run_export_detectors(
+                        graph,
+                        modules,
+                        config,
+                        plugin_result,
+                        &suppressions,
+                        &line_offsets_by_file,
+                    )
                 },
             )
         },
@@ -1020,6 +984,61 @@ fn run_unused_file_detector(
         .into_iter()
         .map(UnusedFileFinding::with_actions)
         .collect()
+}
+
+#[expect(
+    deprecated,
+    reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
+)]
+fn run_export_detectors(
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    config: &ResolvedConfig,
+    plugin_result: Option<&crate::plugins::AggregatedPluginResult>,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> AnalysisResults {
+    let mut results = AnalysisResults::default();
+    if config.rules.unused_exports == Severity::Off
+        && config.rules.unused_types == Severity::Off
+        && config.rules.private_type_leaks == Severity::Off
+    {
+        return results;
+    }
+
+    let (exports, types, stale_expected) = find_unused_exports(
+        graph,
+        modules,
+        config,
+        plugin_result,
+        suppressions,
+        line_offsets_by_file,
+    );
+    if config.rules.unused_exports != Severity::Off {
+        results.unused_exports = exports
+            .into_iter()
+            .map(UnusedExportFinding::with_actions)
+            .collect();
+    }
+    if config.rules.unused_types != Severity::Off {
+        let mut typed = types;
+        suppress_signature_backing_types(&mut typed, graph, modules);
+        results.unused_types = typed
+            .into_iter()
+            .map(UnusedTypeFinding::with_actions)
+            .collect();
+    }
+    if config.rules.private_type_leaks != Severity::Off {
+        results.private_type_leaks =
+            find_private_type_leaks(graph, modules, config, suppressions, line_offsets_by_file)
+                .into_iter()
+                .map(PrivateTypeLeakFinding::with_actions)
+                .collect();
+    }
+    if config.rules.stale_suppressions != Severity::Off {
+        results.stale_suppressions.extend(stale_expected);
+    }
+    results
 }
 
 #[cfg(test)]
