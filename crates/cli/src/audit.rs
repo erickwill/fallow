@@ -3465,12 +3465,14 @@ pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode
             crate::impact::record_audit_run(
                 opts.root,
                 &result.summary,
-                result.verdict,
-                gate_marker.is_some(),
-                result.head_sha.as_deref(),
-                env!("CARGO_PKG_VERSION"),
-                &crate::vital_signs::chrono_timestamp(),
-                Some(&attribution),
+                &crate::impact::AuditRunRecord {
+                    verdict: result.verdict,
+                    gate: gate_marker.is_some(),
+                    git_sha: result.head_sha.as_deref(),
+                    version: env!("CARGO_PKG_VERSION"),
+                    timestamp: &crate::vital_signs::chrono_timestamp(),
+                    attribution: Some(&attribution),
+                },
             );
             print_audit_result(&result, opts.quiet, opts.explain)
         }

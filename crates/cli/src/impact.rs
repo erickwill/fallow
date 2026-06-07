@@ -243,20 +243,28 @@ pub fn disable(root: &Path) -> bool {
 }
 
 /// Record an audit run into the rolling store.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "best-effort recorder threading the v1 record fields plus the v1.5 attribution input; a params struct would not improve the single call site"
-)]
+pub struct AuditRunRecord<'a> {
+    pub verdict: AuditVerdict,
+    pub gate: bool,
+    pub git_sha: Option<&'a str>,
+    pub version: &'a str,
+    pub timestamp: &'a str,
+    pub attribution: Option<&'a AttributionInput<'a>>,
+}
+
 pub fn record_audit_run(
     root: &Path,
     summary: &AuditSummary,
-    verdict: AuditVerdict,
-    gate: bool,
-    git_sha: Option<&str>,
-    version: &str,
-    timestamp: &str,
-    attribution: Option<&AttributionInput<'_>>,
+    record: &AuditRunRecord<'_>,
 ) {
+    let AuditRunRecord {
+        verdict,
+        gate,
+        git_sha,
+        version,
+        timestamp,
+        attribution,
+    } = record;
     let mut store = load(root);
     if !store.enabled {
         return;
@@ -264,26 +272,26 @@ pub fn record_audit_run(
     store.schema_version = STORE_SCHEMA_VERSION;
 
     let counts = ImpactCounts::from_summary(summary);
-    let verdict_str = verdict_label(verdict);
+    let verdict_str = verdict_label(*verdict);
 
     if store.first_recorded.is_none() {
-        store.first_recorded = Some(timestamp.to_owned());
+        store.first_recorded = Some((*timestamp).to_owned());
     }
 
-    apply_containment(&mut store, verdict, gate, git_sha, timestamp, &counts);
+    apply_containment(&mut store, *verdict, *gate, *git_sha, timestamp, &counts);
 
     store.records.push(ImpactRecord {
-        timestamp: timestamp.to_owned(),
-        version: version.to_owned(),
+        timestamp: (*timestamp).to_owned(),
+        version: (*version).to_owned(),
         git_sha: git_sha.map(ToOwned::to_owned),
         verdict: verdict_str.to_owned(),
-        gate,
+        gate: *gate,
         counts,
     });
     compact(&mut store);
 
     if let Some(attribution) = attribution {
-        apply_attribution(&mut store, attribution, git_sha, timestamp);
+        apply_attribution(&mut store, attribution, *git_sha, timestamp);
     }
 
     save(&store, root);
@@ -1365,7 +1373,16 @@ mod tests {
         timestamp: &str,
     ) {
         record_audit_run(
-            root, summary, verdict, gate, git_sha, version, timestamp, None,
+            root,
+            summary,
+            &AuditRunRecord {
+                verdict,
+                gate,
+                git_sha,
+                version,
+                timestamp,
+                attribution: None,
+            },
         );
     }
 
@@ -1416,12 +1433,14 @@ mod tests {
         record_audit_run(
             root,
             &summary(0, 0, 0),
-            AuditVerdict::Pass,
-            true,
-            Some("sha"),
-            "2.0.0",
-            ts,
-            Some(&input),
+            &AuditRunRecord {
+                verdict: AuditVerdict::Pass,
+                gate: true,
+                git_sha: Some("sha"),
+                version: "2.0.0",
+                timestamp: ts,
+                attribution: Some(&input),
+            },
         );
     }
 
