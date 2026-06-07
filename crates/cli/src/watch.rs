@@ -414,13 +414,15 @@ pub fn run_watch(opts: &WatchOptions<'_>) -> ExitCode {
             next_root_check = now + ROOT_POLL_INTERVAL;
             handle_root_lifecycle(
                 opts,
-                &mut config,
-                &filter,
-                &mut watcher,
-                &tx,
-                &mut debouncer,
-                &mut detached,
-                &mut last_reattach_error,
+                RootLifecycleState {
+                    config: &mut config,
+                    filter: &filter,
+                    watcher: &mut watcher,
+                    tx: &tx,
+                    debouncer: &mut debouncer,
+                    detached: &mut detached,
+                    last_reattach_error: &mut last_reattach_error,
+                },
             );
         }
 
@@ -500,20 +502,27 @@ fn replace_watch_filter(filter: &Arc<Mutex<WatchFilter>>, config: &fallow_config
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "watch root lifecycle owns the explicit state slots mutated by the main loop"
-)]
-fn handle_root_lifecycle(
-    opts: &WatchOptions<'_>,
-    config: &mut fallow_config::ResolvedConfig,
-    filter: &Arc<Mutex<WatchFilter>>,
-    watcher: &mut Option<RecommendedWatcher>,
-    tx: &std::sync::mpsc::Sender<WatchEvent>,
-    debouncer: &mut PathDebouncer,
-    detached: &mut bool,
-    last_reattach_error: &mut Option<Instant>,
-) {
+struct RootLifecycleState<'a> {
+    config: &'a mut fallow_config::ResolvedConfig,
+    filter: &'a Arc<Mutex<WatchFilter>>,
+    watcher: &'a mut Option<RecommendedWatcher>,
+    tx: &'a std::sync::mpsc::Sender<WatchEvent>,
+    debouncer: &'a mut PathDebouncer,
+    detached: &'a mut bool,
+    last_reattach_error: &'a mut Option<Instant>,
+}
+
+fn handle_root_lifecycle(opts: &WatchOptions<'_>, state: RootLifecycleState<'_>) {
+    let RootLifecycleState {
+        config,
+        filter,
+        watcher,
+        tx,
+        debouncer,
+        detached,
+        last_reattach_error,
+    } = state;
+
     let root_exists = opts.root.metadata().is_ok();
     if !root_exists {
         if !*detached {
@@ -856,13 +865,15 @@ mod tests {
         std::fs::remove_dir(&root).expect("remove root");
         handle_root_lifecycle(
             &opts,
-            &mut config,
-            &filter,
-            &mut watcher,
-            &tx,
-            &mut debouncer,
-            &mut detached,
-            &mut last_reattach_error,
+            RootLifecycleState {
+                config: &mut config,
+                filter: &filter,
+                watcher: &mut watcher,
+                tx: &tx,
+                debouncer: &mut debouncer,
+                detached: &mut detached,
+                last_reattach_error: &mut last_reattach_error,
+            },
         );
         assert!(detached);
         assert!(watcher.is_none());
@@ -870,13 +881,15 @@ mod tests {
         std::fs::create_dir(&root).expect("recreate root");
         handle_root_lifecycle(
             &opts,
-            &mut config,
-            &filter,
-            &mut watcher,
-            &tx,
-            &mut debouncer,
-            &mut detached,
-            &mut last_reattach_error,
+            RootLifecycleState {
+                config: &mut config,
+                filter: &filter,
+                watcher: &mut watcher,
+                tx: &tx,
+                debouncer: &mut debouncer,
+                detached: &mut detached,
+                last_reattach_error: &mut last_reattach_error,
+            },
         );
         assert!(!detached);
         assert!(watcher.is_some());
