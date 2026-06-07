@@ -76,15 +76,15 @@ fn collect_pending_credits(
             };
             let reachable =
                 enumerate_alias_reachable_barrels(graph, alias_file_id, &alias.via_export_name);
-            collect_credits_for_alias(
+            collect_credits_for_alias(NamespaceCreditInput {
                 graph,
                 module_by_id,
                 alias_file_id,
                 alias,
                 target_module_idx,
-                &reachable,
-                &mut pending,
-            );
+                reachable: &reachable,
+                pending: &mut pending,
+            });
         }
     }
 
@@ -166,15 +166,26 @@ fn module_index_for_file(graph: &ModuleGraph, file_id: FileId) -> Option<usize> 
     Some(idx)
 }
 
-fn collect_credits_for_alias(
-    graph: &ModuleGraph,
-    module_by_id: &FxHashMap<FileId, &ResolvedModule>,
+struct NamespaceCreditInput<'a> {
+    graph: &'a ModuleGraph,
+    module_by_id: &'a FxHashMap<FileId, &'a ResolvedModule>,
     alias_file_id: FileId,
-    alias: &NamespaceObjectAlias,
+    alias: &'a NamespaceObjectAlias,
     target_module_idx: usize,
-    reachable: &FxHashSet<(FileId, String)>,
-    pending: &mut Vec<PendingCredit>,
-) {
+    reachable: &'a FxHashSet<(FileId, String)>,
+    pending: &'a mut Vec<PendingCredit>,
+}
+
+fn collect_credits_for_alias(input: NamespaceCreditInput<'_>) {
+    let NamespaceCreditInput {
+        graph,
+        module_by_id,
+        alias_file_id,
+        alias,
+        target_module_idx,
+        reachable,
+        pending,
+    } = input;
     let prefix_match = format!(".{}", alias.suffix);
     for consumer in module_by_id.values() {
         if consumer.file_id == alias_file_id {
