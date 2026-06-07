@@ -135,15 +135,15 @@ pub fn run_list(opts: &ListOptions<'_>) -> ExitCode {
     };
 
     match opts.output {
-        OutputFormat::Json => print_list_json(
+        OutputFormat::Json => print_list_json(&ListJsonInput {
             opts,
             show_all,
-            plugin_result.as_ref(),
-            discovered.as_deref(),
-            all_entry_points.as_deref(),
-            boundary_data.as_ref(),
-            workspace_data.as_ref(),
-        ),
+            plugin_result: plugin_result.as_ref(),
+            discovered: discovered.as_deref(),
+            entry_points: all_entry_points.as_deref(),
+            boundary_data: boundary_data.as_ref(),
+            workspace_data: workspace_data.as_ref(),
+        }),
         _ => {
             print_list_human(
                 opts,
@@ -181,15 +181,24 @@ const fn needs_file_discovery(
 }
 
 /// Print list results as JSON and return the appropriate exit code.
-fn print_list_json(
-    opts: &ListOptions<'_>,
+struct ListJsonInput<'a> {
+    opts: &'a ListOptions<'a>,
     show_all: bool,
-    plugin_result: Option<&fallow_core::plugins::AggregatedPluginResult>,
-    discovered: Option<&[fallow_core::discover::DiscoveredFile]>,
-    entry_points: Option<&[fallow_core::discover::EntryPoint]>,
-    boundary_data: Option<&BoundaryData>,
-    workspace_data: Option<&WorkspaceData>,
-) -> ExitCode {
+    plugin_result: Option<&'a fallow_core::plugins::AggregatedPluginResult>,
+    discovered: Option<&'a [fallow_core::discover::DiscoveredFile]>,
+    entry_points: Option<&'a [fallow_core::discover::EntryPoint]>,
+    boundary_data: Option<&'a BoundaryData>,
+    workspace_data: Option<&'a WorkspaceData>,
+}
+
+fn print_list_json(input: &ListJsonInput<'_>) -> ExitCode {
+    let opts = input.opts;
+    let show_all = input.show_all;
+    let plugin_result = input.plugin_result;
+    let discovered = input.discovered;
+    let entry_points = input.entry_points;
+    let boundary_data = input.boundary_data;
+    let workspace_data = input.workspace_data;
     let mut result = serde_json::Map::new();
 
     if (opts.plugins || show_all)
