@@ -706,17 +706,9 @@ impl LocalPackageManager {
 /// here), so the identity is resolved no further than `file` / `name` /
 /// `start_line`, which is exactly the `Unresolved` contract. The join is
 /// unaffected because columns are excluded from `stable_id`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the protocol StaticFunction field set, which has no builder"
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "static function test fixtures are constructed from JSON literals"
-)]
-fn static_function(
-    relative_posix: &str,
-    name: &str,
+struct StaticFunctionInput<'a> {
+    relative_posix: &'a str,
+    name: &'a str,
     start_line: u32,
     end_line: u32,
     cyclomatic: u32,
@@ -725,27 +717,33 @@ fn static_function(
     caller_count: u32,
     owner_count: Option<u32>,
     source_hash: Option<String>,
-) -> StaticFunction {
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "static function test fixtures are constructed from JSON literals"
+)]
+fn static_function(input: StaticFunctionInput<'_>) -> StaticFunction {
     let identity = FunctionIdentity {
-        file: relative_posix.to_owned(),
-        name: name.to_owned(),
-        start_line,
+        file: input.relative_posix.to_owned(),
+        name: input.name.to_owned(),
+        start_line: input.start_line,
         start_column: None,
         end_line: None,
         end_column: None,
-        source_hash,
+        source_hash: input.source_hash,
         resolution: IdentityResolution::Unresolved,
-        stable_id: function_identity_id(relative_posix, name, start_line),
+        stable_id: function_identity_id(input.relative_posix, input.name, input.start_line),
     };
     serde_json::from_value(serde_json::json!({
-        "name": name,
-        "start_line": start_line,
-        "end_line": end_line,
-        "cyclomatic": cyclomatic,
-        "static_used": static_used,
-        "test_covered": test_covered,
-        "caller_count": caller_count,
-        "owner_count": owner_count,
+        "name": input.name,
+        "start_line": input.start_line,
+        "end_line": input.end_line,
+        "cyclomatic": input.cyclomatic,
+        "static_used": input.static_used,
+        "test_covered": input.test_covered,
+        "caller_count": input.caller_count,
+        "owner_count": input.owner_count,
         "identity": identity,
     }))
     .expect(
@@ -812,18 +810,18 @@ fn build_request(
                     static_signals,
                     input.istanbul_coverage,
                 );
-                static_function(
-                    &relative_posix,
-                    &function.name,
-                    function.line,
-                    function.line.saturating_add(function.line_count),
-                    u32::from(function.cyclomatic),
+                static_function(StaticFunctionInput {
+                    relative_posix: &relative_posix,
+                    name: &function.name,
+                    start_line: function.line,
+                    end_line: function.line.saturating_add(function.line_count),
+                    cyclomatic: u32::from(function.cyclomatic),
                     static_used,
                     test_covered,
                     caller_count,
                     owner_count,
-                    function.source_hash.clone(),
-                )
+                    source_hash: function.source_hash.clone(),
+                })
             })
             .collect();
         files.push(StaticFile {
@@ -1995,11 +1993,12 @@ const fn verdict_rank(verdict: RuntimeCoverageVerdict) -> u8 {
 mod tests {
     use super::{
         AccumulatedFunction, BINARY_SIGNING_VERIFY_KEY, PackageManagerOutput, RemappedFnKey,
-        RemappedFunction, RuntimeCoverageAnalysisInput, StaticSignalIndex, build_request,
-        build_static_signal_index, convert_response, discover_sidecar, looks_like_istanbul,
-        merge_remapped_functions, path_binary_candidates, prepare_coverage_sources,
-        resolve_original_source_path, resolve_sidecar_via_command, sidecar_binary_name,
-        static_function, verify_sidecar_signature, write_istanbul_coverage_file,
+        RemappedFunction, RuntimeCoverageAnalysisInput, StaticFunctionInput, StaticSignalIndex,
+        build_request, build_static_signal_index, convert_response, discover_sidecar,
+        looks_like_istanbul, merge_remapped_functions, path_binary_candidates,
+        prepare_coverage_sources, resolve_original_source_path, resolve_sidecar_via_command,
+        sidecar_binary_name, static_function, verify_sidecar_signature,
+        write_istanbul_coverage_file,
     };
     use crate::health::RuntimeCoverageOptions;
     use fallow_config::{FallowConfig, OutputFormat};
@@ -2584,18 +2583,18 @@ mod tests {
 
     #[test]
     fn static_function_round_trips() {
-        let sf = static_function(
-            "src/render.tsx",
-            "render",
-            42,
-            50,
-            4,
-            true,
-            false,
-            0,
-            None,
-            Some("0123456789abcdef".to_owned()),
-        );
+        let sf = static_function(StaticFunctionInput {
+            relative_posix: "src/render.tsx",
+            name: "render",
+            start_line: 42,
+            end_line: 50,
+            cyclomatic: 4,
+            static_used: true,
+            test_covered: false,
+            caller_count: 0,
+            owner_count: None,
+            source_hash: Some("0123456789abcdef".to_owned()),
+        });
         let value = serde_json::to_value(&sf).expect("serialize StaticFunction");
         assert_eq!(value["name"], "render");
         assert_eq!(value["start_line"], 42);
