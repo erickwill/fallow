@@ -380,30 +380,17 @@ fn execute_health_inner(
         needs_analysis_output,
     )?;
 
-    let mut runtime_coverage = if let Some(ref production_options) = opts.runtime_coverage {
-        let analysis_output = shared_analysis_output
-            .as_ref()
-            .expect("runtime coverage requires analysis output");
-        Some(coverage::analyze(
-            production_options,
-            &coverage::RuntimeCoverageAnalysisInput {
-                root: &config.root,
-                modules: &modules,
-                analysis_output,
-                istanbul_coverage: istanbul_coverage.as_ref(),
-                file_paths: &file_paths,
-                ignore_set: &ignore_set,
-                changed_files: changed_files.as_ref(),
-                ws_roots: ws_roots.as_deref(),
-                top: opts.top,
-                codeowners_path: config.codeowners.as_deref(),
-                quiet: opts.quiet,
-                output: opts.output,
-            },
-        )?)
-    } else {
-        None
-    };
+    let mut runtime_coverage = analyze_runtime_coverage(
+        opts,
+        &config,
+        &modules,
+        shared_analysis_output.as_ref(),
+        istanbul_coverage.as_ref(),
+        &file_paths,
+        &ignore_set,
+        changed_files.as_ref(),
+        ws_roots.as_deref(),
+    )?;
 
     let precomputed_for_scores = if needs_file_scores {
         shared_analysis_output.take()
@@ -861,6 +848,51 @@ fn prepare_shared_analysis_output(
     fallow_core::analyze_with_parse_result(config, modules)
         .map(Some)
         .map_err(|e| emit_error(&format!("analysis failed: {e}"), 2, opts.output))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "runtime coverage analysis needs the same filtered health context as scoring"
+)]
+fn analyze_runtime_coverage(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    modules: &[fallow_core::extract::ModuleInfo],
+    shared_analysis_output: Option<&fallow_core::AnalysisOutput>,
+    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    ignore_set: &globset::GlobSet,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+) -> Result<Option<crate::health_types::RuntimeCoverageReport>, ExitCode> {
+    let Some(ref production_options) = opts.runtime_coverage else {
+        return Ok(None);
+    };
+    let Some(analysis_output) = shared_analysis_output else {
+        return Err(emit_error(
+            "runtime coverage requires analysis output",
+            2,
+            opts.output,
+        ));
+    };
+    coverage::analyze(
+        production_options,
+        &coverage::RuntimeCoverageAnalysisInput {
+            root: &config.root,
+            modules,
+            analysis_output,
+            istanbul_coverage,
+            file_paths,
+            ignore_set,
+            changed_files,
+            ws_roots,
+            top: opts.top,
+            codeowners_path: config.codeowners.as_deref(),
+            quiet: opts.quiet,
+            output: opts.output,
+        },
+    )
+    .map(Some)
 }
 
 /// Drop complexity findings whose function body span does NOT overlap any
