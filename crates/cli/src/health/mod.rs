@@ -700,15 +700,15 @@ fn execute_health_inner(
     };
 
     if let Some(ref snapshot_path) = opts.save_snapshot {
-        save_snapshot(
+        save_snapshot(SnapshotInput {
             opts,
             snapshot_path,
-            &vital_signs,
-            &counts,
-            hotspot_summary.as_ref(),
-            health_score.as_ref(),
-            active_coverage_model,
-        )?;
+            vital_signs: &vital_signs,
+            counts: &counts,
+            hotspot_summary: hotspot_summary.as_ref(),
+            health_score: health_score.as_ref(),
+            coverage_model: active_coverage_model,
+        })?;
     }
 
     let health_trend = compute_health_trend(opts, &vital_signs, &counts, health_score.as_ref());
@@ -1515,37 +1515,39 @@ fn compute_vital_signs_and_counts(input: &VitalSignsAndCountsInput<'_>) -> (
 }
 
 /// Save a vital signs snapshot to disk if requested.
-fn save_snapshot(
-    opts: &HealthOptions<'_>,
-    snapshot_path: &std::path::Path,
-    vital_signs: &crate::health_types::VitalSigns,
-    counts: &crate::health_types::VitalSignsCounts,
-    hotspot_summary: Option<&crate::health_types::HotspotSummary>,
-    health_score: Option<&crate::health_types::HealthScore>,
+struct SnapshotInput<'a> {
+    opts: &'a HealthOptions<'a>,
+    snapshot_path: &'a std::path::Path,
+    vital_signs: &'a crate::health_types::VitalSigns,
+    counts: &'a crate::health_types::VitalSignsCounts,
+    hotspot_summary: Option<&'a crate::health_types::HotspotSummary>,
+    health_score: Option<&'a crate::health_types::HealthScore>,
     coverage_model: Option<crate::health_types::CoverageModel>,
-) -> Result<(), ExitCode> {
-    let shallow = hotspot_summary.is_some_and(|s| s.shallow_clone);
+}
+
+fn save_snapshot(input: SnapshotInput<'_>) -> Result<(), ExitCode> {
+    let shallow = input.hotspot_summary.is_some_and(|s| s.shallow_clone);
     let snapshot = vital_signs::build_snapshot(
-        vital_signs.clone(),
-        counts.clone(),
-        opts.root,
+        input.vital_signs.clone(),
+        input.counts.clone(),
+        input.opts.root,
         shallow,
-        health_score,
-        coverage_model,
+        input.health_score,
+        input.coverage_model,
     );
-    let explicit = if snapshot_path.as_os_str().is_empty() {
+    let explicit = if input.snapshot_path.as_os_str().is_empty() {
         None
     } else {
-        Some(snapshot_path)
+        Some(input.snapshot_path)
     };
-    match vital_signs::save_snapshot(&snapshot, opts.root, explicit) {
+    match vital_signs::save_snapshot(&snapshot, input.opts.root, explicit) {
         Ok(saved_path) => {
-            if !opts.quiet {
+            if !input.opts.quiet {
                 eprintln!("Saved vital signs snapshot to {}", saved_path.display());
             }
             Ok(())
         }
-        Err(e) => Err(emit_error(&e, 2, opts.output)),
+        Err(e) => Err(emit_error(&e, 2, input.opts.output)),
     }
 }
 
