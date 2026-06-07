@@ -283,10 +283,6 @@ pub fn execute_health(opts: &HealthOptions<'_>) -> Result<HealthResult, ExitCode
     clippy::too_many_lines,
     reason = "health pipeline orchestration with many optional features"
 )]
-#[expect(
-    clippy::expect_used,
-    reason = "shared analysis output and churn thread joins are guarded by the selected health modes"
-)]
 fn execute_health_inner(
     opts: &HealthOptions<'_>,
     input: HealthPipelineInput,
@@ -398,55 +394,22 @@ fn execute_health_inner(
         None
     };
 
-    let needs_churn = opts.hotspots || opts.targets;
-    let (file_score_result, file_scores_ms, churn_fetch) = if needs_file_scores && needs_churn {
-        std::thread::scope(|s| {
-            let churn_handle = s.spawn(|| hotspots::fetch_churn_data(opts, &config.cache_dir));
-            let t = Instant::now();
-            let score_result = compute_filtered_file_scores(FileScoreInput {
-                config: &config,
-                modules: &modules,
-                file_paths: &file_paths,
-                changed_files: changed_files.as_ref(),
-                ws_roots: ws_roots.as_deref(),
-                ignore_set: &ignore_set,
-                output: opts.output,
-                istanbul_coverage: istanbul_coverage.as_ref(),
-                pre_computed: precomputed_for_scores,
-            });
-            let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
-            let churn = churn_handle.join().expect("churn thread panicked");
-            (score_result, fs_ms, churn)
-        })
-    } else {
-        let t = Instant::now();
-        let score_result = if needs_file_scores {
-            compute_filtered_file_scores(FileScoreInput {
-                config: &config,
-                modules: &modules,
-                file_paths: &file_paths,
-                changed_files: changed_files.as_ref(),
-                ws_roots: ws_roots.as_deref(),
-                ignore_set: &ignore_set,
-                output: opts.output,
-                istanbul_coverage: istanbul_coverage.as_ref(),
-                pre_computed: precomputed_for_scores,
-            })
-        } else {
-            Ok((None, None, None))
-        };
-        let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let churn = if needs_churn {
-            hotspots::fetch_churn_data(opts, &config.cache_dir)
-        } else {
-            None
-        };
-        (score_result, fs_ms, churn)
-    };
+    let (file_score_result, file_scores_ms, churn_fetch) = compute_file_scores_and_churn(
+        opts,
+        &config,
+        &modules,
+        &file_paths,
+        changed_files.as_ref(),
+        ws_roots.as_deref(),
+        &ignore_set,
+        istanbul_coverage.as_ref(),
+        needs_file_scores,
+        precomputed_for_scores,
+    )?;
     let (git_churn_ms, git_churn_cache_hit) = churn_fetch
         .as_ref()
         .map_or((0.0, false), |cf| (cf.git_log_ms, cf.cache_hit));
-    let (score_output, files_scored, average_maintainability) = file_score_result?;
+    let (score_output, files_scored, average_maintainability) = file_score_result;
 
     if let Some(ref cf) = churn_fetch
         && !cf.cache_hit
@@ -895,6 +858,73 @@ fn analyze_runtime_coverage(
     .map(Some)
 }
 
+type FileScoresAndChurn = (FileScoreResult, f64, Option<hotspots::ChurnFetchResult>);
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "file-score filtering needs the active health scope and optional precomputed analysis"
+)]
+fn compute_file_scores_and_churn(
+    opts: &HealthOptions<'_>,
+    config: &ResolvedConfig,
+    modules: &[fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>>,
+    ws_roots: Option<&[std::path::PathBuf]>,
+    ignore_set: &globset::GlobSet,
+    istanbul_coverage: Option<&scoring::IstanbulCoverage>,
+    needs_file_scores: bool,
+    precomputed_for_scores: Option<fallow_core::AnalysisOutput>,
+) -> Result<FileScoresAndChurn, ExitCode> {
+    let needs_churn = opts.hotspots || opts.targets;
+    if needs_file_scores && needs_churn {
+        return std::thread::scope(|s| {
+            let churn_handle = s.spawn(|| hotspots::fetch_churn_data(opts, &config.cache_dir));
+            let t = Instant::now();
+            let score_result = compute_filtered_file_scores(FileScoreInput {
+                config,
+                modules,
+                file_paths,
+                changed_files,
+                ws_roots,
+                ignore_set,
+                output: opts.output,
+                istanbul_coverage,
+                pre_computed: precomputed_for_scores,
+            })?;
+            let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let churn = churn_handle
+                .join()
+                .map_err(|_| emit_error("churn thread panicked", 2, opts.output))?;
+            Ok((score_result, fs_ms, churn))
+        });
+    }
+
+    let t = Instant::now();
+    let score_result = if needs_file_scores {
+        compute_filtered_file_scores(FileScoreInput {
+            config,
+            modules,
+            file_paths,
+            changed_files,
+            ws_roots,
+            ignore_set,
+            output: opts.output,
+            istanbul_coverage,
+            pre_computed: precomputed_for_scores,
+        })?
+    } else {
+        (None, None, None)
+    };
+    let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let churn = if needs_churn {
+        hotspots::fetch_churn_data(opts, &config.cache_dir)
+    } else {
+        None
+    };
+    Ok((score_result, fs_ms, churn))
+}
+
 /// Drop complexity findings whose function body span does NOT overlap any
 /// added line in the supplied diff. The function spans
 /// `[line..=line + line_count - 1]`: a hotspot that starts before the
@@ -1063,8 +1093,7 @@ type FileScoreResult = (Option<scoring::FileScoreOutput>, Option<usize>, Option<
 struct FileScoreInput<'a> {
     config: &'a ResolvedConfig,
     modules: &'a [fallow_core::extract::ModuleInfo],
-    file_paths:
-        &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
     changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
     ws_roots: Option<&'a [std::path::PathBuf]>,
     ignore_set: &'a globset::GlobSet,
@@ -1100,10 +1129,7 @@ fn compute_filtered_file_scores(input: FileScoreInput<'_>) -> Result<FileScoreRe
             }
             if !input.ignore_set.is_empty() {
                 output.scores.retain(|s| {
-                    let relative = s
-                        .path
-                        .strip_prefix(&input.config.root)
-                        .unwrap_or(&s.path);
+                    let relative = s.path.strip_prefix(&input.config.root).unwrap_or(&s.path);
                     !input.ignore_set.is_match(relative)
                 });
             }
@@ -1259,8 +1285,7 @@ impl SubsetFilter<'_> {
 struct VitalSignsAndCountsInput<'a> {
     score_output: Option<&'a scoring::FileScoreOutput>,
     modules: &'a [fallow_core::extract::ModuleInfo],
-    file_paths:
-        &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
+    file_paths: &'a rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a std::path::PathBuf>,
     needs_file_scores: bool,
     file_scores_slice: &'a [FileHealthScore],
     needs_hotspots: bool,
@@ -1269,13 +1294,16 @@ struct VitalSignsAndCountsInput<'a> {
     subset: &'a SubsetFilter<'a>,
 }
 
-fn compute_vital_signs_and_counts(input: &VitalSignsAndCountsInput<'_>) -> (
+fn compute_vital_signs_and_counts(
+    input: &VitalSignsAndCountsInput<'_>,
+) -> (
     crate::health_types::VitalSigns,
     crate::health_types::VitalSignsCounts,
 ) {
-    let analysis_counts = input
-        .score_output
-        .map(|o| o.analysis_snapshot.counts_for(input.subset, &o.analysis_counts));
+    let analysis_counts = input.score_output.map(|o| {
+        o.analysis_snapshot
+            .counts_for(input.subset, &o.analysis_counts)
+    });
     let module_filter_set: Option<rustc_hash::FxHashSet<fallow_core::discover::FileId>> =
         if input.subset.is_full() {
             None
