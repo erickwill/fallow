@@ -604,24 +604,15 @@ pub fn find_dead_code_full(
                         || {
                             rayon::join(
                                 || {
-                                    if config.rules.unresolved_imports != Severity::Off
-                                        && !resolved_modules.is_empty()
-                                    {
-                                        find_unresolved_imports(
-                                            resolved_modules,
-                                            config,
-                                            &suppressions,
-                                            &virtual_prefixes,
-                                            &generated_patterns,
-                                            &generated_type_prefixes,
-                                            &line_offsets_by_file,
-                                        )
-                                        .into_iter()
-                                        .map(UnresolvedImportFinding::with_actions)
-                                        .collect::<Vec<_>>()
-                                    } else {
-                                        Vec::new()
-                                    }
+                                    run_unresolved_import_detector(
+                                        resolved_modules,
+                                        config,
+                                        &suppressions,
+                                        &virtual_prefixes,
+                                        &generated_patterns,
+                                        &generated_type_prefixes,
+                                        &line_offsets_by_file,
+                                    )
                                 },
                                 || {
                                     if config.rules.duplicate_exports != Severity::Off {
@@ -1085,6 +1076,32 @@ fn run_dependency_detectors(
                 .collect();
     }
     results
+}
+
+fn run_unresolved_import_detector(
+    resolved_modules: &[ResolvedModule],
+    config: &ResolvedConfig,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+    virtual_prefixes: &[&str],
+    generated_patterns: &[&str],
+    generated_type_prefixes: &[&str],
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<UnresolvedImportFinding> {
+    if config.rules.unresolved_imports == Severity::Off || resolved_modules.is_empty() {
+        return Vec::new();
+    }
+    find_unresolved_imports(
+        resolved_modules,
+        config,
+        suppressions,
+        virtual_prefixes,
+        generated_patterns,
+        generated_type_prefixes,
+        line_offsets_by_file,
+    )
+    .into_iter()
+    .map(UnresolvedImportFinding::with_actions)
+    .collect()
 }
 
 #[cfg(test)]
