@@ -4,21 +4,17 @@ mod coverage_intelligence;
 mod grouping;
 mod hotspots;
 pub mod ownership;
+mod runtime_filter;
 pub mod scoring;
 mod targets;
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use fallow_config::{OutputFormat, ResolvedConfig};
-use rustc_hash::FxHashSet;
 
-use crate::baseline::{
-    HealthBaselineData, filter_new_health_findings, filter_new_health_targets,
-    filter_new_runtime_coverage_findings,
-};
+use crate::baseline::{HealthBaselineData, filter_new_health_findings, filter_new_health_targets};
 use crate::check::{get_changed_files, resolve_workspace_scope};
 use crate::error::emit_error;
 pub use crate::health_types::*;
@@ -27,6 +23,9 @@ use crate::vital_signs;
 
 use assembly::assemble_health_report;
 use hotspots::compute_hotspots;
+use runtime_filter::{
+    RuntimeCoverageFilterContext, apply_runtime_coverage_filters, relative_to_root,
+};
 use scoring::compute_file_scores;
 
 /// Pre-parsed data from the dead-code pipeline, shared with health to avoid re-analysis.
@@ -840,174 +839,6 @@ fn execute_health_inner(
     })
 }
 
-/// Inputs to runtime-coverage post-processing. Boxed into a struct so the
-/// signature does not creep past the workspace `clippy::too_many_arguments`
-/// threshold (7) as new filter axes land (e.g., per-package overrides,
-/// SARIF severity scoping). Builder-style construction is intentional so
-/// callers do not have to remember positional order across slices.
-pub struct RuntimeCoverageFilterContext<'a> {
-    pub baseline: Option<&'a HealthBaselineData>,
-    pub root: &'a std::path::Path,
-    pub top: Option<usize>,
-    pub changed_files: Option<&'a FxHashSet<PathBuf>>,
-    pub diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
-}
-
-impl<'a> RuntimeCoverageFilterContext<'a> {
-    pub fn new(root: &'a std::path::Path) -> Self {
-        Self {
-            baseline: None,
-            root,
-            top: None,
-            changed_files: None,
-            diff_index: None,
-        }
-    }
-
-    pub fn with_baseline(mut self, baseline: Option<&'a HealthBaselineData>) -> Self {
-        self.baseline = baseline;
-        self
-    }
-
-    pub fn with_top(mut self, top: Option<usize>) -> Self {
-        self.top = top;
-        self
-    }
-
-    pub fn with_changed_files(mut self, changed_files: Option<&'a FxHashSet<PathBuf>>) -> Self {
-        self.changed_files = changed_files;
-        self
-    }
-
-    pub fn with_diff_index(
-        mut self,
-        diff_index: Option<&'a crate::report::ci::diff_filter::DiffIndex>,
-    ) -> Self {
-        self.diff_index = diff_index;
-        self
-    }
-
-    /// True when ANY change-scope signal is in play. Used by the verdict
-    /// logic to disambiguate "PR review context" from "standalone analysis"
-    /// so `hot-path-touched` can outrank `cold-code-detected` in the former
-    /// (event-tied finding) while still letting `cold-code-detected`
-    /// remain primary in the latter (slow-burn finding).
-    fn has_change_scope(&self) -> bool {
-        self.diff_index.is_some() || self.changed_files.is_some()
-    }
-}
-
-fn apply_runtime_coverage_filters(
-    report: &mut crate::health_types::RuntimeCoverageReport,
-    ctx: &RuntimeCoverageFilterContext<'_>,
-) {
-    if let Some(baseline) = ctx.baseline {
-        report.findings = filter_new_runtime_coverage_findings(
-            std::mem::take(&mut report.findings),
-            baseline,
-            ctx.root,
-        );
-    }
-
-    let changed_review = retain_hot_paths_in_change_scope(report, ctx);
-
-    refresh_runtime_coverage_verdict(report, changed_review);
-
-    if let Some(top) = ctx.top {
-        report.findings.truncate(top);
-        report.hot_paths.truncate(top);
-    }
-}
-
-/// Filter `report.hot_paths` to functions in the current PR's change set.
-/// Returns `true` if any change-scope signal was supplied; the caller uses
-/// that to flip the verdict.
-///
-/// Per-file precedence (line-level beats file-level when both signals
-/// know the file):
-///   - For each hot path, if `diff_index` TOUCHES the file (i.e. the
-///     file appears as a `+++ b/<path>` header in the diff), the
-///     line-level decision wins and we do NOT fall through to
-///     `changed_files`. A touched file with added lines is retained
-///     when an added line falls in `[start_line, end_line]`. A touched
-///     file with NO added lines (deletion-only or pure-rename hunk) is
-///     dropped: per `--diff-file`'s precedence contract, the diff is
-///     the source of truth for line-level inclusion when the diff
-///     knows the file, and a file the diff touched but in which no
-///     line was added does not contain any "touched" hot path.
-///   - For files NOT in the diff at all (rename-only edit, vendored
-///     bundle, file touched by `--changed-since` but absent from the
-///     diff blob), fall back to `changed_files` file-level membership.
-///     Hot paths arrive from the protocol with project-root-relative
-///     paths; `changed_files` carries absolute paths from
-///     `git rev-parse --show-toplevel`. Compare both forms.
-///   - When a hot path's file is in neither signal, drop it.
-///
-/// `end_line == 0` collapses to `line..=line` so older 0.4 sidecars do
-/// not claim false overlap with the rest of the function body.
-fn retain_hot_paths_in_change_scope(
-    report: &mut crate::health_types::RuntimeCoverageReport,
-    ctx: &RuntimeCoverageFilterContext<'_>,
-) -> bool {
-    if !ctx.has_change_scope() {
-        return false;
-    }
-
-    report.hot_paths.retain(|hot_path| {
-        if let Some(diff_index) = ctx.diff_index
-            && let Some(rel) = relative_to_root(&hot_path.path, ctx.root)
-            && diff_index.touches_file(&rel)
-        {
-            let Some(added) = diff_index.added_lines_in(&rel) else {
-                return false;
-            };
-            let start = u64::from(hot_path.line);
-            let end = if hot_path.end_line == 0 {
-                start
-            } else {
-                u64::from(hot_path.end_line)
-            };
-            return added.iter().any(|&line| line >= start && line <= end);
-        }
-
-        if let Some(changed_files) = ctx.changed_files {
-            let absolute = if crate::path_util::is_absolute_path_any_platform(&hot_path.path) {
-                hot_path.path.clone()
-            } else {
-                ctx.root.join(&hot_path.path)
-            };
-            return changed_files.contains(&absolute) || changed_files.contains(&hot_path.path);
-        }
-
-        false
-    });
-
-    true
-}
-
-/// Reduce `path` to a forward-slashed, project-root-relative string for
-/// matching against a unified diff's `+++ b/<path>` keys. Returns `None`
-/// when the path cannot be expressed relative to `root` (different drive,
-/// path traversal escape, etc.). Backslashes in the result are normalized
-/// to forward slashes so Windows checkouts compare against the same diff
-/// keys that `git diff` emits.
-///
-/// Implementation note: mirrors the strip_prefix-first shape of
-/// `report::ci::diff_filter::relative_to_diff_path` so POSIX-style
-/// absolute paths typed in cross-platform CI configs (or deserialized
-/// from JSON output authored on a Unix host) classify correctly on
-/// Windows where `Path::is_absolute()` would misclassify them as
-/// relative.
-fn relative_to_root(path: &std::path::Path, root: &std::path::Path) -> Option<String> {
-    if let Ok(stripped) = path.strip_prefix(root) {
-        return Some(stripped.to_string_lossy().replace('\\', "/"));
-    }
-    if crate::path_util::is_absolute_path_any_platform(path) {
-        return None;
-    }
-    Some(path.to_string_lossy().replace('\\', "/"))
-}
-
 /// Drop complexity findings whose function body span does NOT overlap any
 /// added line in the supplied diff. The function spans
 /// `[line..=line + line_count - 1]`: a hotspot that starts before the
@@ -1090,93 +921,6 @@ fn filter_large_functions_by_diff(
         };
         diff_index.range_overlaps_added(&rel, start, end)
     });
-}
-
-/// Populate `report.signals` with every finding the report carries, then
-/// pick the headline `verdict` based on whether we are in PR-review
-/// context. PR mode flips the precedence so `hot-path-touched` outranks
-/// `cold-code-detected` (event-tied finding wins for THIS diff over the
-/// repo's slow-burn cold-code state). Standalone keeps the older
-/// "cold-code-detected primary" precedence so `fallow health
-/// --runtime-coverage <path>` still surfaces dead code first.
-///
-/// `pr_context` is true when any change-scope signal (diff_index or
-/// changed_files) was supplied to `apply_runtime_coverage_filters`.
-fn refresh_runtime_coverage_verdict(
-    report: &mut crate::health_types::RuntimeCoverageReport,
-    pr_context: bool,
-) {
-    let has_cold_signal = report.findings.iter().any(|finding| {
-        matches!(
-            finding.verdict,
-            crate::health_types::RuntimeCoverageVerdict::SafeToDelete
-                | crate::health_types::RuntimeCoverageVerdict::ReviewRequired
-                | crate::health_types::RuntimeCoverageVerdict::LowTraffic
-        )
-    });
-    let has_changed_hot_path = pr_context && !report.hot_paths.is_empty();
-    let has_license_grace = matches!(
-        report.verdict,
-        crate::health_types::RuntimeCoverageReportVerdict::LicenseExpiredGrace
-    ) || matches!(
-        report.watermark,
-        Some(crate::health_types::RuntimeCoverageWatermark::LicenseExpiredGrace)
-    );
-
-    report.signals =
-        build_runtime_coverage_signals(has_license_grace, has_cold_signal, has_changed_hot_path);
-
-    report.verdict = pick_primary_verdict(
-        has_license_grace,
-        has_cold_signal,
-        has_changed_hot_path,
-        pr_context,
-    );
-}
-
-fn build_runtime_coverage_signals(
-    has_license_grace: bool,
-    has_cold_signal: bool,
-    has_changed_hot_path: bool,
-) -> Vec<crate::health_types::RuntimeCoverageSignal> {
-    let mut signals = Vec::new();
-    if has_license_grace {
-        signals.push(crate::health_types::RuntimeCoverageSignal::LicenseExpiredGrace);
-    }
-    if has_cold_signal {
-        signals.push(crate::health_types::RuntimeCoverageSignal::ColdCodeDetected);
-    }
-    if has_changed_hot_path {
-        signals.push(crate::health_types::RuntimeCoverageSignal::HotPathTouched);
-    }
-    signals
-}
-
-fn pick_primary_verdict(
-    has_license_grace: bool,
-    has_cold_signal: bool,
-    has_changed_hot_path: bool,
-    pr_context: bool,
-) -> crate::health_types::RuntimeCoverageReportVerdict {
-    if has_license_grace {
-        return crate::health_types::RuntimeCoverageReportVerdict::LicenseExpiredGrace;
-    }
-    if pr_context {
-        if has_changed_hot_path {
-            return crate::health_types::RuntimeCoverageReportVerdict::HotPathTouched;
-        }
-        if has_cold_signal {
-            return crate::health_types::RuntimeCoverageReportVerdict::ColdCodeDetected;
-        }
-    } else {
-        if has_cold_signal {
-            return crate::health_types::RuntimeCoverageReportVerdict::ColdCodeDetected;
-        }
-        if has_changed_hot_path {
-            return crate::health_types::RuntimeCoverageReportVerdict::HotPathTouched;
-        }
-    }
-    crate::health_types::RuntimeCoverageReportVerdict::Clean
 }
 
 fn collect_candidate_paths(
