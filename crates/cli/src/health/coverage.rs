@@ -3620,6 +3620,61 @@ mod tests {
     }
 
     #[test]
+    fn detect_package_manager_prefers_package_json_field() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager":"bun@1.2.0"}"#,
+        )
+        .expect("write package.json");
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").expect("write lockfile");
+
+        assert!(matches!(
+            super::detect_package_manager(dir.path()),
+            Some(super::LocalPackageManager::Bun)
+        ));
+    }
+
+    #[test]
+    fn detect_package_manager_falls_back_to_lockfiles() {
+        for (lockfile, expected) in [
+            ("bun.lock", super::LocalPackageManager::Bun),
+            ("pnpm-lock.yaml", super::LocalPackageManager::Pnpm),
+            ("yarn.lock", super::LocalPackageManager::Yarn),
+            ("package-lock.json", super::LocalPackageManager::Npm),
+            ("npm-shrinkwrap.json", super::LocalPackageManager::Npm),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join(lockfile), "").expect("write lockfile");
+
+            assert!(
+                matches!(super::detect_package_manager(dir.path()), Some(actual) if actual == expected),
+                "failed for {lockfile}"
+            );
+        }
+    }
+
+    #[test]
+    fn package_manager_install_commands_match_detected_tool() {
+        assert_eq!(
+            super::LocalPackageManager::Npm.install_command(),
+            "npm install --save-dev @fallow-cli/fallow-cov"
+        );
+        assert_eq!(
+            super::LocalPackageManager::Pnpm.install_command(),
+            "pnpm add -D @fallow-cli/fallow-cov"
+        );
+        assert_eq!(
+            super::LocalPackageManager::Yarn.install_command(),
+            "yarn add -D @fallow-cli/fallow-cov"
+        );
+        assert_eq!(
+            super::LocalPackageManager::Bun.install_command(),
+            "bun add -d @fallow-cli/fallow-cov"
+        );
+    }
+
+    #[test]
     fn utf16_offset_maps_surrogate_pairs_to_byte_offsets() {
         // "a😀b": 'a'=1 byte/1 utf16, '😀'=4 bytes/2 utf16, 'b'=1 byte/1 utf16.
         let s = "a😀b";
