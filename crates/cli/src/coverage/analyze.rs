@@ -1415,6 +1415,58 @@ mod tests {
     }
 
     #[test]
+    fn cloud_called_function_emits_hot_path_blast_radius_and_importance() {
+        let info = StaticFunctionInfo {
+            caller_count: 8,
+            cyclomatic: 12,
+            owner_count: Some(1),
+            ..static_info("src/api.ts", "handler", 10, 22)
+        };
+        let static_index = static_index_with(vec![info]);
+        let mut function = cloud_function("src/api.ts", "handler", Some(10), Some(10), Some(22));
+        function.tracking_state = CloudTrackingState::Called;
+        function.hit_count = Some(20_000);
+        function.deployments_observed = 4;
+        let snapshot = CloudRuntimeContext {
+            repo: "acme/web".to_owned(),
+            window: crate::coverage::cloud_client::CloudRuntimeWindow { period_days: 14 },
+            summary: crate::coverage::cloud_client::CloudRuntimeSummary {
+                trace_count: 10,
+                deployments_seen: 4,
+                functions_tracked: 1,
+                functions_hit: 1,
+                functions_unhit: 0,
+                functions_untracked: 0,
+                coverage_percent: 100.0,
+                last_received_at: None,
+            },
+            blast_radius: vec![],
+            importance: vec![],
+            functions: vec![function],
+            warnings: vec![],
+        };
+
+        let report = merge_cloud_snapshot(&snapshot, &static_index, 100);
+
+        assert_eq!(report.verdict, RuntimeCoverageReportVerdict::Clean);
+        assert!(report.findings.is_empty());
+        assert_eq!(report.hot_paths[0].function, "handler");
+        assert_eq!(report.hot_paths[0].invocations, 20_000);
+        assert_eq!(report.blast_radius[0].caller_count, 8);
+        assert_eq!(
+            report.blast_radius[0].risk_band,
+            RuntimeCoverageRiskBand::Medium
+        );
+        assert_eq!(report.importance[0].function, "handler");
+        assert!(
+            report.importance[0]
+                .reason
+                .contains("Moderate traffic, high complexity, single owner")
+        );
+        assert!(report.summary.capture_quality.is_some());
+    }
+
+    #[test]
     fn cloud_match_rejects_same_name_when_line_does_not_match() {
         let static_index = static_index_with(vec![
             static_info("src/api.ts", "handler", 10, 20),
