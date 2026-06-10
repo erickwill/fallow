@@ -80,7 +80,7 @@ Check:
 ### SARIF format audit (Phase 3e)
 
 ```bash
-FALLOW_QUIET=1 fallow <command> --format sarif --root benchmarks/fixtures/real-world/zod 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['version'])"
+FALLOW_QUIET=1 fallow <command> --format sarif --root benchmarks/fixtures/real-world/zod 2>/dev/null | jq -r '.version'
 ```
 
 Check:
@@ -90,7 +90,7 @@ Check:
 ### CodeClimate format audit (Phase 3f)
 
 ```bash
-FALLOW_QUIET=1 fallow <command> --format codeclimate --root benchmarks/fixtures/real-world/zod 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{len(d)} issues'); print(json.dumps(d[0], indent=2) if d else 'empty')"
+FALLOW_QUIET=1 fallow <command> --format codeclimate --root benchmarks/fixtures/real-world/zod 2>/dev/null | jq 'length as $count | "\($count) issues", (if length > 0 then .[0] else "empty" end)'
 ```
 
 Check:

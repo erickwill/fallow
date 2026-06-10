@@ -37,11 +37,7 @@ For each JSON-output diff, walk this list in addition to the generic checks abov
 ### JSON format audit (Phase 3a)
 
 ```bash
-FALLOW_QUIET=1 fallow <command> --format json --root benchmarks/fixtures/real-world/zod 2>/dev/null | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-print(json.dumps(d, indent=2)[:2000])
-"
+FALLOW_QUIET=1 fallow <command> --format json --root benchmarks/fixtures/real-world/zod 2>/dev/null | jq . | head -c 2000
 ```
 
 Check:
