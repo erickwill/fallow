@@ -3261,18 +3261,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             license::run(&map_license_subcommand(subcommand), output)
         }
         Command::Telemetry { .. } => unreachable!("handled before root validation"),
-        Command::Coverage { subcommand } => coverage::run(
-            map_coverage_subcommand(&subcommand, cli.explain),
-            &coverage::RunContext {
-                root,
-                config_path: &cli.config,
-                output,
-                quiet,
-                no_cache: cli.no_cache,
-                threads,
-                explain: cli.explain,
-            },
-        ),
+        Command::Coverage { subcommand } => dispatch_coverage_command(dispatch, subcommand),
         Command::SetupHooks {
             agent,
             dry_run,
@@ -3329,6 +3318,22 @@ fn dispatch_security_command(command: Command, dispatch: &DispatchContext<'_>) -
         min_invocations_hot,
         explain: cli.explain,
     })
+}
+
+fn dispatch_coverage_command(dispatch: &DispatchContext<'_>, subcommand: CoverageCli) -> ExitCode {
+    let cli = dispatch.cli;
+    coverage::run(
+        map_coverage_subcommand(&subcommand, cli.explain),
+        &coverage::RunContext {
+            root: dispatch.root,
+            config_path: &cli.config,
+            output: dispatch.output,
+            quiet: dispatch.quiet,
+            no_cache: cli.no_cache,
+            threads: dispatch.threads,
+            explain: cli.explain,
+        },
+    )
 }
 
 fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> ExitCode {
