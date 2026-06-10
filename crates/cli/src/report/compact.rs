@@ -13,14 +13,157 @@ pub(super) fn print_compact(results: &AnalysisResults, root: &Path) {
     }
 }
 
+fn compact_path(path: &Path, root: &Path) -> String {
+    normalize_uri(&relative_path(path, root).display().to_string())
+}
+
+fn compact_circular_dependency_line(
+    cycle: &fallow_core::results::CircularDependencyFinding,
+    root: &Path,
+) -> String {
+    let chain: Vec<String> = cycle
+        .cycle
+        .files
+        .iter()
+        .map(|path| compact_path(path, root))
+        .collect();
+    let mut display_chain = chain.clone();
+    if let Some(first) = chain.first() {
+        display_chain.push(first.clone());
+    }
+    let first_file = chain.first().map_or_else(String::new, Clone::clone);
+    let cross_pkg_tag = if cycle.cycle.is_cross_package {
+        " (cross-package)"
+    } else {
+        ""
+    };
+    format!(
+        "circular-dependency:{}:{}:{}{}",
+        first_file,
+        cycle.cycle.line,
+        display_chain.join(" \u{2192} "),
+        cross_pkg_tag
+    )
+}
+
+fn compact_re_export_cycle_line(
+    cycle: &fallow_core::results::ReExportCycleFinding,
+    root: &Path,
+) -> String {
+    let chain: Vec<String> = cycle
+        .cycle
+        .files
+        .iter()
+        .map(|path| compact_path(path, root))
+        .collect();
+    let first_file = chain.first().map_or_else(String::new, Clone::clone);
+    let kind_tag = match cycle.cycle.kind {
+        fallow_core::results::ReExportCycleKind::SelfLoop => " (self-loop)",
+        fallow_core::results::ReExportCycleKind::MultiNode => "",
+    };
+    format!(
+        "re-export-cycle:{}:{}{}",
+        first_file,
+        chain.join(" <-> "),
+        kind_tag
+    )
+}
+
+fn compact_boundary_violation_line(
+    item: &fallow_core::results::BoundaryViolationFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "boundary-violation:{}:{}:{} -> {} ({} -> {})",
+        compact_path(&item.violation.from_path, root),
+        item.violation.line,
+        compact_path(&item.violation.from_path, root),
+        compact_path(&item.violation.to_path, root),
+        item.violation.from_zone,
+        item.violation.to_zone,
+    )
+}
+
+fn compact_boundary_coverage_line(
+    item: &fallow_core::results::BoundaryCoverageViolationFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "boundary-coverage:{}:{}:no matching boundary zone",
+        compact_path(&item.violation.path, root),
+        item.violation.line,
+    )
+}
+
+fn compact_boundary_call_line(
+    item: &fallow_core::results::BoundaryCallViolationFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "boundary-call:{}:{}:{} forbidden in zone {} (pattern {})",
+        compact_path(&item.violation.path, root),
+        item.violation.line,
+        item.violation.callee,
+        item.violation.zone,
+        item.violation.pattern,
+    )
+}
+
+fn compact_stale_suppression_line(
+    item: &fallow_core::results::StaleSuppression,
+    root: &Path,
+) -> String {
+    format!(
+        "stale-suppression:{}:{}:{}",
+        compact_path(&item.path, root),
+        item.line,
+        item.display_message(),
+    )
+}
+
+fn compact_catalog_reference_line(
+    item: &fallow_core::results::UnresolvedCatalogReferenceFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "unresolved-catalog-reference:{}:{}:{}:{}",
+        compact_path(&item.reference.path, root),
+        item.reference.line,
+        item.reference.catalog_name,
+        item.reference.entry_name,
+    )
+}
+
+fn compact_unused_override_line(
+    item: &fallow_core::results::UnusedDependencyOverrideFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "unused-dependency-override:{}:{}:{}:{}",
+        compact_path(&item.entry.path, root),
+        item.entry.line,
+        item.entry.source.as_label(),
+        item.entry.raw_key,
+    )
+}
+
+fn compact_misconfigured_override_line(
+    item: &fallow_core::results::MisconfiguredDependencyOverrideFinding,
+    root: &Path,
+) -> String {
+    format!(
+        "misconfigured-dependency-override:{}:{}:{}:{}",
+        compact_path(&item.entry.path, root),
+        item.entry.line,
+        item.entry.source.as_label(),
+        item.entry.raw_key,
+    )
+}
+
 /// Build compact output lines for analysis results.
 /// Each issue is represented as a single `prefix:details` line.
-#[expect(
-    clippy::too_many_lines,
-    reason = "One uniform loop per issue type; the line count grows linearly with new issue types and the structure is clearer than extracting per-loop helpers."
-)]
 pub fn build_compact_lines(results: &AnalysisResults, root: &Path) -> Vec<String> {
-    let rel = |p: &Path| normalize_uri(&relative_path(p, root).display().to_string());
+    let rel = |p: &Path| compact_path(p, root);
 
     let compact_export = |export: &UnusedExport, kind: &str, re_kind: &str| -> String {
         let tag = if export.is_re_export { re_kind } else { kind };
@@ -108,66 +251,19 @@ pub fn build_compact_lines(results: &AnalysisResults, root: &Path) -> Vec<String
         lines.push(format!("test-only-dep:{}", dep.dep.package_name));
     }
     for cycle in &results.circular_dependencies {
-        let chain: Vec<String> = cycle.cycle.files.iter().map(|p| rel(p)).collect();
-        let mut display_chain = chain.clone();
-        if let Some(first) = chain.first() {
-            display_chain.push(first.clone());
-        }
-        let first_file = chain.first().map_or_else(String::new, Clone::clone);
-        let cross_pkg_tag = if cycle.cycle.is_cross_package {
-            " (cross-package)"
-        } else {
-            ""
-        };
-        lines.push(format!(
-            "circular-dependency:{}:{}:{}{}",
-            first_file,
-            cycle.cycle.line,
-            display_chain.join(" \u{2192} "),
-            cross_pkg_tag
-        ));
+        lines.push(compact_circular_dependency_line(cycle, root));
     }
     for cycle in &results.re_export_cycles {
-        let chain: Vec<String> = cycle.cycle.files.iter().map(|p| rel(p)).collect();
-        let first_file = chain.first().map_or_else(String::new, Clone::clone);
-        let kind_tag = match cycle.cycle.kind {
-            fallow_core::results::ReExportCycleKind::SelfLoop => " (self-loop)",
-            fallow_core::results::ReExportCycleKind::MultiNode => "",
-        };
-        lines.push(format!(
-            "re-export-cycle:{}:{}{}",
-            first_file,
-            chain.join(" <-> "),
-            kind_tag
-        ));
+        lines.push(compact_re_export_cycle_line(cycle, root));
     }
     for v in &results.boundary_violations {
-        lines.push(format!(
-            "boundary-violation:{}:{}:{} -> {} ({} -> {})",
-            rel(&v.violation.from_path),
-            v.violation.line,
-            rel(&v.violation.from_path),
-            rel(&v.violation.to_path),
-            v.violation.from_zone,
-            v.violation.to_zone,
-        ));
+        lines.push(compact_boundary_violation_line(v, root));
     }
     for v in &results.boundary_coverage_violations {
-        lines.push(format!(
-            "boundary-coverage:{}:{}:no matching boundary zone",
-            rel(&v.violation.path),
-            v.violation.line,
-        ));
+        lines.push(compact_boundary_coverage_line(v, root));
     }
     for v in &results.boundary_call_violations {
-        lines.push(format!(
-            "boundary-call:{}:{}:{} forbidden in zone {} (pattern {})",
-            rel(&v.violation.path),
-            v.violation.line,
-            v.violation.callee,
-            v.violation.zone,
-            v.violation.pattern,
-        ));
+        lines.push(compact_boundary_call_line(v, root));
     }
     for v in &results.policy_violations {
         lines.push(format!(
@@ -180,12 +276,7 @@ pub fn build_compact_lines(results: &AnalysisResults, root: &Path) -> Vec<String
         ));
     }
     for s in &results.stale_suppressions {
-        lines.push(format!(
-            "stale-suppression:{}:{}:{}",
-            rel(&s.path),
-            s.line,
-            s.display_message(),
-        ));
+        lines.push(compact_stale_suppression_line(s, root));
     }
     for entry in &results.unused_catalog_entries {
         lines.push(format!(
@@ -205,31 +296,13 @@ pub fn build_compact_lines(results: &AnalysisResults, root: &Path) -> Vec<String
         ));
     }
     for finding in &results.unresolved_catalog_references {
-        lines.push(format!(
-            "unresolved-catalog-reference:{}:{}:{}:{}",
-            rel(&finding.reference.path),
-            finding.reference.line,
-            finding.reference.catalog_name,
-            finding.reference.entry_name,
-        ));
+        lines.push(compact_catalog_reference_line(finding, root));
     }
     for finding in &results.unused_dependency_overrides {
-        lines.push(format!(
-            "unused-dependency-override:{}:{}:{}:{}",
-            rel(&finding.entry.path),
-            finding.entry.line,
-            finding.entry.source.as_label(),
-            finding.entry.raw_key,
-        ));
+        lines.push(compact_unused_override_line(finding, root));
     }
     for finding in &results.misconfigured_dependency_overrides {
-        lines.push(format!(
-            "misconfigured-dependency-override:{}:{}:{}:{}",
-            rel(&finding.entry.path),
-            finding.entry.line,
-            finding.entry.source.as_label(),
-            finding.entry.raw_key,
-        ));
+        lines.push(compact_misconfigured_override_line(finding, root));
     }
 
     lines
