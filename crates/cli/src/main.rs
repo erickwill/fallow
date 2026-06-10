@@ -3245,27 +3245,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
                 },
             )
         }
-        Command::Flags { top } => {
-            let production = match resolve_production_modes(cli, root, output, false, false, false)
-            {
-                Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
-                Err(code) => return code,
-            };
-            flags::run_flags(&flags::FlagsOptions {
-                root,
-                config_path: &cli.config,
-                output,
-                no_cache: cli.no_cache,
-                threads,
-                quiet,
-                production,
-                workspace: cli.workspace.as_deref(),
-                changed_workspaces: cli.changed_workspaces.as_deref(),
-                changed_since: cli.changed_since.as_deref(),
-                explain: cli.explain,
-                top,
-            })
-        }
+        Command::Flags { top } => dispatch_flags_command(dispatch, top),
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
         Command::Impact { subcommand } => dispatch_impact(root, quiet, output, subcommand),
@@ -3389,6 +3369,32 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             gate_marker,
         },
     )
+}
+
+fn dispatch_flags_command(dispatch: &DispatchContext<'_>, top: Option<usize>) -> ExitCode {
+    let cli = dispatch.cli;
+    let root = dispatch.root;
+    let output = dispatch.output;
+    let quiet = dispatch.quiet;
+    let threads = dispatch.threads;
+    let production = match resolve_production_modes(cli, root, output, false, false, false) {
+        Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
+        Err(code) => return code,
+    };
+    flags::run_flags(&flags::FlagsOptions {
+        root,
+        config_path: &cli.config,
+        output,
+        no_cache: cli.no_cache,
+        threads,
+        quiet,
+        production,
+        workspace: cli.workspace.as_deref(),
+        changed_workspaces: cli.changed_workspaces.as_deref(),
+        changed_since: cli.changed_since.as_deref(),
+        explain: cli.explain,
+        top,
+    })
 }
 
 fn dispatch_impact(
