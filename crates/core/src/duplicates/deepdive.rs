@@ -351,149 +351,147 @@ fn identifier_words(source: &str) -> impl Iterator<Item = &str> {
 
 /// Identifiers too generic to make a useful extracted-function name, plus the
 /// reserved words that show up as bare tokens in a fragment.
+const GENERIC_IDENTIFIERS: &[&str] = &[
+    "data",
+    "result",
+    "results",
+    "item",
+    "items",
+    "value",
+    "values",
+    "val",
+    "obj",
+    "object",
+    "arr",
+    "array",
+    "list",
+    "map",
+    "set",
+    "key",
+    "keys",
+    "tmp",
+    "temp",
+    "acc",
+    "cur",
+    "curr",
+    "prev",
+    "next",
+    "node",
+    "el",
+    "elem",
+    "element",
+    "args",
+    "arg",
+    "opts",
+    "options",
+    "params",
+    "param",
+    "props",
+    "ctx",
+    "context",
+    "res",
+    "req",
+    "err",
+    "error",
+    "fn",
+    "cb",
+    "callback",
+    "out",
+    "input",
+    "output",
+    "name",
+    "id",
+    "index",
+    "idx",
+    "x",
+    "y",
+    "z",
+    "i",
+    "j",
+    "k",
+    "n",
+    "m",
+    "a",
+    "b",
+    "c",
+    "e",
+    "_",
+    "const",
+    "let",
+    "var",
+    "function",
+    "return",
+    "if",
+    "else",
+    "for",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "break",
+    "continue",
+    "new",
+    "this",
+    "true",
+    "false",
+    "null",
+    "undefined",
+    "void",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "class",
+    "extends",
+    "super",
+    "import",
+    "export",
+    "from",
+    "default",
+    "async",
+    "await",
+    "yield",
+    "type",
+    "interface",
+    "enum",
+    "as",
+    "is",
+    "keyof",
+    "readonly",
+    "public",
+    "private",
+    "protected",
+    "static",
+    "get",
+    "delete",
+    "throw",
+    "try",
+    "catch",
+    "finally",
+    "string",
+    "number",
+    "boolean",
+    "any",
+    "unknown",
+    "never",
+    "bigint",
+    "symbol",
+    "Math",
+    "JSON",
+    "Object",
+    "Array",
+    "Promise",
+    "BigInt",
+    "Number",
+    "String",
+    "Boolean",
+    "Symbol",
+    "RegExp",
+    "Date",
+];
+
 fn is_generic_identifier(word: &str) -> bool {
-    if word.chars().count() == 1 {
-        return true;
-    }
-    matches!(
-        word,
-        "data"
-            | "result"
-            | "results"
-            | "item"
-            | "items"
-            | "value"
-            | "values"
-            | "val"
-            | "obj"
-            | "object"
-            | "arr"
-            | "array"
-            | "list"
-            | "map"
-            | "set"
-            | "key"
-            | "keys"
-            | "tmp"
-            | "temp"
-            | "acc"
-            | "cur"
-            | "curr"
-            | "prev"
-            | "next"
-            | "node"
-            | "el"
-            | "elem"
-            | "element"
-            | "args"
-            | "arg"
-            | "opts"
-            | "options"
-            | "params"
-            | "param"
-            | "props"
-            | "ctx"
-            | "context"
-            | "res"
-            | "req"
-            | "err"
-            | "error"
-            | "fn"
-            | "cb"
-            | "callback"
-            | "out"
-            | "input"
-            | "output"
-            | "name"
-            | "id"
-            | "index"
-            | "idx"
-            | "x"
-            | "y"
-            | "z"
-            | "i"
-            | "j"
-            | "k"
-            | "n"
-            | "m"
-            | "a"
-            | "b"
-            | "c"
-            | "e"
-            | "_"
-            | "const"
-            | "let"
-            | "var"
-            | "function"
-            | "return"
-            | "if"
-            | "else"
-            | "for"
-            | "while"
-            | "do"
-            | "switch"
-            | "case"
-            | "break"
-            | "continue"
-            | "new"
-            | "this"
-            | "true"
-            | "false"
-            | "null"
-            | "undefined"
-            | "void"
-            | "typeof"
-            | "instanceof"
-            | "in"
-            | "of"
-            | "class"
-            | "extends"
-            | "super"
-            | "import"
-            | "export"
-            | "from"
-            | "default"
-            | "async"
-            | "await"
-            | "yield"
-            | "type"
-            | "interface"
-            | "enum"
-            | "as"
-            | "is"
-            | "keyof"
-            | "readonly"
-            | "public"
-            | "private"
-            | "protected"
-            | "static"
-            | "get"
-            | "delete"
-            | "throw"
-            | "try"
-            | "catch"
-            | "finally"
-            | "string"
-            | "number"
-            | "boolean"
-            | "any"
-            | "unknown"
-            | "never"
-            | "bigint"
-            | "symbol"
-            | "Math"
-            | "JSON"
-            | "Object"
-            | "Array"
-            | "Promise"
-            | "BigInt"
-            | "Number"
-            | "String"
-            | "Boolean"
-            | "Symbol"
-            | "RegExp"
-            | "Date"
-    )
+    word.chars().count() == 1 || GENERIC_IDENTIFIERS.contains(&word)
 }
 
 #[cfg(test)]
