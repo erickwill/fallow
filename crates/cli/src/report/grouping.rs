@@ -151,20 +151,15 @@ pub struct ResultGroup {
 /// Each issue is assigned to a group by extracting its primary file path
 /// and resolving the group key via the `OwnershipResolver`.
 /// Returns groups sorted alphabetically by key, with `(unowned)` last.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one per-issue-type loop body; each loop is 4-7 lines and tightly correlated; splitting into helpers per type would scatter the per-path-key derivation logic that this fn exists to consolidate. Workspace-config issue types already factored into `group_workspace_config_issues`."
-)]
 pub fn group_analysis_results(
     results: &AnalysisResults,
     root: &Path,
     resolver: &OwnershipResolver,
 ) -> Vec<ResultGroup> {
-    let mut groups: FxHashMap<String, AnalysisResults> = FxHashMap::default();
     let mut group_owners: FxHashMap<String, Vec<String>> = FxHashMap::default();
     let is_section_mode = matches!(resolver, OwnershipResolver::Section(_));
 
-    let mut key_for = |path: &Path| -> String {
+    let key_for = |path: &Path| -> String {
         let rel = relative_path(path, root);
         let key = resolver.resolve(rel);
         if is_section_mode && !group_owners.contains_key(&key) {
@@ -177,207 +172,191 @@ pub fn group_analysis_results(
         key
     };
 
-    for item in &results.unused_files {
-        groups
-            .entry(key_for(&item.file.path))
-            .or_default()
-            .unused_files
-            .push(item.clone());
-    }
-    for item in &results.unused_exports {
-        groups
-            .entry(key_for(&item.export.path))
-            .or_default()
-            .unused_exports
-            .push(item.clone());
-    }
-    for item in &results.unused_types {
-        groups
-            .entry(key_for(&item.export.path))
-            .or_default()
-            .unused_types
-            .push(item.clone());
-    }
-    for item in &results.private_type_leaks {
-        groups
-            .entry(key_for(&item.leak.path))
-            .or_default()
-            .private_type_leaks
-            .push(item.clone());
-    }
-    for item in &results.unused_enum_members {
-        groups
-            .entry(key_for(&item.member.path))
-            .or_default()
-            .unused_enum_members
-            .push(item.clone());
-    }
-    for item in &results.unused_class_members {
-        groups
-            .entry(key_for(&item.member.path))
-            .or_default()
-            .unused_class_members
-            .push(item.clone());
-    }
-    for item in &results.unresolved_imports {
-        groups
-            .entry(key_for(&item.import.path))
-            .or_default()
-            .unresolved_imports
-            .push(item.clone());
-    }
+    let mut builder = GroupingBuilder::new(key_for);
+    builder.group_symbol_issues(results);
+    builder.group_dependency_issues(results);
+    builder.group_relationship_issues(results);
+    builder.group_workspace_config_issues(results);
 
-    for item in &results.unused_dependencies {
-        groups
-            .entry(key_for(&item.dep.path))
-            .or_default()
-            .unused_dependencies
-            .push(item.clone());
-    }
-    for item in &results.unused_dev_dependencies {
-        groups
-            .entry(key_for(&item.dep.path))
-            .or_default()
-            .unused_dev_dependencies
-            .push(item.clone());
-    }
-    for item in &results.unused_optional_dependencies {
-        groups
-            .entry(key_for(&item.dep.path))
-            .or_default()
-            .unused_optional_dependencies
-            .push(item.clone());
-    }
-    for item in &results.type_only_dependencies {
-        groups
-            .entry(key_for(&item.dep.path))
-            .or_default()
-            .type_only_dependencies
-            .push(item.clone());
-    }
-    for item in &results.test_only_dependencies {
-        groups
-            .entry(key_for(&item.dep.path))
-            .or_default()
-            .test_only_dependencies
-            .push(item.clone());
-    }
-
-    for item in &results.unlisted_dependencies {
-        let key = item
-            .dep
-            .imported_from
-            .first()
-            .map_or_else(|| UNOWNED_LABEL.to_string(), |site| key_for(&site.path));
-        groups
-            .entry(key)
-            .or_default()
-            .unlisted_dependencies
-            .push(item.clone());
-    }
-    for item in &results.duplicate_exports {
-        let key = item
-            .export
-            .locations
-            .first()
-            .map_or_else(|| UNOWNED_LABEL.to_string(), |loc| key_for(&loc.path));
-        groups
-            .entry(key)
-            .or_default()
-            .duplicate_exports
-            .push(item.clone());
-    }
-    for item in &results.circular_dependencies {
-        let key = item
-            .cycle
-            .files
-            .first()
-            .map_or_else(|| UNOWNED_LABEL.to_string(), |f| key_for(f));
-        groups
-            .entry(key)
-            .or_default()
-            .circular_dependencies
-            .push(item.clone());
-    }
-    for item in &results.boundary_violations {
-        groups
-            .entry(key_for(&item.violation.from_path))
-            .or_default()
-            .boundary_violations
-            .push(item.clone());
-    }
-    for item in &results.boundary_coverage_violations {
-        groups
-            .entry(key_for(&item.violation.path))
-            .or_default()
-            .boundary_coverage_violations
-            .push(item.clone());
-    }
-    for item in &results.boundary_call_violations {
-        groups
-            .entry(key_for(&item.violation.path))
-            .or_default()
-            .boundary_call_violations
-            .push(item.clone());
-    }
-    for item in &results.policy_violations {
-        groups
-            .entry(key_for(&item.violation.path))
-            .or_default()
-            .policy_violations
-            .push(item.clone());
-    }
-    for item in &results.stale_suppressions {
-        groups
-            .entry(key_for(&item.path))
-            .or_default()
-            .stale_suppressions
-            .push(item.clone());
-    }
-    group_workspace_config_issues(results, &mut groups, &mut key_for);
-
-    finalize_groups(groups, group_owners, is_section_mode)
+    finalize_groups(builder.into_groups(), group_owners, is_section_mode)
 }
 
-fn group_workspace_config_issues(
-    results: &AnalysisResults,
-    groups: &mut FxHashMap<String, AnalysisResults>,
-    mut key_for: impl FnMut(&Path) -> String,
-) {
-    for item in &results.unused_catalog_entries {
-        groups
-            .entry(key_for(&item.entry.path))
-            .or_default()
-            .unused_catalog_entries
-            .push(item.clone());
+struct GroupingBuilder<F> {
+    groups: FxHashMap<String, AnalysisResults>,
+    key_for: F,
+}
+
+impl<F> GroupingBuilder<F>
+where
+    F: FnMut(&Path) -> String,
+{
+    fn new(key_for: F) -> Self {
+        Self {
+            groups: FxHashMap::default(),
+            key_for,
+        }
     }
-    for item in &results.empty_catalog_groups {
-        groups
-            .entry(key_for(&item.group.path))
-            .or_default()
-            .empty_catalog_groups
-            .push(item.clone());
+
+    fn entry_for_path(&mut self, path: &Path) -> &mut AnalysisResults {
+        let key = (self.key_for)(path);
+        self.groups.entry(key).or_default()
     }
-    for item in &results.unresolved_catalog_references {
-        groups
-            .entry(key_for(&item.reference.path))
-            .or_default()
-            .unresolved_catalog_references
-            .push(item.clone());
+
+    fn entry_for_key(&mut self, key: String) -> &mut AnalysisResults {
+        self.groups.entry(key).or_default()
     }
-    for item in &results.unused_dependency_overrides {
-        groups
-            .entry(key_for(&item.entry.path))
-            .or_default()
-            .unused_dependency_overrides
-            .push(item.clone());
+
+    fn into_groups(self) -> FxHashMap<String, AnalysisResults> {
+        self.groups
     }
-    for item in &results.misconfigured_dependency_overrides {
-        groups
-            .entry(key_for(&item.entry.path))
-            .or_default()
-            .misconfigured_dependency_overrides
-            .push(item.clone());
+
+    fn group_symbol_issues(&mut self, results: &AnalysisResults) {
+        for item in &results.unused_files {
+            self.entry_for_path(&item.file.path)
+                .unused_files
+                .push(item.clone());
+        }
+        for item in &results.unused_exports {
+            self.entry_for_path(&item.export.path)
+                .unused_exports
+                .push(item.clone());
+        }
+        for item in &results.unused_types {
+            self.entry_for_path(&item.export.path)
+                .unused_types
+                .push(item.clone());
+        }
+        for item in &results.private_type_leaks {
+            self.entry_for_path(&item.leak.path)
+                .private_type_leaks
+                .push(item.clone());
+        }
+        for item in &results.unused_enum_members {
+            self.entry_for_path(&item.member.path)
+                .unused_enum_members
+                .push(item.clone());
+        }
+        for item in &results.unused_class_members {
+            self.entry_for_path(&item.member.path)
+                .unused_class_members
+                .push(item.clone());
+        }
+        for item in &results.unresolved_imports {
+            self.entry_for_path(&item.import.path)
+                .unresolved_imports
+                .push(item.clone());
+        }
+    }
+
+    fn group_dependency_issues(&mut self, results: &AnalysisResults) {
+        for item in &results.unused_dependencies {
+            self.entry_for_path(&item.dep.path)
+                .unused_dependencies
+                .push(item.clone());
+        }
+        for item in &results.unused_dev_dependencies {
+            self.entry_for_path(&item.dep.path)
+                .unused_dev_dependencies
+                .push(item.clone());
+        }
+        for item in &results.unused_optional_dependencies {
+            self.entry_for_path(&item.dep.path)
+                .unused_optional_dependencies
+                .push(item.clone());
+        }
+        for item in &results.type_only_dependencies {
+            self.entry_for_path(&item.dep.path)
+                .type_only_dependencies
+                .push(item.clone());
+        }
+        for item in &results.test_only_dependencies {
+            self.entry_for_path(&item.dep.path)
+                .test_only_dependencies
+                .push(item.clone());
+        }
+
+        for item in &results.unlisted_dependencies {
+            let key = item.dep.imported_from.first().map_or_else(
+                || UNOWNED_LABEL.to_string(),
+                |site| (self.key_for)(&site.path),
+            );
+            self.entry_for_key(key)
+                .unlisted_dependencies
+                .push(item.clone());
+        }
+        for item in &results.duplicate_exports {
+            let key = item.export.locations.first().map_or_else(
+                || UNOWNED_LABEL.to_string(),
+                |loc| (self.key_for)(&loc.path),
+            );
+            self.entry_for_key(key).duplicate_exports.push(item.clone());
+        }
+    }
+
+    fn group_relationship_issues(&mut self, results: &AnalysisResults) {
+        for item in &results.circular_dependencies {
+            let key = item
+                .cycle
+                .files
+                .first()
+                .map_or_else(|| UNOWNED_LABEL.to_string(), |f| (self.key_for)(f));
+            self.entry_for_key(key)
+                .circular_dependencies
+                .push(item.clone());
+        }
+        for item in &results.boundary_violations {
+            self.entry_for_path(&item.violation.from_path)
+                .boundary_violations
+                .push(item.clone());
+        }
+        for item in &results.boundary_coverage_violations {
+            self.entry_for_path(&item.violation.path)
+                .boundary_coverage_violations
+                .push(item.clone());
+        }
+        for item in &results.boundary_call_violations {
+            self.entry_for_path(&item.violation.path)
+                .boundary_call_violations
+                .push(item.clone());
+        }
+        for item in &results.policy_violations {
+            self.entry_for_path(&item.violation.path)
+                .policy_violations
+                .push(item.clone());
+        }
+        for item in &results.stale_suppressions {
+            self.entry_for_path(&item.path)
+                .stale_suppressions
+                .push(item.clone());
+        }
+    }
+
+    fn group_workspace_config_issues(&mut self, results: &AnalysisResults) {
+        for item in &results.unused_catalog_entries {
+            self.entry_for_path(&item.entry.path)
+                .unused_catalog_entries
+                .push(item.clone());
+        }
+        for item in &results.empty_catalog_groups {
+            self.entry_for_path(&item.group.path)
+                .empty_catalog_groups
+                .push(item.clone());
+        }
+        for item in &results.unresolved_catalog_references {
+            self.entry_for_path(&item.reference.path)
+                .unresolved_catalog_references
+                .push(item.clone());
+        }
+        for item in &results.unused_dependency_overrides {
+            self.entry_for_path(&item.entry.path)
+                .unused_dependency_overrides
+                .push(item.clone());
+        }
+        for item in &results.misconfigured_dependency_overrides {
+            self.entry_for_path(&item.entry.path)
+                .misconfigured_dependency_overrides
+                .push(item.clone());
+        }
     }
 }
 
