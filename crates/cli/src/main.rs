@@ -3267,38 +3267,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             })
         }
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
-        Command::Audit {
-            production_dead_code,
-            production_health,
-            production_dupes,
-            dead_code_baseline,
-            health_baseline,
-            dupes_baseline,
-            max_crap,
-            coverage,
-            coverage_root,
-            gate,
-            runtime_coverage,
-            min_invocations_hot,
-            gate_marker,
-        } => dispatch_audit(
-            dispatch,
-            &AuditDispatchArgs {
-                production_dead_code,
-                production_health,
-                production_dupes,
-                dead_code_baseline,
-                health_baseline,
-                dupes_baseline,
-                max_crap,
-                coverage,
-                coverage_root,
-                gate,
-                runtime_coverage,
-                min_invocations_hot,
-                gate_marker,
-            },
-        ),
+        audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
         Command::Impact { subcommand } => dispatch_impact(root, quiet, output, subcommand),
         security @ Command::Security { .. } => dispatch_security_command(security, dispatch),
         Command::Schema => unreachable!("handled above"),
@@ -3380,6 +3349,46 @@ fn dispatch_security_command(command: Command, dispatch: &DispatchContext<'_>) -
         min_invocations_hot,
         explain: cli.explain,
     })
+}
+
+fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> ExitCode {
+    let Command::Audit {
+        production_dead_code,
+        production_health,
+        production_dupes,
+        dead_code_baseline,
+        health_baseline,
+        dupes_baseline,
+        max_crap,
+        coverage,
+        coverage_root,
+        gate,
+        runtime_coverage,
+        min_invocations_hot,
+        gate_marker,
+    } = command
+    else {
+        unreachable!("audit dispatcher only handles audit commands");
+    };
+
+    dispatch_audit(
+        dispatch,
+        &AuditDispatchArgs {
+            production_dead_code,
+            production_health,
+            production_dupes,
+            dead_code_baseline,
+            health_baseline,
+            dupes_baseline,
+            max_crap,
+            coverage,
+            coverage_root,
+            gate,
+            runtime_coverage,
+            min_invocations_hot,
+            gate_marker,
+        },
+    )
 }
 
 fn dispatch_impact(
