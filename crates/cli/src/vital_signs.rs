@@ -695,10 +695,6 @@ fn overall_trend_direction(metrics: &[TrendMetric]) -> TrendDirection {
 ///
 /// Uses the stored `score` field from the snapshot (never re-derives it).
 /// Returns `None` if no snapshots are available.
-#[expect(
-    clippy::too_many_lines,
-    reason = "trend computation compares many metric dimensions"
-)]
 pub fn compute_trend(
     current_vs: &VitalSigns,
     current_counts: &VitalSignsCounts,
@@ -709,189 +705,7 @@ pub fn compute_trend(
 
     let compared_to = trend_point_from_snapshot(prev);
 
-    let mut metrics = Vec::new();
-
-    if let (Some(prev_score), Some(cur_score)) = (prev.score, current_score) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "score",
-            label: "Health Score",
-            previous: prev_score,
-            current: cur_score,
-            unit: "",
-            higher_is_better: true,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) =
-        (prev.vital_signs.dead_file_pct, current_vs.dead_file_pct)
-    {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "dead_file_pct",
-            label: "Dead Files",
-            previous: prev_val,
-            current: cur_val,
-            unit: "%",
-            higher_is_better: false,
-            previous_count: Some(TrendCount {
-                value: prev.counts.dead_files,
-                total: prev.counts.total_files,
-            }),
-            current_count: Some(TrendCount {
-                value: current_counts.dead_files,
-                total: current_counts.total_files,
-            }),
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) =
-        (prev.vital_signs.dead_export_pct, current_vs.dead_export_pct)
-    {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "dead_export_pct",
-            label: "Dead Exports",
-            previous: prev_val,
-            current: cur_val,
-            unit: "%",
-            higher_is_better: false,
-            previous_count: Some(TrendCount {
-                value: prev.counts.dead_exports,
-                total: prev.counts.total_exports,
-            }),
-            current_count: Some(TrendCount {
-                value: current_counts.dead_exports,
-                total: current_counts.total_exports,
-            }),
-        }));
-    }
-
-    {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "avg_cyclomatic",
-            label: "Avg Cyclomatic",
-            previous: prev.vital_signs.avg_cyclomatic,
-            current: current_vs.avg_cyclomatic,
-            unit: "",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) = (
-        prev.vital_signs.maintainability_avg,
-        current_vs.maintainability_avg,
-    ) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "maintainability_avg",
-            label: "Maintainability",
-            previous: prev_val,
-            current: cur_val,
-            unit: "",
-            higher_is_better: true,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) = (
-        prev.vital_signs.unused_dep_count,
-        current_vs.unused_dep_count,
-    ) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "unused_dep_count",
-            label: "Unused Deps",
-            previous: f64::from(prev_val),
-            current: f64::from(cur_val),
-            unit: "",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) = (
-        prev.vital_signs.circular_dep_count,
-        current_vs.circular_dep_count,
-    ) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "circular_dep_count",
-            label: "Circular Deps",
-            previous: f64::from(prev_val),
-            current: f64::from(cur_val),
-            unit: "",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) =
-        (prev.vital_signs.hotspot_count, current_vs.hotspot_count)
-    {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "hotspot_count",
-            label: "Hotspots",
-            previous: f64::from(prev_val),
-            current: f64::from(cur_val),
-            unit: "",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_profile), Some(cur_profile)) = (
-        &prev.vital_signs.unit_size_profile,
-        &current_vs.unit_size_profile,
-    ) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "unit_size_very_high_pct",
-            label: "Oversized Fns",
-            previous: prev_profile.very_high_risk,
-            current: cur_profile.very_high_risk,
-            unit: "%",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) = (prev.vital_signs.p95_fan_in, current_vs.p95_fan_in) {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "p95_fan_in",
-            label: "P95 Fan-in",
-            previous: f64::from(prev_val),
-            current: f64::from(cur_val),
-            unit: "",
-            higher_is_better: false,
-            previous_count: None,
-            current_count: None,
-        }));
-    }
-
-    if let (Some(prev_val), Some(cur_val)) =
-        (prev.vital_signs.duplication_pct, current_vs.duplication_pct)
-    {
-        metrics.push(make_metric(TrendMetricInput {
-            name: "duplication_pct",
-            label: "Duplication",
-            previous: prev_val,
-            current: cur_val,
-            unit: "%",
-            higher_is_better: false,
-            previous_count: prev
-                .counts
-                .duplicated_lines
-                .zip(prev.counts.total_lines)
-                .map(|(d, t)| TrendCount { value: d, total: t }),
-            current_count: current_counts
-                .duplicated_lines
-                .zip(current_counts.total_lines)
-                .map(|(d, t)| TrendCount { value: d, total: t }),
-        }));
-    }
+    let metrics = TrendBuilder::new(prev, current_vs, current_counts, current_score).build();
 
     let overall_direction = overall_trend_direction(&metrics);
 
@@ -901,6 +715,242 @@ pub fn compute_trend(
         snapshots_loaded: snapshots.len(),
         overall_direction,
     })
+}
+
+struct TrendBuilder<'a> {
+    prev: &'a VitalSignsSnapshot,
+    current_vs: &'a VitalSigns,
+    current_counts: &'a VitalSignsCounts,
+    current_score: Option<f64>,
+    metrics: Vec<TrendMetric>,
+}
+
+impl TrendBuilder<'_> {
+    fn new<'a>(
+        prev: &'a VitalSignsSnapshot,
+        current_vs: &'a VitalSigns,
+        current_counts: &'a VitalSignsCounts,
+        current_score: Option<f64>,
+    ) -> TrendBuilder<'a> {
+        TrendBuilder {
+            prev,
+            current_vs,
+            current_counts,
+            current_score,
+            metrics: Vec::new(),
+        }
+    }
+
+    fn build(mut self) -> Vec<TrendMetric> {
+        self.add_score_metric();
+        self.add_dead_code_metrics();
+        self.add_complexity_metrics();
+        self.add_dependency_metrics();
+        self.add_structure_metrics();
+        self.metrics
+    }
+
+    fn push(&mut self, input: TrendMetricInput) {
+        self.metrics.push(make_metric(input));
+    }
+
+    fn add_score_metric(&mut self) {
+        if let (Some(prev_score), Some(cur_score)) = (self.prev.score, self.current_score) {
+            self.push(TrendMetricInput {
+                name: "score",
+                label: "Health Score",
+                previous: prev_score,
+                current: cur_score,
+                unit: "",
+                higher_is_better: true,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+    }
+
+    fn add_dead_code_metrics(&mut self) {
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.dead_file_pct,
+            self.current_vs.dead_file_pct,
+        ) {
+            self.push(TrendMetricInput {
+                name: "dead_file_pct",
+                label: "Dead Files",
+                previous: prev_val,
+                current: cur_val,
+                unit: "%",
+                higher_is_better: false,
+                previous_count: Some(TrendCount {
+                    value: self.prev.counts.dead_files,
+                    total: self.prev.counts.total_files,
+                }),
+                current_count: Some(TrendCount {
+                    value: self.current_counts.dead_files,
+                    total: self.current_counts.total_files,
+                }),
+            });
+        }
+
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.dead_export_pct,
+            self.current_vs.dead_export_pct,
+        ) {
+            self.push(TrendMetricInput {
+                name: "dead_export_pct",
+                label: "Dead Exports",
+                previous: prev_val,
+                current: cur_val,
+                unit: "%",
+                higher_is_better: false,
+                previous_count: Some(TrendCount {
+                    value: self.prev.counts.dead_exports,
+                    total: self.prev.counts.total_exports,
+                }),
+                current_count: Some(TrendCount {
+                    value: self.current_counts.dead_exports,
+                    total: self.current_counts.total_exports,
+                }),
+            });
+        }
+    }
+
+    fn add_complexity_metrics(&mut self) {
+        self.push(TrendMetricInput {
+            name: "avg_cyclomatic",
+            label: "Avg Cyclomatic",
+            previous: self.prev.vital_signs.avg_cyclomatic,
+            current: self.current_vs.avg_cyclomatic,
+            unit: "",
+            higher_is_better: false,
+            previous_count: None,
+            current_count: None,
+        });
+
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.maintainability_avg,
+            self.current_vs.maintainability_avg,
+        ) {
+            self.push(TrendMetricInput {
+                name: "maintainability_avg",
+                label: "Maintainability",
+                previous: prev_val,
+                current: cur_val,
+                unit: "",
+                higher_is_better: true,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+
+        if let (Some(prev_profile), Some(cur_profile)) = (
+            &self.prev.vital_signs.unit_size_profile,
+            &self.current_vs.unit_size_profile,
+        ) {
+            self.push(TrendMetricInput {
+                name: "unit_size_very_high_pct",
+                label: "Oversized Fns",
+                previous: prev_profile.very_high_risk,
+                current: cur_profile.very_high_risk,
+                unit: "%",
+                higher_is_better: false,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.duplication_pct,
+            self.current_vs.duplication_pct,
+        ) {
+            self.push(TrendMetricInput {
+                name: "duplication_pct",
+                label: "Duplication",
+                previous: prev_val,
+                current: cur_val,
+                unit: "%",
+                higher_is_better: false,
+                previous_count: self
+                    .prev
+                    .counts
+                    .duplicated_lines
+                    .zip(self.prev.counts.total_lines)
+                    .map(|(d, t)| TrendCount { value: d, total: t }),
+                current_count: self
+                    .current_counts
+                    .duplicated_lines
+                    .zip(self.current_counts.total_lines)
+                    .map(|(d, t)| TrendCount { value: d, total: t }),
+            });
+        }
+    }
+
+    fn add_dependency_metrics(&mut self) {
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.unused_dep_count,
+            self.current_vs.unused_dep_count,
+        ) {
+            self.push(TrendMetricInput {
+                name: "unused_dep_count",
+                label: "Unused Deps",
+                previous: f64::from(prev_val),
+                current: f64::from(cur_val),
+                unit: "",
+                higher_is_better: false,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+    }
+
+    fn add_structure_metrics(&mut self) {
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.circular_dep_count,
+            self.current_vs.circular_dep_count,
+        ) {
+            self.push(TrendMetricInput {
+                name: "circular_dep_count",
+                label: "Circular Deps",
+                previous: f64::from(prev_val),
+                current: f64::from(cur_val),
+                unit: "",
+                higher_is_better: false,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+
+        if let (Some(prev_val), Some(cur_val)) = (
+            self.prev.vital_signs.hotspot_count,
+            self.current_vs.hotspot_count,
+        ) {
+            self.push(TrendMetricInput {
+                name: "hotspot_count",
+                label: "Hotspots",
+                previous: f64::from(prev_val),
+                current: f64::from(cur_val),
+                unit: "",
+                higher_is_better: false,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+
+        if let (Some(prev_val), Some(cur_val)) =
+            (self.prev.vital_signs.p95_fan_in, self.current_vs.p95_fan_in)
+        {
+            self.push(TrendMetricInput {
+                name: "p95_fan_in",
+                label: "P95 Fan-in",
+                previous: f64::from(prev_val),
+                current: f64::from(cur_val),
+                unit: "",
+                higher_is_better: false,
+                previous_count: None,
+                current_count: None,
+            });
+        }
+    }
 }
 
 /// Build a single trend metric.
