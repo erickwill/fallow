@@ -763,7 +763,25 @@ pub use sarif::build_sarif;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    fn test_context<'a>(root: &'a Path, rules: &'a RulesConfig) -> ReportContext<'a> {
+        ReportContext {
+            root,
+            rules,
+            elapsed: Duration::default(),
+            quiet: true,
+            explain: false,
+            group_by: None,
+            top: None,
+            summary: false,
+            summary_heading: false,
+            show_explain_tip: false,
+            baseline_matched: None,
+            config_fixable: false,
+            skip_score_and_trend: false,
+        }
+    }
 
     #[test]
     fn normalize_uri_forward_slashes_unchanged() {
@@ -1033,6 +1051,29 @@ mod tests {
         let copy = level;
         assert!(matches!(level, Level::Error));
         assert!(matches!(copy, Level::Error));
+    }
+
+    #[test]
+    fn print_results_rejects_badge_for_dead_code_reports() {
+        let root = Path::new("/project");
+        let rules = RulesConfig::default();
+        let ctx = test_context(root, &rules);
+
+        let code = print_results(&AnalysisResults::default(), &ctx, OutputFormat::Badge, None);
+
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn print_duplication_report_rejects_badge_format() {
+        let root = Path::new("/project");
+        let rules = RulesConfig::default();
+        let ctx = test_context(root, &rules);
+
+        let code =
+            print_duplication_report(&DuplicationReport::default(), &ctx, OutputFormat::Badge);
+
+        assert_eq!(code, ExitCode::from(2));
     }
 
     #[test]

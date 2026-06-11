@@ -1379,6 +1379,111 @@ mod tests {
     }
 
     #[test]
+    fn provider_warning_plan_keeps_current_fingerprints_new() {
+        let current = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
+        let plan = ReconcilePlan::without_provider(&current, "provider unavailable".to_owned());
+
+        assert_eq!(plan.current, vec!["a", "b"]);
+        assert_eq!(plan.new, vec!["a", "b"]);
+        assert_eq!(plan.existing, Vec::<String>::new());
+        assert_eq!(plan.stale, Vec::<String>::new());
+        assert_eq!(
+            plan.provider_warning.as_deref(),
+            Some("provider unavailable")
+        );
+    }
+
+    #[test]
+    fn apply_result_failure_tracks_failed_and_unapplied_fingerprints() {
+        let mut result = ApplyResult::default();
+        result.record_failure(
+            ApplyFailure::new("stale-a", "provider write failed"),
+            ["stale-a".to_owned(), "stale-b".to_owned()],
+        );
+
+        assert_eq!(result.errors, vec!["provider write failed"]);
+        assert!(result.failed_fingerprints.contains("stale-a"));
+        assert!(result.unapplied_fingerprints.contains("stale-a"));
+        assert!(result.unapplied_fingerprints.contains("stale-b"));
+        assert!(result.hint().is_some());
+    }
+
+    #[test]
+    fn github_stage_skips_resolved_comment_but_keeps_thread_resolution() {
+        let plan = ReconcilePlan {
+            stale: vec!["fp-a".to_owned()],
+            ..ReconcilePlan::default()
+        };
+        let mut state = ProviderState::default();
+        state
+            .github_comments_by_fingerprint
+            .insert("fp-a".to_owned(), vec![10, 11]);
+        state
+            .github_threads_by_fingerprint
+            .insert("fp-a".to_owned(), vec!["thread-a".to_owned()]);
+        state
+            .github_resolved_markers
+            .insert("fp-a@abcdef1".to_owned());
+        let planned = PlannedReconcile {
+            plan,
+            state: &state,
+        };
+
+        let operations = stage_github_operations(&planned, Some("abcdef123456"));
+
+        assert_eq!(operations.len(), 1);
+        let GithubApplyOperation::ResolveThread {
+            fingerprint,
+            thread_id,
+        } = &operations[0]
+        else {
+            panic!("expected stale fingerprint to resolve its review thread");
+        };
+        assert_eq!(fingerprint, "fp-a");
+        assert_eq!(thread_id, "thread-a");
+    }
+
+    #[test]
+    fn gitlab_stage_posts_resolution_once_and_resolves_discussion() {
+        let plan = ReconcilePlan {
+            stale: vec!["fp-a".to_owned()],
+            ..ReconcilePlan::default()
+        };
+        let mut state = ProviderState::default();
+        state
+            .gitlab_discussions_by_fingerprint
+            .insert("fp-a".to_owned(), vec!["discussion-a".to_owned()]);
+        let planned = PlannedReconcile {
+            plan,
+            state: &state,
+        };
+
+        let operations = stage_gitlab_operations(&planned, Some("1234567890"));
+
+        assert_eq!(operations.len(), 2);
+        let GitlabApplyOperation::Note {
+            fingerprint,
+            discussion_id,
+            body,
+        } = &operations[0]
+        else {
+            panic!("expected a resolution note before resolving discussion");
+        };
+        assert_eq!(fingerprint, "fp-a");
+        assert_eq!(discussion_id, "discussion-a");
+        assert!(body.contains("fallow-resolved-fingerprint: fp-a@1234567"));
+        let GitlabApplyOperation::ResolveDiscussion {
+            fingerprint,
+            discussion_id,
+        } = &operations[1]
+        else {
+            panic!("expected stale fingerprint to resolve its GitLab discussion");
+        };
+        assert_eq!(fingerprint, "fp-a");
+        assert_eq!(discussion_id, "discussion-a");
+    }
+
+    #[test]
     fn encodes_gitlab_project_path_as_one_segment() {
         assert_eq!(url_encode_path_segment("group/project"), "group%2Fproject");
     }

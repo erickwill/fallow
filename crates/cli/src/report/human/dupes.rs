@@ -852,6 +852,54 @@ mod tests {
     }
 
     #[test]
+    fn duplication_output_truncates_groups_and_shows_mirrors() {
+        let root = PathBuf::from("/project");
+        let group = |idx: usize, line_count: usize| CloneGroup {
+            instances: vec![CloneInstance {
+                file: root.join(format!("src/{idx}.ts")),
+                start_line: 1,
+                end_line: line_count,
+                start_col: 0,
+                end_col: 0,
+                fragment: String::new(),
+            }],
+            token_count: line_count * 5,
+            line_count,
+        };
+        let mirror_family = |name: &str| CloneFamily {
+            files: vec![
+                root.join(format!("src/{name}")),
+                root.join(format!("deno/lib/{name}")),
+            ],
+            groups: vec![group(99, 10)],
+            total_duplicated_lines: 10,
+            total_duplicated_tokens: 50,
+            suggestions: Vec::new(),
+        };
+        let report = DuplicationReport {
+            clone_groups: (0..12)
+                .map(|idx| group(idx, if idx == 0 { 1_500 } else { 150 }))
+                .collect(),
+            clone_families: vec![
+                mirror_family("a.ts"),
+                mirror_family("b.ts"),
+                mirror_family("c.ts"),
+            ],
+            mirrored_directories: vec![],
+            stats: DuplicationStats::default(),
+        };
+
+        let lines = build_duplication_human_lines(&report, &root);
+        let text = plain(&lines);
+
+        assert!(text.contains("... and 2 more clone groups"));
+        assert!(text.contains("Mirrored: deno/lib/"));
+        assert!(text.contains("src/"));
+        assert!(text.contains("3 files, 30 lines"));
+        assert!(text.contains("Directories containing identical file copies"));
+    }
+
+    #[test]
     fn mirrored_dirs_detected() {
         let root = PathBuf::from("/project");
         let mut families = Vec::new();

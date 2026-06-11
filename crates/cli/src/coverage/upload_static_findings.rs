@@ -786,6 +786,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_git_remote_protocol_shape() {
+        assert_eq!(
+            parse_git_remote_to_project_id("ssh://git@gitlab.com/fallow-rs/fallow.git"),
+            Some("fallow-rs/fallow".to_owned())
+        );
+        assert_eq!(parse_git_remote_to_project_id("not-a-remote"), None);
+    }
+
+    #[test]
     fn validate_project_id_accepts_owner_repo_and_bare() {
         assert!(validate_project_id("fallow-rs/fallow").is_ok());
         assert!(validate_project_id("fallow-cloud-api").is_ok());
@@ -870,6 +879,20 @@ mod tests {
             exports: Vec::new(),
         };
         assert!(collect_findings(&config, &results).is_empty());
+    }
+
+    #[test]
+    fn collect_findings_preserves_paths_outside_root() {
+        let root = PathBuf::from("/repo");
+        let config = stub_config(&root);
+        let results = StubResults {
+            files: vec![PathBuf::from("/outside/dead.ts")],
+            exports: Vec::new(),
+        };
+
+        let findings = collect_findings(&config, &results);
+
+        assert_eq!(findings[0].file_path, "/outside/dead.ts");
     }
 
     #[test]

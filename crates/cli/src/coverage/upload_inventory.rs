@@ -1018,6 +1018,43 @@ mod tests {
     }
 
     #[test]
+    fn resolve_api_key_trims_explicit_value() {
+        let args = UploadInventoryArgs {
+            api_key: Some("  fallow_key_123  ".to_owned()),
+            ..UploadInventoryArgs::default()
+        };
+
+        assert_eq!(resolve_api_key(&args).unwrap(), "fallow_key_123");
+    }
+
+    #[test]
+    fn compile_exclude_matcher_rejects_invalid_glob() {
+        let err = compile_exclude_matcher(&["[".to_owned()])
+            .expect_err("invalid glob should be reported as validation");
+
+        let UploadError::Validation(message) = err else {
+            panic!("expected validation error, got {err:?}");
+        };
+        assert!(message.contains("invalid --exclude-paths"));
+    }
+
+    #[test]
+    fn collect_inventory_applies_path_prefix_and_excludes() {
+        let project = project_with_one_function();
+        let config = load_resolved_config(project.path()).unwrap();
+        let include_all = compile_exclude_matcher(&[]).unwrap();
+
+        let functions = collect_inventory(&config, &include_all, Some("/app"));
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].file_path, "/app/src/index.ts");
+        assert_eq!(functions[0].identity.file, "src/index.ts");
+
+        let exclude_src = compile_exclude_matcher(&["src/**".to_owned()]).unwrap();
+        assert!(collect_inventory(&config, &exclude_src, Some("/app")).is_empty());
+    }
+
+    #[test]
     fn normalize_path_prefix_rejects_empty() {
         assert!(matches!(
             normalize_path_prefix(Some("")),

@@ -915,6 +915,74 @@ mod tests {
     }
 
     #[test]
+    fn compact_covers_api_and_boundary_variants() {
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        results
+            .private_type_leaks
+            .push(PrivateTypeLeakFinding::with_actions(PrivateTypeLeak {
+                path: root.join("src/api.ts"),
+                export_name: "createApi".to_owned(),
+                type_name: "InternalShape".to_owned(),
+                line: 12,
+                col: 4,
+                span_start: 100,
+            }));
+        results
+            .circular_dependencies
+            .push(CircularDependencyFinding::with_actions(
+                CircularDependency {
+                    files: vec![
+                        root.join("packages/a/index.ts"),
+                        root.join("packages/b/index.ts"),
+                    ],
+                    length: 2,
+                    line: 3,
+                    col: 0,
+                    edges: Vec::new(),
+                    is_cross_package: true,
+                },
+            ));
+        results
+            .boundary_coverage_violations
+            .push(BoundaryCoverageViolationFinding::with_actions(
+                BoundaryCoverageViolation {
+                    path: root.join("src/unmatched.ts"),
+                    line: 1,
+                    col: 0,
+                },
+            ));
+        results
+            .boundary_call_violations
+            .push(BoundaryCallViolationFinding::with_actions(
+                BoundaryCallViolation {
+                    path: root.join("src/ui/button.ts"),
+                    line: 20,
+                    col: 6,
+                    zone: "ui".to_owned(),
+                    callee: "child_process.exec".to_owned(),
+                    pattern: "child_process.*".to_owned(),
+                },
+            ));
+
+        let lines = build_compact_lines(&results, &root);
+
+        assert_eq!(
+            lines[0],
+            "private-type-leak:src/api.ts:12:createApi->InternalShape"
+        );
+        assert!(lines[1].contains(" (cross-package)"));
+        assert_eq!(
+            lines[2],
+            "boundary-coverage:src/unmatched.ts:1:no matching boundary zone"
+        );
+        assert_eq!(
+            lines[3],
+            "boundary-call:src/ui/button.ts:20:child_process.exec forbidden in zone ui (pattern child_process.*)"
+        );
+    }
+
+    #[test]
     fn compact_strips_root_prefix_from_paths() {
         let root = PathBuf::from("/project");
         let mut results = AnalysisResults::default();

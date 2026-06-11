@@ -1100,11 +1100,24 @@ pub(super) fn dupe_group_key(group: &fallow_core::duplicates::CloneGroup, root: 
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use fallow_core::extract::MemberKind;
     use fallow_core::results::{
-        AnalysisResults, DependencyLocation, DuplicateExport, DuplicateExportFinding,
-        DuplicateLocation, ImportSite, UnlistedDependency, UnlistedDependencyFinding,
-        UnresolvedImport, UnresolvedImportFinding, UnusedDependency, UnusedDependencyFinding,
-        UnusedExport, UnusedExportFinding, UnusedFile, UnusedFileFinding,
+        AnalysisResults, BoundaryCallViolation, BoundaryCallViolationFinding,
+        BoundaryCoverageViolation, BoundaryCoverageViolationFinding, BoundaryViolation,
+        BoundaryViolationFinding, CircularDependency, CircularDependencyFinding,
+        DependencyLocation, DependencyOverrideMisconfigReason, DependencyOverrideSource,
+        DuplicateExport, DuplicateExportFinding, DuplicateLocation, EmptyCatalogGroup,
+        EmptyCatalogGroupFinding, ImportSite, MisconfiguredDependencyOverride,
+        MisconfiguredDependencyOverrideFinding, PrivateTypeLeak, PrivateTypeLeakFinding,
+        ReExportCycle, ReExportCycleFinding, ReExportCycleKind, StaleSuppression,
+        SuppressionOrigin, TestOnlyDependency, TestOnlyDependencyFinding, TypeOnlyDependency,
+        TypeOnlyDependencyFinding, UnlistedDependency, UnlistedDependencyFinding,
+        UnresolvedCatalogReference, UnresolvedCatalogReferenceFinding, UnresolvedImport,
+        UnresolvedImportFinding, UnusedCatalogEntry, UnusedCatalogEntryFinding,
+        UnusedClassMemberFinding, UnusedDependency, UnusedDependencyFinding,
+        UnusedDependencyOverride, UnusedDependencyOverrideFinding, UnusedDevDependencyFinding,
+        UnusedEnumMemberFinding, UnusedExport, UnusedExportFinding, UnusedFile, UnusedFileFinding,
+        UnusedMember, UnusedOptionalDependencyFinding, UnusedTypeFinding,
     };
     use rustc_hash::FxHashSet;
     use serde_json::json;
@@ -1235,6 +1248,244 @@ mod tests {
         assert!(keys.contains("unresolved-import:src/page.ts:./missing"));
         assert!(keys.contains("unlisted-dependency:zod:src/page.ts:9:2"));
         assert!(keys.contains("duplicate-export:Button:src/a.ts|src/b.ts"));
+    }
+
+    #[test]
+    fn dead_code_keys_cover_type_member_and_dependency_variants() {
+        let root = root();
+        let source = root.join("src/types.ts");
+        let package_json = root.join("package.json");
+        let mut results = AnalysisResults::default();
+        results
+            .unused_types
+            .push(UnusedTypeFinding::with_actions(UnusedExport {
+                path: source.clone(),
+                export_name: "UnusedType".to_string(),
+                is_type_only: true,
+                line: 3,
+                col: 0,
+                span_start: 12,
+                is_re_export: false,
+            }));
+        results
+            .private_type_leaks
+            .push(PrivateTypeLeakFinding::with_actions(PrivateTypeLeak {
+                path: source.clone(),
+                export_name: "makePublic".to_string(),
+                type_name: "PrivateShape".to_string(),
+                line: 7,
+                col: 12,
+                span_start: 64,
+            }));
+        results
+            .unused_dev_dependencies
+            .push(UnusedDevDependencyFinding::with_actions(UnusedDependency {
+                package_name: "vite".to_string(),
+                location: DependencyLocation::DevDependencies,
+                path: package_json.clone(),
+                line: 10,
+                used_in_workspaces: Vec::new(),
+            }));
+        results
+            .unused_optional_dependencies
+            .push(UnusedOptionalDependencyFinding::with_actions(
+                UnusedDependency {
+                    package_name: "fsevents".to_string(),
+                    location: DependencyLocation::OptionalDependencies,
+                    path: package_json.clone(),
+                    line: 11,
+                    used_in_workspaces: Vec::new(),
+                },
+            ));
+        results
+            .unused_enum_members
+            .push(UnusedEnumMemberFinding::with_actions(UnusedMember {
+                path: source.clone(),
+                parent_name: "Status".to_string(),
+                member_name: "Idle".to_string(),
+                kind: MemberKind::EnumMember,
+                line: 15,
+                col: 2,
+            }));
+        results
+            .unused_class_members
+            .push(UnusedClassMemberFinding::with_actions(UnusedMember {
+                path: source,
+                parent_name: "Controller".to_string(),
+                member_name: "legacy".to_string(),
+                kind: MemberKind::ClassMethod,
+                line: 21,
+                col: 2,
+            }));
+        results
+            .type_only_dependencies
+            .push(TypeOnlyDependencyFinding::with_actions(
+                TypeOnlyDependency {
+                    package_name: "zod".to_string(),
+                    path: package_json.clone(),
+                    line: 12,
+                },
+            ));
+        results
+            .test_only_dependencies
+            .push(TestOnlyDependencyFinding::with_actions(
+                TestOnlyDependency {
+                    package_name: "vitest".to_string(),
+                    path: package_json,
+                    line: 13,
+                },
+            ));
+
+        let keys = dead_code_keys(&results, &root);
+
+        assert!(keys.contains("unused-type:src/types.ts:UnusedType"));
+        assert!(keys.contains("private-type-leak:src/types.ts:makePublic:PrivateShape"));
+        assert!(keys.contains("unused-dev-dependency:package.json:vite"));
+        assert!(keys.contains("unused-optional-dependency:package.json:fsevents"));
+        assert!(keys.contains("unused-enum-member:src/types.ts:Status:Idle"));
+        assert!(keys.contains("unused-class-member:src/types.ts:Controller:legacy"));
+        assert!(keys.contains("type-only-dependency:package.json:zod"));
+        assert!(keys.contains("test-only-dependency:package.json:vitest"));
+    }
+
+    #[test]
+    fn dead_code_keys_cover_graph_boundary_catalog_and_override_variants() {
+        let root = root();
+        let source = root.join("src/app.ts");
+        let other = root.join("src/other.ts");
+        let workspace = root.join("pnpm-workspace.yaml");
+        let mut results = AnalysisResults::default();
+        results
+            .circular_dependencies
+            .push(CircularDependencyFinding::with_actions(
+                CircularDependency {
+                    files: vec![other.clone(), source.clone()],
+                    length: 2,
+                    line: 4,
+                    col: 0,
+                    edges: Vec::new(),
+                    is_cross_package: false,
+                },
+            ));
+        results
+            .re_export_cycles
+            .push(ReExportCycleFinding::with_actions(ReExportCycle {
+                files: vec![source.clone()],
+                kind: ReExportCycleKind::SelfLoop,
+            }));
+        results
+            .boundary_violations
+            .push(BoundaryViolationFinding::with_actions(BoundaryViolation {
+                from_path: source.clone(),
+                to_path: other,
+                from_zone: "ui".to_string(),
+                to_zone: "server".to_string(),
+                import_specifier: "../other".to_string(),
+                line: 1,
+                col: 0,
+            }));
+        results
+            .boundary_coverage_violations
+            .push(BoundaryCoverageViolationFinding::with_actions(
+                BoundaryCoverageViolation {
+                    path: root.join("src/unmatched.ts"),
+                    line: 1,
+                    col: 0,
+                },
+            ));
+        results
+            .boundary_call_violations
+            .push(BoundaryCallViolationFinding::with_actions(
+                BoundaryCallViolation {
+                    path: source.clone(),
+                    line: 12,
+                    col: 4,
+                    zone: "ui".to_string(),
+                    callee: "child_process.exec".to_string(),
+                    pattern: "child_process.*".to_string(),
+                },
+            ));
+        results.stale_suppressions.push(StaleSuppression {
+            path: source,
+            line: 2,
+            col: 0,
+            origin: SuppressionOrigin::Comment {
+                issue_kind: Some("unused-export".to_string()),
+                is_file_level: false,
+                kind_known: true,
+            },
+        });
+        results.unresolved_catalog_references.push(
+            UnresolvedCatalogReferenceFinding::with_actions(UnresolvedCatalogReference {
+                entry_name: "react".to_string(),
+                catalog_name: "default".to_string(),
+                path: root.join("packages/app/package.json"),
+                line: 9,
+                available_in_catalogs: vec!["react18".to_string()],
+            }),
+        );
+        results
+            .unused_catalog_entries
+            .push(UnusedCatalogEntryFinding::with_actions(
+                UnusedCatalogEntry {
+                    entry_name: "lodash".to_string(),
+                    catalog_name: "default".to_string(),
+                    path: workspace.clone(),
+                    line: 3,
+                    hardcoded_consumers: Vec::new(),
+                },
+            ));
+        results
+            .empty_catalog_groups
+            .push(EmptyCatalogGroupFinding::with_actions(EmptyCatalogGroup {
+                catalog_name: "react17".to_string(),
+                path: workspace.clone(),
+                line: 7,
+            }));
+        results
+            .unused_dependency_overrides
+            .push(UnusedDependencyOverrideFinding::with_actions(
+                UnusedDependencyOverride {
+                    raw_key: "left-pad".to_string(),
+                    target_package: "left-pad".to_string(),
+                    parent_package: None,
+                    version_constraint: None,
+                    version_range: "^1.3.0".to_string(),
+                    source: DependencyOverrideSource::PnpmWorkspaceYaml,
+                    path: workspace.clone(),
+                    line: 11,
+                    hint: None,
+                },
+            ));
+        results.misconfigured_dependency_overrides.push(
+            MisconfiguredDependencyOverrideFinding::with_actions(MisconfiguredDependencyOverride {
+                raw_key: ">".to_string(),
+                target_package: None,
+                raw_value: String::new(),
+                reason: DependencyOverrideMisconfigReason::UnparsableKey,
+                source: DependencyOverrideSource::PnpmWorkspaceYaml,
+                path: workspace,
+                line: 12,
+            }),
+        );
+
+        let keys = dead_code_keys(&results, &root);
+
+        assert!(keys.contains("circular-dependency:src/app.ts|src/other.ts"));
+        assert!(keys.contains("re-export-cycle:self-loop:src/app.ts"));
+        assert!(keys.contains("boundary-violation:src/app.ts:src/other.ts:../other"));
+        assert!(keys.contains("boundary-coverage:src/unmatched.ts"));
+        assert!(keys.contains("boundary-call:src/app.ts:child_process.exec"));
+        assert!(
+            keys.contains("stale-suppression:src/app.ts:// fallow-ignore-next-line unused-export")
+        );
+        assert!(
+            keys.contains("unresolved-catalog-reference:packages/app/package.json:9:default:react")
+        );
+        assert!(keys.contains("unused-catalog-entry:pnpm-workspace.yaml:3:default:lodash"));
+        assert!(keys.contains("empty-catalog-group:pnpm-workspace.yaml:7:react17"));
+        assert!(keys.contains("unused-dependency-override:pnpm-workspace.yaml:11:left-pad"));
+        assert!(keys.contains("misconfigured-dependency-override:pnpm-workspace.yaml:12:>"));
     }
 
     #[test]

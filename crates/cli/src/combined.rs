@@ -1258,3 +1258,71 @@ pub fn print_entry_point_summary(results: &fallow_core::results::AnalysisResults
 fn exit_code_to_u8(code: ExitCode) -> u8 {
     u8::from(code != ExitCode::SUCCESS)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::ExitCode;
+
+    use crate::AnalysisKind;
+
+    use super::{exit_code_to_u8, is_test_path, resolve_analyses};
+
+    #[test]
+    fn resolve_analyses_defaults_to_all_and_honors_only() {
+        assert_eq!(resolve_analyses(&[], &[]), (true, true, true));
+        assert_eq!(
+            resolve_analyses(&[AnalysisKind::DeadCode, AnalysisKind::Health], &[]),
+            (true, false, true)
+        );
+        assert_eq!(
+            resolve_analyses(&[AnalysisKind::Dupes], &[]),
+            (false, true, false)
+        );
+    }
+
+    #[test]
+    fn resolve_analyses_honors_skip_when_only_is_empty() {
+        assert_eq!(
+            resolve_analyses(&[], &[AnalysisKind::Dupes]),
+            (true, false, true)
+        );
+        assert_eq!(
+            resolve_analyses(&[], &[AnalysisKind::DeadCode, AnalysisKind::Health]),
+            (false, true, false)
+        );
+    }
+
+    #[test]
+    fn test_path_filter_recognizes_directories_and_filename_markers() {
+        for path in [
+            "src/__tests__/button.ts",
+            "src/fixtures/data.ts",
+            "apps/web/e2e/login.ts",
+            "src/components/button.test.ts",
+            "src/components/button.stories.tsx",
+            "src/components/button.fixture.ts",
+            "src/a12.ts",
+        ] {
+            assert!(is_test_path(Path::new(path)), "{path} should be test-like");
+        }
+
+        for path in [
+            "src/components/button.ts",
+            "src/routes/story.ts",
+            "src/api/version.ts",
+        ] {
+            assert!(
+                !is_test_path(Path::new(path)),
+                "{path} should be production-like"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_code_to_u8_distinguishes_success_from_failure() {
+        assert_eq!(exit_code_to_u8(ExitCode::SUCCESS), 0);
+        assert_eq!(exit_code_to_u8(ExitCode::from(1)), 1);
+        assert_eq!(exit_code_to_u8(ExitCode::from(2)), 1);
+    }
+}

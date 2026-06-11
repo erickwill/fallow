@@ -2007,7 +2007,7 @@ mod tests {
         HotPath, IdentityResolution, PROTOCOL_VERSION, ReportVerdict, Response, Summary, Verdict,
         function_identity_id,
     };
-    use globset::GlobSetBuilder;
+    use globset::{Glob, GlobSetBuilder};
     use oxc_coverage_instrument::{Location, Position};
     use rustc_hash::{FxHashMap, FxHashSet};
     use std::collections::BTreeMap;
@@ -2221,6 +2221,24 @@ mod tests {
         assert!(matches!(
             &sources[1],
             CoverageSource::Istanbul { path } if path.ends_with("coverage-final.json")
+        ));
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn empty_coverage_directory_is_treated_as_v8_directory() {
+        let root = make_temp_dir("coverage-empty-dir");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create temp dir: {err}"));
+
+        let prepared = prepare_coverage_sources(&root)
+            .unwrap_or_else(|err| panic!("failed to collect coverage sources: {err}"));
+
+        assert!(matches!(
+            &prepared.sources[..],
+            [CoverageSource::V8Dir { path }] if path == &root.to_string_lossy()
         ));
 
         std::fs::remove_dir_all(&root)
@@ -2458,6 +2476,42 @@ mod tests {
             std::fs::remove_dir_all(&root)
                 .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
         }
+    }
+
+    #[test]
+    fn detect_package_manager_ignores_unknown_package_manager_field() {
+        let root = make_temp_dir("sidecar-package-manager-unknown");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"demo","packageManager":"pnpmish@1.0.0"}"#,
+        )
+        .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
+
+        assert_eq!(super::detect_package_manager(&root), None);
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn detect_package_manager_falls_back_after_invalid_package_json() {
+        let root = make_temp_dir("sidecar-package-manager-invalid");
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to create {}: {err}", root.display()));
+        std::fs::write(root.join("package.json"), "{")
+            .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
+        std::fs::write(root.join("package-lock.json"), "")
+            .unwrap_or_else(|err| panic!("failed to write package-lock.json: {err}"));
+
+        assert_eq!(
+            super::detect_package_manager(&root),
+            Some(super::LocalPackageManager::Npm)
+        );
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
     }
 
     #[test]
@@ -2879,7 +2933,6 @@ mod tests {
         let ignore_set = GlobSetBuilder::new()
             .build()
             .unwrap_or_else(|err| panic!("failed to build empty globset: {err}"));
-        let analysis_output = empty_analysis_output();
 
         let (request, _locations) = build_request(
             &options,
@@ -2929,6 +2982,94 @@ mod tests {
         assert!(!cold.test_covered);
         assert!(internal.static_used);
         assert!(!internal.test_covered);
+
+        std::fs::remove_dir_all(&root)
+            .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));
+    }
+
+    #[test]
+    fn build_request_applies_changed_workspace_and_ignore_filters() {
+        let root = make_temp_dir("coverage-request-filters");
+        let app_dir = root.join("packages").join("app");
+        let other_dir = root.join("packages").join("other");
+        std::fs::create_dir_all(app_dir.join("src"))
+            .unwrap_or_else(|err| panic!("failed to create app src dir: {err}"));
+        std::fs::create_dir_all(other_dir.join("src"))
+            .unwrap_or_else(|err| panic!("failed to create other src dir: {err}"));
+        std::fs::write(root.join("package.json"), r#"{"name":"demo"}"#)
+            .unwrap_or_else(|err| panic!("failed to write package.json: {err}"));
+        std::fs::write(
+            app_dir.join("src").join("app.ts"),
+            "export function included() { return 1; }\n",
+        )
+        .unwrap_or_else(|err| panic!("failed to write app.ts: {err}"));
+        std::fs::write(
+            app_dir.join("src").join("ignored.ts"),
+            "export function ignored() { return 2; }\n",
+        )
+        .unwrap_or_else(|err| panic!("failed to write ignored.ts: {err}"));
+        std::fs::write(
+            other_dir.join("src").join("other.ts"),
+            "export function outside() { return 3; }\n",
+        )
+        .unwrap_or_else(|err| panic!("failed to write other.ts: {err}"));
+
+        let config =
+            FallowConfig::default().resolve(root.clone(), OutputFormat::Json, 1, true, true, None);
+        let files = fallow_core::discover::discover_files(&config);
+        let parse_result = fallow_core::extract::parse_all_files(&files, None, true);
+        let modules = parse_result.modules;
+        let file_paths: FxHashMap<_, _> = files.iter().map(|file| (file.id, &file.path)).collect();
+        let analysis_output = empty_analysis_output();
+        let mut changed_files = FxHashSet::default();
+        changed_files.insert(app_dir.join("src").join("app.ts"));
+        changed_files.insert(app_dir.join("src").join("ignored.ts"));
+        changed_files.insert(other_dir.join("src").join("other.ts"));
+        let ws_roots = [app_dir];
+        let mut ignore_builder = GlobSetBuilder::new();
+        ignore_builder.add(
+            Glob::new("packages/app/src/ignored.ts")
+                .unwrap_or_else(|err| panic!("failed to build ignore glob: {err}")),
+        );
+        let ignore_set = ignore_builder
+            .build()
+            .unwrap_or_else(|err| panic!("failed to build ignore set: {err}"));
+        let options = RuntimeCoverageOptions {
+            path: root.join("coverage"),
+            min_invocations_hot: 100,
+            min_observation_volume: None,
+            low_traffic_threshold: None,
+            license_jwt: "test-jwt".to_owned(),
+            watermark: None,
+        };
+
+        let (request, _locations) = build_request(
+            &options,
+            &RuntimeCoverageAnalysisInput {
+                root: &root,
+                modules: &modules,
+                analysis_output: &analysis_output,
+                istanbul_coverage: None,
+                file_paths: &file_paths,
+                ignore_set: &ignore_set,
+                changed_files: Some(&changed_files),
+                ws_roots: Some(&ws_roots),
+                top: None,
+                codeowners_path: None,
+                quiet: true,
+                output: OutputFormat::Json,
+            },
+            &StaticSignalIndex::default(),
+            vec![],
+        );
+
+        let paths = request
+            .static_findings
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["packages/app/src/app.ts"]);
 
         std::fs::remove_dir_all(&root)
             .unwrap_or_else(|err| panic!("failed to clean temp dir {}: {err}", root.display()));

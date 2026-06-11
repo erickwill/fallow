@@ -261,3 +261,150 @@ pub(super) fn render_hotspots(
     ));
     lines.push(String::new());
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use fallow_core::churn::ChurnTrend;
+
+    use super::super::plain;
+    use super::*;
+    use crate::health_types::{
+        ContributorEntry, ContributorIdentifierFormat, HealthReport, HotspotEntry, HotspotFinding,
+        HotspotSummary, OwnershipMetrics, OwnershipState,
+    };
+
+    fn contributor(identifier: &str, share: f64) -> ContributorEntry {
+        ContributorEntry {
+            identifier: identifier.to_owned(),
+            format: ContributorIdentifierFormat::Handle,
+            share,
+            stale_days: 0,
+            commits: 10,
+        }
+    }
+
+    fn ownership(
+        identifier: &str,
+        share: f64,
+        bus_factor: u32,
+        owner: Option<&str>,
+        state: OwnershipState,
+    ) -> OwnershipMetrics {
+        OwnershipMetrics {
+            bus_factor,
+            contributor_count: 2,
+            top_contributor: contributor(identifier, share),
+            recent_contributors: vec![contributor(identifier, share)],
+            suggested_reviewers: Vec::new(),
+            declared_owner: owner.map(str::to_owned),
+            unowned: None,
+            ownership_state: state,
+            drift: matches!(state, OwnershipState::Drifting),
+            drift_reason: None,
+        }
+    }
+
+    fn hotspot(path: PathBuf, score: f64, trend: ChurnTrend) -> HotspotEntry {
+        HotspotEntry {
+            path,
+            score,
+            commits: 5,
+            weighted_commits: 5.0,
+            lines_added: 80,
+            lines_deleted: 20,
+            complexity_density: 0.42,
+            fan_in: 7,
+            trend,
+            ownership: None,
+            is_test_path: false,
+        }
+    }
+
+    #[test]
+    fn owner_matching_handles_email_plus_suffixes_and_empty_values() {
+        assert!(handle_matches_owner("alice@example.com", "@alice"));
+        assert!(handle_matches_owner("team+alice@example.com", "alice"));
+        assert!(handle_matches_owner("Alice", "@alice"));
+        assert!(!handle_matches_owner("", "@alice"));
+        assert!(!handle_matches_owner("alice@example.com", "@"));
+        assert!(!handle_matches_owner("bob@example.com", "@alice"));
+    }
+
+    #[test]
+    fn ownership_line_collapses_matching_owner_and_flags_risk() {
+        let matching = ownership(
+            "team+alice@example.com",
+            1.0,
+            1,
+            Some("@alice"),
+            OwnershipState::Active,
+        );
+        let line = plain(&[render_ownership_line(&matching, ChurnTrend::Accelerating)]);
+
+        assert!(line.contains("bus=1 (sole author)"));
+        assert!(line.contains("owned by team+alice@example.com (100%, declared @alice)"));
+
+        let mut drifting = ownership(
+            "bob@example.com",
+            0.75,
+            1,
+            Some("@alice"),
+            OwnershipState::Drifting,
+        );
+        drifting.unowned = Some(true);
+        let line = plain(&[render_ownership_line(&drifting, ChurnTrend::Stable)]);
+
+        assert!(line.contains("top=bob@example.com (75%)"));
+        assert!(line.contains("owner=@alice"));
+        assert!(line.contains("unowned"));
+        assert!(line.contains("drift"));
+    }
+
+    #[test]
+    fn hotspots_render_summary_ownership_and_exclusions() {
+        let root = PathBuf::from("/repo");
+        let mut first = hotspot(root.join("src/api.ts"), 75.0, ChurnTrend::Accelerating);
+        first.ownership = Some(ownership(
+            "alice@example.com",
+            0.91,
+            1,
+            None,
+            OwnershipState::Unowned,
+        ));
+        let mut second = hotspot(root.join("tests/api.test.ts"), 20.0, ChurnTrend::Cooling);
+        second.is_test_path = true;
+        second.ownership = Some(ownership(
+            "alice@example.com",
+            0.70,
+            1,
+            None,
+            OwnershipState::DeclaredInactive,
+        ));
+
+        let report = HealthReport {
+            hotspots: vec![HotspotFinding::from(first), HotspotFinding::from(second)],
+            hotspot_summary: Some(HotspotSummary {
+                since: "90d".to_owned(),
+                min_commits: 3,
+                files_analyzed: 10,
+                files_excluded: 1,
+                shallow_clone: false,
+            }),
+            ..HealthReport::default()
+        };
+        let mut lines = Vec::new();
+
+        render_hotspots(&mut lines, &report, &root);
+        let text = plain(&lines);
+
+        assert!(text.contains("Hotspots (2 files, since 90d)"));
+        assert!(text.contains("all 2 hotspots depend on a single recent contributor"));
+        assert!(text.contains("top authors: alice@example.com (2)"));
+        assert!(text.contains("src/api.ts"));
+        assert!(text.contains("tests/api.test.ts [test]"));
+        assert!(text.contains("1 file excluded (< 3 commits)"));
+        assert!(text.contains("No CODEOWNERS file discovered"));
+    }
+}

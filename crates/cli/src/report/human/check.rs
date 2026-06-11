@@ -2522,6 +2522,30 @@ mod tests {
     }
 
     #[test]
+    fn unused_files_show_src_test_split_when_mixed() {
+        let root = PathBuf::from("/project");
+        let mut results = AnalysisResults::default();
+        for path in [
+            "src/dead-a.ts",
+            "src/dead-b.ts",
+            "tests/dead-a.test.ts",
+            "tests/dead-b.test.ts",
+            "__fixtures__/dead-fixture.ts",
+        ] {
+            results
+                .unused_files
+                .push(UnusedFileFinding::with_actions(UnusedFile {
+                    path: root.join(path),
+                }));
+        }
+        let rules = RulesConfig::default();
+        let lines = build_human_lines(&results, &root, &rules, None);
+        let text = plain(&lines);
+
+        assert!(text.contains("2 in src, 3 in test directories"));
+    }
+
+    #[test]
     fn unused_exports_grouped_by_file_with_line_and_name() {
         let root = PathBuf::from("/project");
         let mut results = AnalysisResults::default();

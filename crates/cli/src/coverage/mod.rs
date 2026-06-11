@@ -1852,6 +1852,121 @@ mod tests {
     }
 
     #[test]
+    fn package_manager_commands_match_each_tool() {
+        assert_eq!(PackageManager::Npm.label(), "npm");
+        assert_eq!(
+            PackageManager::Npm.add_runtime_package_command("pkg"),
+            "npm install pkg"
+        );
+        assert_eq!(
+            PackageManager::Npm.install_command(),
+            "npm install --save-dev @fallow-cli/fallow-cov"
+        );
+        assert_eq!(PackageManager::Npm.run_script("build"), "npm run build");
+        assert_eq!(PackageManager::Npm.exec_binary("vite", &[]), "npx vite");
+
+        assert_eq!(PackageManager::Pnpm.label(), "pnpm");
+        assert_eq!(
+            PackageManager::Pnpm.add_runtime_package_command("pkg"),
+            "pnpm add pkg"
+        );
+        assert_eq!(
+            PackageManager::Pnpm.install_command(),
+            "pnpm add -D @fallow-cli/fallow-cov"
+        );
+        assert_eq!(PackageManager::Pnpm.run_script("build"), "pnpm build");
+        assert_eq!(
+            PackageManager::Pnpm.exec_binary("vite", &["preview"]),
+            "pnpm exec vite preview"
+        );
+
+        assert_eq!(PackageManager::Yarn.label(), "yarn");
+        assert_eq!(
+            PackageManager::Yarn.add_runtime_package_command("pkg"),
+            "yarn add pkg"
+        );
+        assert_eq!(
+            PackageManager::Yarn.install_command(),
+            "yarn add -D @fallow-cli/fallow-cov"
+        );
+        assert_eq!(PackageManager::Yarn.run_script("build"), "yarn build");
+        assert_eq!(
+            PackageManager::Yarn.exec_binary("vite", &["build"]),
+            "yarn vite build"
+        );
+
+        assert_eq!(PackageManager::Bun.label(), "bun");
+        assert_eq!(
+            PackageManager::Bun.add_runtime_package_command("pkg"),
+            "bun add pkg"
+        );
+        assert_eq!(
+            PackageManager::Bun.install_command(),
+            "bun add -d @fallow-cli/fallow-cov"
+        );
+        assert_eq!(PackageManager::Bun.run_script("build"), "bun run build");
+        assert_eq!(
+            PackageManager::Bun.exec_binary("vite", &["preview"]),
+            "bunx vite preview"
+        );
+    }
+
+    #[test]
+    fn setup_context_commands_cover_framework_defaults() {
+        let context = |framework, package_manager| CoverageSetupContext {
+            framework,
+            package_manager,
+            has_build_script: false,
+            has_start_script: false,
+            has_preview_script: false,
+            node_entry_path: "server.ts".to_owned(),
+        };
+
+        let next = context(FrameworkKind::NextJs, Some(PackageManager::Pnpm));
+        assert_eq!(
+            next.build_command().as_deref(),
+            Some("pnpm exec next build")
+        );
+        assert_eq!(next.run_command(), "pnpm exec next start");
+
+        let nuxt = context(FrameworkKind::Nuxt, Some(PackageManager::Yarn));
+        assert_eq!(nuxt.build_command().as_deref(), Some("yarn nuxi build"));
+        assert_eq!(nuxt.run_command(), "yarn nuxi preview");
+
+        let astro = context(FrameworkKind::Astro, Some(PackageManager::Bun));
+        assert_eq!(astro.build_command().as_deref(), Some("bunx astro build"));
+        assert_eq!(astro.run_command(), "bunx astro preview");
+
+        let remix = context(FrameworkKind::Remix, Some(PackageManager::Npm));
+        assert_eq!(remix.build_command().as_deref(), Some("npx remix build"));
+        assert_eq!(remix.run_command(), "node ./build/index.js");
+
+        let svelte = context(FrameworkKind::SvelteKit, None);
+        assert_eq!(svelte.build_command().as_deref(), Some("npx vite build"));
+        assert_eq!(svelte.run_command(), "npx vite preview");
+
+        let vite = context(FrameworkKind::ViteBrowser, Some(PackageManager::Pnpm));
+        assert_eq!(
+            vite.build_command().as_deref(),
+            Some("pnpm exec vite build")
+        );
+        assert_eq!(vite.run_command(), "pnpm exec vite preview");
+
+        let nest = context(FrameworkKind::NestJs, Some(PackageManager::Pnpm));
+        assert_eq!(nest.build_command(), None);
+        assert_eq!(nest.run_command(), "node dist/main.js");
+
+        let plain = context(FrameworkKind::PlainNode, None);
+        assert_eq!(plain.build_command(), None);
+        assert_eq!(plain.run_command(), "node dist/server.js");
+
+        let other = context(FrameworkKind::Other, Some(PackageManager::Pnpm));
+        assert_eq!(other.build_command(), None);
+        assert_eq!(other.run_command(), "node dist/server.js");
+        assert_eq!(other.framework.label(), "custom project");
+    }
+
+    #[test]
     fn setup_json_emits_workspace_members_and_union_runtime_targets() {
         let dir = tempdir().expect("tempdir should be created");
         std::fs::write(

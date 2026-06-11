@@ -810,6 +810,24 @@ mod tests {
         assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::from(2)));
     }
 
+    #[test]
+    fn run_trial_without_email_errors_in_json_mode() {
+        let exit = run_trial(None, true);
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::from(2)));
+    }
+
+    #[test]
+    fn activate_without_jwt_source_errors_before_verification() {
+        let exit = run_activate(&ActivateArgs::default(), true);
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::from(2)));
+    }
+
+    #[test]
+    fn json_failures_return_requested_exit_code() {
+        let exit = fail("synthetic failure", 7, true);
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::from(7)));
+    }
+
     fn sample_claims(features: &[&str]) -> LicenseClaims {
         LicenseClaims {
             iss: "https://api.fallow.cloud".to_owned(),

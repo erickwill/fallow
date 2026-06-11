@@ -961,6 +961,19 @@ mod tests {
     }
 
     #[test]
+    fn resolve_build_dir_joins_relative_paths() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            resolve_build_dir(root, Path::new("dist")),
+            PathBuf::from("/repo/dist")
+        );
+        assert_eq!(
+            resolve_build_dir(root, Path::new("/tmp/dist")),
+            PathBuf::from("/tmp/dist")
+        );
+    }
+
+    #[test]
     fn map_path_is_repo_root_relative_when_build_dir_is_a_subdirectory() {
         let repo_root = tempdir().expect("tempdir");
         let build_dir = repo_root.path().join("dashboard/dist");
@@ -1171,6 +1184,26 @@ mod tests {
         )
         .expect("package.json");
         assert_eq!(resolve_repo_name(None, dir.path()).unwrap(), "acme/widgets");
+    }
+
+    #[test]
+    fn resolve_repo_name_reads_package_json_repository_string() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","repository":"git@github.com:acme/widgets.git"}"#,
+        )
+        .expect("package.json");
+
+        assert_eq!(resolve_repo_name(None, dir.path()).unwrap(), "acme/widgets");
+    }
+
+    #[test]
+    fn resolve_repo_name_errors_when_no_source_is_available() {
+        let dir = tempdir().expect("tempdir");
+        let err = resolve_repo_name(None, dir.path()).expect_err("repo should be required");
+
+        assert!(matches!(err, UploadSourceMapsError::Validation(_)));
     }
 
     #[test]
