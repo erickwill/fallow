@@ -1135,181 +1135,241 @@ pub fn issues_to_value(issues: &[CodeClimateIssue]) -> serde_json::Value {
 /// per-issue shape against [`CodeClimateOutput`](
 /// crate::output_envelope::CodeClimateOutput).
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "orchestration function: one push_<kind>_issues call per issue type, each one a flat 3-5 line block; splitting would just shuffle the same lines into helpers without aiding readability"
-)]
 pub fn build_codeclimate(
     results: &AnalysisResults,
     root: &Path,
     rules: &RulesConfig,
 ) -> Vec<CodeClimateIssue> {
-    let mut issues = Vec::new();
+    CodeClimateBuilder {
+        issues: Vec::new(),
+        results,
+        root,
+        rules,
+    }
+    .build()
+}
 
-    push_unused_file_issues(&mut issues, &results.unused_files, root, rules.unused_files);
-    push_unused_export_issues(
-        &mut issues,
-        results.unused_exports.iter().map(|e| &e.export),
-        root,
-        "fallow/unused-export",
-        "Export",
-        "Re-export",
-        rules.unused_exports,
-    );
-    push_unused_export_issues(
-        &mut issues,
-        results.unused_types.iter().map(|e| &e.export),
-        root,
-        "fallow/unused-type",
-        "Type export",
-        "Type re-export",
-        rules.unused_types,
-    );
-    push_private_type_leak_issues(
-        &mut issues,
-        &results.private_type_leaks,
-        root,
-        rules.private_type_leaks,
-    );
-    push_dep_cc_issues(
-        &mut issues,
-        results.unused_dependencies.iter().map(|f| &f.dep),
-        root,
-        "fallow/unused-dependency",
-        "dependencies",
-        rules.unused_dependencies,
-    );
-    push_dep_cc_issues(
-        &mut issues,
-        results.unused_dev_dependencies.iter().map(|f| &f.dep),
-        root,
-        "fallow/unused-dev-dependency",
-        "devDependencies",
-        rules.unused_dev_dependencies,
-    );
-    push_dep_cc_issues(
-        &mut issues,
-        results.unused_optional_dependencies.iter().map(|f| &f.dep),
-        root,
-        "fallow/unused-optional-dependency",
-        "optionalDependencies",
-        rules.unused_optional_dependencies,
-    );
-    push_type_only_dep_issues(
-        &mut issues,
-        &results.type_only_dependencies,
-        root,
-        rules.type_only_dependencies,
-    );
-    push_test_only_dep_issues(
-        &mut issues,
-        &results.test_only_dependencies,
-        root,
-        rules.test_only_dependencies,
-    );
-    push_unused_member_issues(
-        &mut issues,
-        results.unused_enum_members.iter().map(|m| &m.member),
-        root,
-        "fallow/unused-enum-member",
-        "Enum",
-        rules.unused_enum_members,
-    );
-    push_unused_member_issues(
-        &mut issues,
-        results.unused_class_members.iter().map(|m| &m.member),
-        root,
-        "fallow/unused-class-member",
-        "Class",
-        rules.unused_class_members,
-    );
-    push_unresolved_import_issues(
-        &mut issues,
-        &results.unresolved_imports,
-        root,
-        rules.unresolved_imports,
-    );
-    push_unlisted_dep_issues(
-        &mut issues,
-        &results.unlisted_dependencies,
-        root,
-        rules.unlisted_dependencies,
-    );
-    push_duplicate_export_issues(
-        &mut issues,
-        &results.duplicate_exports,
-        root,
-        rules.duplicate_exports,
-    );
-    push_circular_dep_issues(
-        &mut issues,
-        &results.circular_dependencies,
-        root,
-        rules.circular_dependencies,
-    );
-    push_re_export_cycle_issues(
-        &mut issues,
-        &results.re_export_cycles,
-        root,
-        rules.re_export_cycle,
-    );
-    push_boundary_violation_issues(
-        &mut issues,
-        &results.boundary_violations,
-        root,
-        rules.boundary_violation,
-    );
-    push_boundary_coverage_issues(
-        &mut issues,
-        &results.boundary_coverage_violations,
-        root,
-        rules.boundary_violation,
-    );
-    push_boundary_call_issues(
-        &mut issues,
-        &results.boundary_call_violations,
-        root,
-        rules.boundary_violation,
-    );
-    push_policy_violation_issues(&mut issues, &results.policy_violations, root);
-    push_stale_suppression_issues(
-        &mut issues,
-        &results.stale_suppressions,
-        root,
-        rules.stale_suppressions,
-    );
-    push_unused_catalog_entry_issues(
-        &mut issues,
-        &results.unused_catalog_entries,
-        root,
-        rules.unused_catalog_entries,
-    );
-    push_empty_catalog_group_issues(
-        &mut issues,
-        &results.empty_catalog_groups,
-        root,
-        rules.empty_catalog_groups,
-    );
-    push_unresolved_catalog_reference_issues(
-        &mut issues,
-        &results.unresolved_catalog_references,
-        root,
-        rules.unresolved_catalog_references,
-    );
-    push_unused_dependency_override_issues(
-        &mut issues,
-        &results.unused_dependency_overrides,
-        root,
-        rules.unused_dependency_overrides,
-    );
-    push_misconfigured_dependency_override_issues(
-        &mut issues,
-        &results.misconfigured_dependency_overrides,
-        root,
-        rules.misconfigured_dependency_overrides,
-    );
+struct CodeClimateBuilder<'a> {
+    issues: Vec<CodeClimateIssue>,
+    results: &'a AnalysisResults,
+    root: &'a Path,
+    rules: &'a RulesConfig,
+}
 
-    issues
+impl CodeClimateBuilder<'_> {
+    fn build(mut self) -> Vec<CodeClimateIssue> {
+        self.push_file_and_export_issues();
+        self.push_private_type_leak_issues();
+        self.push_package_dependency_issues();
+        self.push_type_test_dependency_issues();
+        self.push_member_issues();
+        self.push_import_and_duplicate_issues();
+        self.push_graph_issues();
+        self.push_boundary_issues();
+        self.push_suppression_and_catalog_issues();
+        self.push_override_issues();
+        self.issues
+    }
+
+    fn push_file_and_export_issues(&mut self) {
+        push_unused_file_issues(
+            &mut self.issues,
+            &self.results.unused_files,
+            self.root,
+            self.rules.unused_files,
+        );
+        push_unused_export_issues(
+            &mut self.issues,
+            self.results.unused_exports.iter().map(|e| &e.export),
+            self.root,
+            "fallow/unused-export",
+            "Export",
+            "Re-export",
+            self.rules.unused_exports,
+        );
+        push_unused_export_issues(
+            &mut self.issues,
+            self.results.unused_types.iter().map(|e| &e.export),
+            self.root,
+            "fallow/unused-type",
+            "Type export",
+            "Type re-export",
+            self.rules.unused_types,
+        );
+    }
+
+    fn push_private_type_leak_issues(&mut self) {
+        push_private_type_leak_issues(
+            &mut self.issues,
+            &self.results.private_type_leaks,
+            self.root,
+            self.rules.private_type_leaks,
+        );
+    }
+
+    fn push_package_dependency_issues(&mut self) {
+        push_dep_cc_issues(
+            &mut self.issues,
+            self.results.unused_dependencies.iter().map(|f| &f.dep),
+            self.root,
+            "fallow/unused-dependency",
+            "dependencies",
+            self.rules.unused_dependencies,
+        );
+        push_dep_cc_issues(
+            &mut self.issues,
+            self.results.unused_dev_dependencies.iter().map(|f| &f.dep),
+            self.root,
+            "fallow/unused-dev-dependency",
+            "devDependencies",
+            self.rules.unused_dev_dependencies,
+        );
+        push_dep_cc_issues(
+            &mut self.issues,
+            self.results
+                .unused_optional_dependencies
+                .iter()
+                .map(|f| &f.dep),
+            self.root,
+            "fallow/unused-optional-dependency",
+            "optionalDependencies",
+            self.rules.unused_optional_dependencies,
+        );
+    }
+
+    fn push_type_test_dependency_issues(&mut self) {
+        push_type_only_dep_issues(
+            &mut self.issues,
+            &self.results.type_only_dependencies,
+            self.root,
+            self.rules.type_only_dependencies,
+        );
+        push_test_only_dep_issues(
+            &mut self.issues,
+            &self.results.test_only_dependencies,
+            self.root,
+            self.rules.test_only_dependencies,
+        );
+    }
+
+    fn push_member_issues(&mut self) {
+        push_unused_member_issues(
+            &mut self.issues,
+            self.results.unused_enum_members.iter().map(|m| &m.member),
+            self.root,
+            "fallow/unused-enum-member",
+            "Enum",
+            self.rules.unused_enum_members,
+        );
+        push_unused_member_issues(
+            &mut self.issues,
+            self.results.unused_class_members.iter().map(|m| &m.member),
+            self.root,
+            "fallow/unused-class-member",
+            "Class",
+            self.rules.unused_class_members,
+        );
+    }
+
+    fn push_import_and_duplicate_issues(&mut self) {
+        push_unresolved_import_issues(
+            &mut self.issues,
+            &self.results.unresolved_imports,
+            self.root,
+            self.rules.unresolved_imports,
+        );
+        push_unlisted_dep_issues(
+            &mut self.issues,
+            &self.results.unlisted_dependencies,
+            self.root,
+            self.rules.unlisted_dependencies,
+        );
+        push_duplicate_export_issues(
+            &mut self.issues,
+            &self.results.duplicate_exports,
+            self.root,
+            self.rules.duplicate_exports,
+        );
+    }
+
+    fn push_graph_issues(&mut self) {
+        push_circular_dep_issues(
+            &mut self.issues,
+            &self.results.circular_dependencies,
+            self.root,
+            self.rules.circular_dependencies,
+        );
+        push_re_export_cycle_issues(
+            &mut self.issues,
+            &self.results.re_export_cycles,
+            self.root,
+            self.rules.re_export_cycle,
+        );
+    }
+
+    fn push_boundary_issues(&mut self) {
+        push_boundary_violation_issues(
+            &mut self.issues,
+            &self.results.boundary_violations,
+            self.root,
+            self.rules.boundary_violation,
+        );
+        push_boundary_coverage_issues(
+            &mut self.issues,
+            &self.results.boundary_coverage_violations,
+            self.root,
+            self.rules.boundary_violation,
+        );
+        push_boundary_call_issues(
+            &mut self.issues,
+            &self.results.boundary_call_violations,
+            self.root,
+            self.rules.boundary_violation,
+        );
+        push_policy_violation_issues(&mut self.issues, &self.results.policy_violations, self.root);
+    }
+
+    fn push_suppression_and_catalog_issues(&mut self) {
+        push_stale_suppression_issues(
+            &mut self.issues,
+            &self.results.stale_suppressions,
+            self.root,
+            self.rules.stale_suppressions,
+        );
+        push_unused_catalog_entry_issues(
+            &mut self.issues,
+            &self.results.unused_catalog_entries,
+            self.root,
+            self.rules.unused_catalog_entries,
+        );
+        push_empty_catalog_group_issues(
+            &mut self.issues,
+            &self.results.empty_catalog_groups,
+            self.root,
+            self.rules.empty_catalog_groups,
+        );
+        push_unresolved_catalog_reference_issues(
+            &mut self.issues,
+            &self.results.unresolved_catalog_references,
+            self.root,
+            self.rules.unresolved_catalog_references,
+        );
+    }
+
+    fn push_override_issues(&mut self) {
+        push_unused_dependency_override_issues(
+            &mut self.issues,
+            &self.results.unused_dependency_overrides,
+            self.root,
+            self.rules.unused_dependency_overrides,
+        );
+        push_misconfigured_dependency_override_issues(
+            &mut self.issues,
+            &self.results.misconfigured_dependency_overrides,
+            self.root,
+            self.rules.misconfigured_dependency_overrides,
+        );
+    }
 }
 
 /// Print dead-code analysis results in CodeClimate format.
