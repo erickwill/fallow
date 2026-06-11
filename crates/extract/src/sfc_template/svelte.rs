@@ -168,10 +168,6 @@ fn strip_non_template_content(source: &str) -> String {
     visible
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Svelte tag dispatch is inherently branchy; each tag kind is handled in-place for locality"
-)]
 fn apply_tag(
     tag: &str,
     tag_start: usize,
@@ -206,78 +202,22 @@ fn apply_tag(
     }
 
     if let Some(captures) = SVELTE_EACH_RE.captures(tag) {
-        let iterable = captures.name("iterable").map_or("", |m| m.as_str()).trim();
-        let bindings = captures.name("bindings").map_or("", |m| m.as_str()).trim();
-        let each_locals = extract_pattern_binding_names(bindings);
-        let current = current_locals(scopes);
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            iterable,
-            imported_bindings,
-            bound_targets,
-            &current,
-        );
-        if let Some(key) = captures.name("key").map(|m| m.as_str().trim())
-            && !key.is_empty()
-        {
-            let mut key_locals = current;
-            key_locals.extend(each_locals.iter().cloned());
-            merge_expression_usage_allow_dollar_refs_with_bound_targets(
-                usage,
-                key,
-                imported_bindings,
-                bound_targets,
-                &key_locals,
-            );
-        }
-        scopes.push(SvelteScopeFrame {
-            kind: SvelteBlockKind::Each,
-            locals: each_locals,
-        });
+        apply_each_tag(&captures, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
     if let Some(captures) = SVELTE_AWAIT_RE.captures(tag) {
-        let expr = captures.name("expr").map_or("", |m| m.as_str()).trim();
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            expr,
-            imported_bindings,
-            bound_targets,
-            &current_locals(scopes),
-        );
-        scopes.push(SvelteScopeFrame {
-            kind: SvelteBlockKind::Await,
-            locals: Vec::new(),
-        });
+        apply_await_tag(&captures, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
     if let Some(captures) = SVELTE_THEN_RE.captures(tag) {
-        if let Some(frame) = scopes
-            .iter_mut()
-            .rev()
-            .find(|frame| matches!(frame.kind, SvelteBlockKind::Await))
-        {
-            frame.locals = captures
-                .name("binding")
-                .map(|m| extract_pattern_binding_names(m.as_str()))
-                .unwrap_or_default();
-        }
+        update_await_branch_locals(&captures, scopes);
         return;
     }
 
     if let Some(captures) = SVELTE_CATCH_RE.captures(tag) {
-        if let Some(frame) = scopes
-            .iter_mut()
-            .rev()
-            .find(|frame| matches!(frame.kind, SvelteBlockKind::Await))
-        {
-            frame.locals = captures
-                .name("binding")
-                .map(|m| extract_pattern_binding_names(m.as_str()))
-                .unwrap_or_default();
-        }
+        update_await_branch_locals(&captures, scopes);
         return;
     }
 
@@ -306,13 +246,7 @@ fn apply_tag(
     }
 
     if let Some(expr) = tag.strip_prefix("@attach") {
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            expr.trim(),
-            imported_bindings,
-            bound_targets,
-            &current_locals(scopes),
-        );
+        apply_expression_tag(expr, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
@@ -331,53 +265,22 @@ fn apply_tag(
     }
 
     if let Some(expr) = tag.strip_prefix("@render") {
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            expr.trim(),
-            imported_bindings,
-            bound_targets,
-            &current_locals(scopes),
-        );
+        apply_expression_tag(expr, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
     if let Some(stmt) = tag.strip_prefix("@const") {
-        let locals = current_locals(scopes);
-        merge_statement_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            stmt.trim(),
-            imported_bindings,
-            bound_targets,
-            &locals,
-        );
-        if let Some(lhs) = stmt.split_once('=').map(|(lhs, _)| lhs.trim()) {
-            let new_bindings = extract_pattern_binding_names(lhs);
-            if let Some(frame) = scopes.last_mut() {
-                frame.locals.extend(new_bindings);
-            }
-        }
+        apply_const_tag(stmt, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
     if let Some(expr) = tag.strip_prefix("@debug") {
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            expr.trim(),
-            imported_bindings,
-            bound_targets,
-            &current_locals(scopes),
-        );
+        apply_expression_tag(expr, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
     if let Some(expr) = tag.strip_prefix(":else if") {
-        merge_expression_usage_allow_dollar_refs_with_bound_targets(
-            usage,
-            expr.trim(),
-            imported_bindings,
-            bound_targets,
-            &current_locals(scopes),
-        );
+        apply_expression_tag(expr, imported_bindings, bound_targets, scopes, usage);
         return;
     }
 
@@ -388,6 +291,116 @@ fn apply_tag(
     merge_expression_usage_allow_dollar_refs_with_bound_targets(
         usage,
         tag,
+        imported_bindings,
+        bound_targets,
+        &current_locals(scopes),
+    );
+}
+
+fn apply_each_tag(
+    captures: &regex::Captures<'_>,
+    imported_bindings: &FxHashSet<String>,
+    bound_targets: &FxHashMap<String, String>,
+    scopes: &mut Vec<SvelteScopeFrame>,
+    usage: &mut TemplateUsage,
+) {
+    let iterable = captures.name("iterable").map_or("", |m| m.as_str()).trim();
+    let bindings = captures.name("bindings").map_or("", |m| m.as_str()).trim();
+    let each_locals = extract_pattern_binding_names(bindings);
+    let current = current_locals(scopes);
+    merge_expression_usage_allow_dollar_refs_with_bound_targets(
+        usage,
+        iterable,
+        imported_bindings,
+        bound_targets,
+        &current,
+    );
+    if let Some(key) = captures.name("key").map(|m| m.as_str().trim())
+        && !key.is_empty()
+    {
+        let mut key_locals = current;
+        key_locals.extend(each_locals.iter().cloned());
+        merge_expression_usage_allow_dollar_refs_with_bound_targets(
+            usage,
+            key,
+            imported_bindings,
+            bound_targets,
+            &key_locals,
+        );
+    }
+    scopes.push(SvelteScopeFrame {
+        kind: SvelteBlockKind::Each,
+        locals: each_locals,
+    });
+}
+
+fn apply_await_tag(
+    captures: &regex::Captures<'_>,
+    imported_bindings: &FxHashSet<String>,
+    bound_targets: &FxHashMap<String, String>,
+    scopes: &mut Vec<SvelteScopeFrame>,
+    usage: &mut TemplateUsage,
+) {
+    let expr = captures.name("expr").map_or("", |m| m.as_str()).trim();
+    merge_expression_usage_allow_dollar_refs_with_bound_targets(
+        usage,
+        expr,
+        imported_bindings,
+        bound_targets,
+        &current_locals(scopes),
+    );
+    scopes.push(SvelteScopeFrame {
+        kind: SvelteBlockKind::Await,
+        locals: Vec::new(),
+    });
+}
+
+fn update_await_branch_locals(captures: &regex::Captures<'_>, scopes: &mut [SvelteScopeFrame]) {
+    if let Some(frame) = scopes
+        .iter_mut()
+        .rev()
+        .find(|frame| matches!(frame.kind, SvelteBlockKind::Await))
+    {
+        frame.locals = captures
+            .name("binding")
+            .map(|m| extract_pattern_binding_names(m.as_str()))
+            .unwrap_or_default();
+    }
+}
+
+fn apply_const_tag(
+    stmt: &str,
+    imported_bindings: &FxHashSet<String>,
+    bound_targets: &FxHashMap<String, String>,
+    scopes: &mut [SvelteScopeFrame],
+    usage: &mut TemplateUsage,
+) {
+    let locals = current_locals(scopes);
+    merge_statement_usage_allow_dollar_refs_with_bound_targets(
+        usage,
+        stmt.trim(),
+        imported_bindings,
+        bound_targets,
+        &locals,
+    );
+    if let Some(lhs) = stmt.split_once('=').map(|(lhs, _)| lhs.trim()) {
+        let new_bindings = extract_pattern_binding_names(lhs);
+        if let Some(frame) = scopes.last_mut() {
+            frame.locals.extend(new_bindings);
+        }
+    }
+}
+
+fn apply_expression_tag(
+    expr: &str,
+    imported_bindings: &FxHashSet<String>,
+    bound_targets: &FxHashMap<String, String>,
+    scopes: &[SvelteScopeFrame],
+    usage: &mut TemplateUsage,
+) {
+    merge_expression_usage_allow_dollar_refs_with_bound_targets(
+        usage,
+        expr.trim(),
         imported_bindings,
         bound_targets,
         &current_locals(scopes),

@@ -1128,21 +1128,10 @@ pub(super) fn compute_file_scores(
 
     let unused_exports_by_path = count_unused_exports_by_path(&results.unused_exports);
 
-    let module_by_id: rustc_hash::FxHashMap<
-        fallow_core::discover::FileId,
-        &fallow_core::extract::ModuleInfo,
-    > = modules.iter().map(|m| (m.file_id, m)).collect();
-    let unused_exports: rustc_hash::FxHashSet<(&std::path::Path, String)> = results
-        .unused_exports
-        .iter()
-        .map(|export| {
-            (
-                export.export.path.as_path(),
-                export.export.export_name.clone(),
-            )
-        })
-        .collect();
-    let coverage = compute_coverage_gaps(&graph, file_paths, &module_by_id, &unused_exports, root);
+    let FileScoreCoverageSetup {
+        module_by_id,
+        coverage,
+    } = prepare_file_score_coverage_setup(modules, file_paths, results, &graph, root);
 
     let mut scores = Vec::with_capacity(graph.modules.len());
     let mut istanbul_matched = 0usize;
@@ -1320,6 +1309,38 @@ pub(super) fn compute_file_scores(
             })
             .collect(),
     })
+}
+
+struct FileScoreCoverageSetup<'a> {
+    module_by_id:
+        rustc_hash::FxHashMap<fallow_core::discover::FileId, &'a fallow_core::extract::ModuleInfo>,
+    coverage: CoverageGapData,
+}
+
+fn prepare_file_score_coverage_setup<'a>(
+    modules: &'a [fallow_core::extract::ModuleInfo],
+    file_paths: &rustc_hash::FxHashMap<fallow_core::discover::FileId, &std::path::PathBuf>,
+    results: &fallow_core::results::AnalysisResults,
+    graph: &fallow_core::graph::ModuleGraph,
+    root: &std::path::Path,
+) -> FileScoreCoverageSetup<'a> {
+    let module_by_id: rustc_hash::FxHashMap<_, _> =
+        modules.iter().map(|m| (m.file_id, m)).collect();
+    let unused_exports: rustc_hash::FxHashSet<(&std::path::Path, String)> = results
+        .unused_exports
+        .iter()
+        .map(|export| {
+            (
+                export.export.path.as_path(),
+                export.export.export_name.clone(),
+            )
+        })
+        .collect();
+    let coverage = compute_coverage_gaps(graph, file_paths, &module_by_id, &unused_exports, root);
+    FileScoreCoverageSetup {
+        module_by_id,
+        coverage,
+    }
 }
 
 fn collect_circular_files(

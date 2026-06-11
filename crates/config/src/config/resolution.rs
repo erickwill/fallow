@@ -256,6 +256,132 @@ fn resolve_cache_dir(root: &Path, configured: Option<PathBuf>) -> PathBuf {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "user glob patterns are validated before config resolution"
+)]
+fn compile_ignore_patterns(ignore_patterns: &[String]) -> GlobSet {
+    let mut ignore_builder = GlobSetBuilder::new();
+    for pattern in ignore_patterns {
+        ignore_builder.add(
+            Glob::new(pattern).expect("ignorePatterns entry was validated at config load time"),
+        );
+    }
+
+    let default_ignores = [
+        "**/node_modules/**",
+        "**/dist/**",
+        "build/**",
+        "**/.git/**",
+        "**/coverage/**",
+        "**/*.min.js",
+        "**/*.min.mjs",
+        "**/*.min.cjs",
+        "**/*.bundle.js",
+    ];
+    for pattern in &default_ignores {
+        ignore_builder.add(Glob::new(pattern).expect("default ignore pattern is valid"));
+    }
+
+    ignore_builder.build().unwrap_or_default()
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "user glob patterns are validated before config resolution"
+)]
+fn compile_ignore_unresolved_imports(patterns: &[String]) -> Vec<GlobMatcher> {
+    patterns
+        .iter()
+        .map(|pattern| {
+            Glob::new(pattern)
+                .expect("ignoreUnresolvedImports entry was validated at config load time")
+                .compile_matcher()
+        })
+        .collect()
+}
+
+fn resolve_rules_for_production(mut rules: RulesConfig, production: bool) -> RulesConfig {
+    if production {
+        rules.unused_dev_dependencies = Severity::Off;
+        rules.unused_optional_dependencies = Severity::Off;
+    }
+    rules
+}
+
+fn resolve_boundaries(
+    mut boundaries: super::boundaries::BoundaryConfig,
+    root: &Path,
+) -> ResolvedBoundaryConfig {
+    if boundaries.preset.is_some() {
+        let source_root = crate::workspace::parse_tsconfig_root_dir(root)
+            .filter(|r| r != "." && !r.starts_with("..") && !std::path::Path::new(r).is_absolute())
+            .unwrap_or_else(|| "src".to_owned());
+        if source_root != "src" {
+            tracing::info!("boundary preset: using rootDir '{source_root}' from tsconfig.json");
+        }
+        boundaries.expand(&source_root);
+    }
+    let logical_groups = boundaries.expand_auto_discover(root);
+    let mut resolved = boundaries.resolve();
+    resolved.logical_groups = logical_groups;
+    resolved
+}
+
+fn warn_inter_file_overrides(rules: &PartialRulesConfig, files: &[String]) {
+    if rules.duplicate_exports.is_some() && record_inter_file_warn_seen("duplicate-exports", files)
+    {
+        let files = files.join(", ");
+        tracing::warn!(
+            "overrides.rules.duplicate-exports has no effect for files matching [{files}]: duplicate-exports is an inter-file rule. Use top-level `ignoreExports` to exclude these files from duplicate-export grouping."
+        );
+    }
+    if rules.circular_dependencies.is_some()
+        && record_inter_file_warn_seen("circular-dependency", files)
+    {
+        let files = files.join(", ");
+        tracing::warn!(
+            "overrides.rules.circular-dependency has no effect for files matching [{files}]: circular-dependency is an inter-file rule. Use a file-level `// fallow-ignore-file circular-dependency` comment in one participating file instead."
+        );
+    }
+    if rules.re_export_cycle.is_some() && record_inter_file_warn_seen("re-export-cycle", files) {
+        let files = files.join(", ");
+        tracing::warn!(
+            "overrides.rules.re-export-cycle has no effect for files matching [{files}]: re-export-cycle is an inter-file rule (the cycle spans multiple barrels). Use a file-level `// fallow-ignore-file re-export-cycle` comment in one participating file instead, or set `rules.re-export-cycle: off` at the top level."
+        );
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "override glob patterns are validated before config resolution"
+)]
+fn compile_overrides(overrides: Vec<ConfigOverride>) -> Vec<ResolvedOverride> {
+    overrides
+        .into_iter()
+        .filter_map(|override_entry| {
+            warn_inter_file_overrides(&override_entry.rules, &override_entry.files);
+            let matchers: Vec<globset::GlobMatcher> = override_entry
+                .files
+                .iter()
+                .map(|pattern| {
+                    Glob::new(pattern)
+                        .expect("overrides[].files pattern was validated at config load time")
+                        .compile_matcher()
+                })
+                .collect();
+            if matchers.is_empty() {
+                None
+            } else {
+                Some(ResolvedOverride {
+                    matchers,
+                    rules: override_entry.rules,
+                })
+            }
+        })
+        .collect()
+}
+
 impl FallowConfig {
     /// Resolve into a fully resolved config with compiled globs.
     #[expect(
@@ -271,47 +397,13 @@ impl FallowConfig {
         quiet: bool,
         cache_max_size_mb: Option<u32>,
     ) -> ResolvedConfig {
-        let mut ignore_builder = GlobSetBuilder::new();
-        for pattern in &self.ignore_patterns {
-            ignore_builder.add(
-                Glob::new(pattern).expect("ignorePatterns entry was validated at config load time"),
-            );
-        }
-
-        let default_ignores = [
-            "**/node_modules/**",
-            "**/dist/**",
-            "build/**",
-            "**/.git/**",
-            "**/coverage/**",
-            "**/*.min.js",
-            "**/*.min.mjs",
-            "**/*.min.cjs",
-            "**/*.bundle.js",
-        ];
-        for pattern in &default_ignores {
-            ignore_builder.add(Glob::new(pattern).expect("default ignore pattern is valid"));
-        }
-
-        let compiled_ignore_patterns = ignore_builder.build().unwrap_or_default();
-        let ignore_unresolved_imports: Vec<GlobMatcher> = self
-            .ignore_unresolved_imports
-            .iter()
-            .map(|pattern| {
-                Glob::new(pattern)
-                    .expect("ignoreUnresolvedImports entry was validated at config load time")
-                    .compile_matcher()
-            })
-            .collect();
+        let compiled_ignore_patterns = compile_ignore_patterns(&self.ignore_patterns);
+        let ignore_unresolved_imports =
+            compile_ignore_unresolved_imports(&self.ignore_unresolved_imports);
         let cache_dir = resolve_cache_dir(&root, self.cache.dir.clone());
 
-        let mut rules = self.rules;
-
         let production = self.production.global();
-        if production {
-            rules.unused_dev_dependencies = Severity::Off;
-            rules.unused_optional_dependencies = Severity::Off;
-        }
+        let rules = resolve_rules_for_production(self.rules, production);
 
         let mut external_plugins = discover_external_plugins(&root, &self.plugins);
         external_plugins.extend(self.framework);
@@ -324,70 +416,9 @@ impl FallowConfig {
                 Vec::new()
             });
 
-        let mut boundaries = self.boundaries;
-        if boundaries.preset.is_some() {
-            let source_root = crate::workspace::parse_tsconfig_root_dir(&root)
-                .filter(|r| {
-                    r != "." && !r.starts_with("..") && !std::path::Path::new(r).is_absolute()
-                })
-                .unwrap_or_else(|| "src".to_owned());
-            if source_root != "src" {
-                tracing::info!("boundary preset: using rootDir '{source_root}' from tsconfig.json");
-            }
-            boundaries.expand(&source_root);
-        }
-        let logical_groups = boundaries.expand_auto_discover(&root);
+        let boundaries = resolve_boundaries(self.boundaries, &root);
 
-        let mut boundaries = boundaries.resolve();
-        boundaries.logical_groups = logical_groups;
-
-        let overrides = self
-            .overrides
-            .into_iter()
-            .filter_map(|o| {
-                if o.rules.duplicate_exports.is_some()
-                    && record_inter_file_warn_seen("duplicate-exports", &o.files)
-                {
-                    let files = o.files.join(", ");
-                    tracing::warn!(
-                        "overrides.rules.duplicate-exports has no effect for files matching [{files}]: duplicate-exports is an inter-file rule. Use top-level `ignoreExports` to exclude these files from duplicate-export grouping."
-                    );
-                }
-                if o.rules.circular_dependencies.is_some()
-                    && record_inter_file_warn_seen("circular-dependency", &o.files)
-                {
-                    let files = o.files.join(", ");
-                    tracing::warn!(
-                        "overrides.rules.circular-dependency has no effect for files matching [{files}]: circular-dependency is an inter-file rule. Use a file-level `// fallow-ignore-file circular-dependency` comment in one participating file instead."
-                    );
-                }
-                if o.rules.re_export_cycle.is_some()
-                    && record_inter_file_warn_seen("re-export-cycle", &o.files)
-                {
-                    let files = o.files.join(", ");
-                    tracing::warn!(
-                        "overrides.rules.re-export-cycle has no effect for files matching [{files}]: re-export-cycle is an inter-file rule (the cycle spans multiple barrels). Use a file-level `// fallow-ignore-file re-export-cycle` comment in one participating file instead, or set `rules.re-export-cycle: off` at the top level."
-                    );
-                }
-                let matchers: Vec<globset::GlobMatcher> = o
-                    .files
-                    .iter()
-                    .map(|pattern| {
-                        Glob::new(pattern)
-                            .expect("overrides[].files pattern was validated at config load time")
-                            .compile_matcher()
-                    })
-                    .collect();
-                if matchers.is_empty() {
-                    None
-                } else {
-                    Some(ResolvedOverride {
-                        matchers,
-                        rules: o.rules,
-                    })
-                }
-            })
-            .collect();
+        let overrides = compile_overrides(self.overrides);
 
         let compiled_ignore_exports: Vec<CompiledIgnoreExportRule> = self
             .ignore_exports
