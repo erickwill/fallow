@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.94.0] - 2026-06-12
+
 ### Added
 
 - **Bare `fallow` now accepts Istanbul coverage inputs for the embedded health pass.** The combined default command can now read `--coverage` / `--coverage-root`, `FALLOW_COVERAGE` / `FALLOW_COVERAGE_ROOT`, and `health.coverage` / `health.coverageRoot` so `fallow --format json` uses the same exact CRAP scoring path as `fallow health`. Standalone health and bare combined mode resolve each coverage input independently with CLI, then env, then config, then auto-detection precedence. The GitHub Action and GitLab CI default combined runs now forward their coverage inputs to the bare command too. Thanks [@stieglma](https://github.com/stieglma) for the follow-up. (Refs [#300](https://github.com/fallow-rs/fallow/issues/300#issuecomment-4682836599).)
@@ -26,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fallow Impact reports its value once a week.** With Impact tracking enabled and non-zero results, `next_steps[]` carries an at-most-weekly `impact-report` step with the real counters (commits contained at the gate, findings resolved), and bare `fallow` prints a matching one-line `Impact:` summary. The cadence stamp lives in the project's Impact store, so the digest stays weekly across agents, sessions, and surfaces; zero results never surface, and CI never sees it.
 
 - **Opt-in prompts can now tell "asked and declined" from "never asked".** `fallow telemetry status` and `fallow impact status` expose an `explicit_decision` field that is set only by an explicit enable or disable, never by fallow's own one-time notices. Agents use it to offer each opt-in exactly once and respect a "no" permanently.
+
+### Fixed
+
+- **Angular template scanning no longer panics on a backslash before a multi-byte character.** The quoted-attribute scanner advanced a fixed byte count after a backslash, which could leave the cursor inside a multi-byte escaped character and panic with "byte index N is not a char boundary". It now advances past the backslash and over one full UTF-8 character, matching the rest of the scanner. Thanks [@shawnrice](https://github.com/shawnrice) for the report and the patch in [#1202](https://github.com/fallow-rs/fallow/pull/1202). (Closes [#1201](https://github.com/fallow-rs/fallow/issues/1201).)
 
 ## [2.93.0] - 2026-06-11
 
@@ -2971,7 +2977,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.93.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.94.0...HEAD
+[2.94.0]: https://github.com/fallow-rs/fallow/compare/v2.93.0...v2.94.0
 [2.93.0]: https://github.com/fallow-rs/fallow/compare/v2.92.1...v2.93.0
 [2.92.1]: https://github.com/fallow-rs/fallow/compare/v2.91.0...v2.92.1
 [2.91.0]: https://github.com/fallow-rs/fallow/compare/v2.90.0...v2.91.0
