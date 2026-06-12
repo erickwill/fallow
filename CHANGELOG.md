@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.95.0] - 2026-06-12
+
 ### Added
 
 - **Docker users now have a first-party CLI image recipe.** The repo ships a checksum-verified Dockerfile for the pinned Linux musl release binary, a source-built contributor Dockerfile, and a copyable Compose example that mounts projects at `/workspace` with host UID/GID mapping so `.fallow/` caches and reports stay host-owned. The runtime includes git for `audit` base detection plus Node.js, npm, and Corepack for project dependency installs, and CI now builds the Docker image on Docker-file changes. Thanks [@nic0michael](https://github.com/nic0michael) for the Docker Compose starting point. (Closes [#1205](https://github.com/fallow-rs/fallow/issues/1205).)
 
 - **Rule-pack policy findings can now be suppressed per rule.** Suppression comments accept `policy-violation:<pack>/<rule-id>` for both `fallow-ignore-next-line` and `fallow-ignore-file`, so a waiver can target one rule-pack finding without hiding every policy violation at the same scope. Bare `policy-violation` remains supported as the family-wide token. Rule-pack names and rule ids now reject ambiguous characters so scoped tokens do not need escaping, stale-suppression output preserves the scoped token, and generated suppress actions prefer the scoped form. (Closes [#1180](https://github.com/fallow-rs/fallow/issues/1180).)
 
-- **`fallow health` now supports per-file threshold overrides for complexity and CRAP.** Configure `health.thresholdOverrides[]` with `files` globs, optional exact `functions`, and any of `maxCyclomatic`, `maxCognitive`, or `maxCrap` to raise local ceilings for intentional legacy hotspots while keeping global gates strict. The resolved thresholds flow through `health` and `audit`, finding actions use the effective ceiling, and JSON, human, markdown, and compact output report active, stale, and full-run no-match override state so temporary exceptions remain visible. (Closes [#1206](https://github.com/fallow-rs/fallow/issues/1206).)
+- **`fallow health` now supports per-file threshold overrides for complexity and CRAP.** Configure `health.thresholdOverrides[]` with `files` globs, optional exact `functions`, and any of `maxCyclomatic`, `maxCognitive`, or `maxCrap` to raise local ceilings for intentional legacy hotspots while keeping global gates strict. The resolved thresholds flow through `health` and `audit`, finding actions use the effective ceiling, and JSON, human, markdown, and compact output report active, stale, and full-run no-match override state so temporary exceptions remain visible. Thanks [@velios](https://github.com/velios) for the report. (Closes [#1206](https://github.com/fallow-rs/fallow/issues/1206).)
+
+### Fixed
+
+- **`unused-class-members` no longer fires on Playwright page-object methods reached through fixture wrappers.** `mergeTests(...)` wrappers and chained wrapper `.extend(...)` calls now inherit the fixture definitions from their wrapped Playwright test objects before callback-side member uses are correlated. The extractor records conservative wrapper-alias sentinels for Playwright's named `mergeTests` import, including aliased named imports, and for `.extend(...)` calls on fixture wrappers. The analyzer expands those aliases transitively with cycle protection, so page-object methods used through merged or extended fixtures are credited while genuinely unused decorated methods still report. Local functions named `mergeTests` and unmatched wrapper aliases do not create credit. Thanks [@vethman](https://github.com/vethman) for the report. (Closes [#1210](https://github.com/fallow-rs/fallow/issues/1210).)
 
 ## [2.94.0] - 2026-06-12
 
@@ -58,8 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The GitLab CI template now runs Bash-only setup blocks through Bash explicitly.** GitLab Runner jobs on Alpine can start `before_script` entries with `/bin/sh`, but the fallow template validated versions, prepared MR scripts, and wrote the analysis runner with Bash-specific syntax. Those blocks now invoke `bash -eo pipefail` explicitly after the dependency-install block installs Bash, so the template no longer depends on the runner's default shell. Thanks [@KudrinOleg](https://github.com/KudrinOleg) for the report. (Closes [#1182](https://github.com/fallow-rs/fallow/issues/1182).)
 
 - **`unused-class-members` no longer fires on Playwright page-object methods reached through an imported fixture-type alias.** When a class instance is exposed lazily behind a getter on a factory class, surfaced through a nested `base.extend(...)` fixture, and the fixture shape is declared via an imported object type alias, methods on the target page-object class were still reported as unused, because callback-side fixture uses were correlated only with locally collected fixture-map aliases. Extraction now emits fixture-type sentinel accesses for imported alias bindings and expands those aliases before correlating Playwright fixture definitions with uses, so a used chain is credited while an actually-unused decorated method on the same class still reports. Recursive expansion across multiple imported alias hops stays conservative. Thanks [@vethman](https://github.com/vethman) for the report. (Closes [#1190](https://github.com/fallow-rs/fallow/issues/1190).)
-
-- **`unused-class-members` no longer fires on Playwright page-object methods reached through fixture wrappers.** `mergeTests(...)` wrappers and chained wrapper `.extend(...)` calls now inherit the fixture definitions from their wrapped Playwright test objects before callback-side member uses are correlated. The extractor records conservative wrapper-alias sentinels for Playwright's named `mergeTests` import, including aliased named imports, and for `.extend(...)` calls on fixture wrappers. The analyzer expands those aliases transitively with cycle protection, so page-object methods used through merged or extended fixtures are credited while genuinely unused decorated methods still report. Local functions named `mergeTests` and unmatched wrapper aliases do not create credit. Thanks [@vethman](https://github.com/vethman) for the report. (Closes [#1210](https://github.com/fallow-rs/fallow/issues/1210).)
 
 - **`tsconfig` path aliases no longer surface as unlisted dependencies.** When a bare specifier matched `compilerOptions.paths` but its local alias target was missing, resolution fell through to a package lookup and reported the import (for example `@app/foo`) as an unlisted `package.json` dependency even though it was a project-local alias. Local tsconfig path aliases now resolve before the package fallback, and an alias is marked unresolved only after package imports and workspace-package fallbacks have had a chance to resolve it, so a genuine unlisted scoped package in the same tsconfig-path project still reports.
 
@@ -2987,7 +2991,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.94.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.95.0...HEAD
+[2.95.0]: https://github.com/fallow-rs/fallow/compare/v2.94.0...v2.95.0
 [2.94.0]: https://github.com/fallow-rs/fallow/compare/v2.93.0...v2.94.0
 [2.93.0]: https://github.com/fallow-rs/fallow/compare/v2.92.1...v2.93.0
 [2.92.1]: https://github.com/fallow-rs/fallow/compare/v2.91.0...v2.92.1
