@@ -336,7 +336,7 @@ fn impact_config_dir() -> Option<PathBuf> {
 
 /// Whether this run should be treated as CI for the Impact record gate. In
 /// production it is `telemetry::is_ci()`; under test it reads the per-test
-/// [`TEST_FORCE_CI`] override (default `false`) so the suite records into its
+/// `TEST_FORCE_CI` override (default `false`) so the suite records into its
 /// isolated store regardless of the ambient CI env. The store path is ALWAYS
 /// the per-test temp dir under `#[cfg(test)]` (see [`impact_config_dir`]), so
 /// bypassing the CI gate in tests can never touch a real user store.
