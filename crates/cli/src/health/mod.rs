@@ -511,12 +511,13 @@ fn execute_health_inner(
     }))
 }
 
-/// Compute structural CSS analytics for the project's standard-CSS stylesheets,
-/// honoring the same ignore / changed-since / workspace filters as the rest of
-/// `fallow health`. SCSS is skipped because lightningcss parses standard CSS,
-/// not Sass. Only stylesheets with a structurally notable rule are listed
-/// individually; the summary aggregates every analyzed stylesheet. Returns
-/// `None` when no stylesheet was analyzed.
+/// Compute structural CSS analytics, honoring the same ignore / changed-since /
+/// workspace filters as the rest of `fallow health`. Standard CSS is parsed for
+/// structural metrics; preprocessor sources are only used by candidate checks
+/// that can stay conservative without expanding Sass/Less semantics. Only
+/// stylesheets with a structurally notable rule are listed individually; the
+/// summary aggregates every analyzed stylesheet. Returns `None` when no
+/// stylesheet was analyzed.
 /// Project-wide CSS token accumulator: distinct design-token values plus the
 /// custom-property / `@keyframes` definition and reference sets, with the first
 /// stylesheet that defines/references each keyframe name so a candidate can be

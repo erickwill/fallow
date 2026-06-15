@@ -864,8 +864,9 @@ enum Command {
         targets: bool,
 
         /// Add structural CSS analytics: specificity hotspots, !important density,
-        /// over-complex selectors, and deep nesting. Reads and parses every
-        /// project stylesheet (standard CSS; SCSS is skipped).
+        /// over-complex selectors, deep nesting, and conservative cleanup
+        /// candidates. Standard CSS is parsed structurally; preprocessor sources
+        /// are scanned only where fallow can avoid expanding Sass/Less semantics.
         #[arg(long)]
         css: bool,
 
