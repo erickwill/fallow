@@ -1527,7 +1527,8 @@ fn discover_config_files_skips_resolved_plugins() {
         resolved.insert(plugin.name());
     }
 
-    let json_configs = discover_config_files(&matchers, &resolved, &[Path::new("/project")], false);
+    let json_configs =
+        discover_config_files(&matchers, &resolved, &[Path::new("/project")], false, None);
     assert!(
         json_configs.is_empty(),
         "discover_config_files should skip all resolved plugins"
@@ -1545,6 +1546,7 @@ fn discover_config_files_returns_empty_for_nonexistent_root() {
         &resolved,
         &[Path::new("/nonexistent-root-xyz-abc")],
         false,
+        None,
     );
     assert!(
         json_configs.is_empty(),
@@ -2224,7 +2226,7 @@ fn discover_config_files_finds_in_subdirectory() {
     let resolved: FxHashSet<&str> = FxHashSet::default();
 
     let json_configs =
-        discover_config_files(&matchers, &resolved, &[root, subdir.as_path()], false);
+        discover_config_files(&matchers, &resolved, &[root, subdir.as_path()], false, None);
     let found_project_json = json_configs
         .iter()
         .any(|(path, _)| path.ends_with("project.json"));
@@ -2244,13 +2246,76 @@ fn discover_config_files_expands_root_brace_patterns_for_dotfile_configs() {
     let matchers = registry.precompile_config_matchers();
     let resolved: FxHashSet<&str> = FxHashSet::default();
 
-    let configs = discover_config_files(&matchers, &resolved, &[root], false);
+    let configs = discover_config_files(&matchers, &resolved, &[root], false, None);
     let found_babelrc = configs
         .iter()
         .any(|(path, plugin)| plugin.name() == "babel" && path.ends_with(".babelrc.json"));
     assert!(
         found_babelrc,
         "discover_config_files should expand `.babelrc.{{js,cjs,mjs,json}}` at the root"
+    );
+}
+
+#[test]
+fn in_memory_config_discovery_matches_filesystem() {
+    // Pin the byte-identical contract at the unit level: resolving config
+    // patterns against the in-memory candidate index must produce exactly the
+    // same hits as the filesystem probe, across plain / nested / dotfile /
+    // nested-non-source / toml pattern shapes.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("packages/a")).unwrap();
+    std::fs::create_dir_all(root.join("prisma")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let files = [
+        root.join("tsconfig.json"),
+        root.join("packages/a/tsconfig.json"),
+        root.join(".eslintrc.json"),
+        root.join("prisma/schema.prisma"),
+        root.join("bunfig.toml"),
+        root.join("src/index.ts"),
+    ];
+    for path in &files {
+        std::fs::write(path, "{}").unwrap();
+    }
+
+    let registry = PluginRegistry::default();
+    let matchers = registry.precompile_config_matchers();
+    let resolved: FxHashSet<&str> = FxHashSet::default();
+    let pkg_a = root.join("packages/a");
+    let prisma = root.join("prisma");
+    let src = root.join("src");
+    let roots: Vec<&Path> = vec![root, pkg_a.as_path(), prisma.as_path(), src.as_path()];
+
+    let index = ConfigCandidateIndex::build(files.iter().map(PathBuf::as_path));
+
+    let normalize = |hits: Vec<(PathBuf, &dyn super::Plugin)>| {
+        let mut out: Vec<(PathBuf, &str)> = hits
+            .into_iter()
+            .map(|(p, plugin)| (p, plugin.name()))
+            .collect();
+        out.sort();
+        out
+    };
+
+    let fs_hits = normalize(discover_config_files(
+        &matchers, &resolved, &roots, false, None,
+    ));
+    let mem_hits = normalize(discover_config_files(
+        &matchers,
+        &resolved,
+        &roots,
+        false,
+        Some(&index),
+    ));
+
+    assert_eq!(
+        fs_hits, mem_hits,
+        "in-memory config discovery must match the filesystem probe"
+    );
+    assert!(
+        fs_hits.iter().any(|(p, _)| p.ends_with("tsconfig.json")),
+        "the fixture should surface a tsconfig.json so the parity assertion is non-vacuous"
     );
 }
 
@@ -2264,7 +2329,7 @@ fn discover_config_files_skips_source_ext_root_patterns() {
     let matchers = registry.precompile_config_matchers();
     let resolved: FxHashSet<&str> = FxHashSet::default();
 
-    let configs = discover_config_files(&matchers, &resolved, &[root], false);
+    let configs = discover_config_files(&matchers, &resolved, &[root], false, None);
     let found_vite_config = configs
         .iter()
         .any(|(path, plugin)| plugin.name() == "vite" && path.ends_with("vite.config.ts"));

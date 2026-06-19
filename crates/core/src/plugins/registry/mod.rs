@@ -27,6 +27,7 @@ pub fn builtin_plugin_names() -> Vec<&'static str> {
         .collect()
 }
 
+pub use helpers::ConfigCandidateIndex;
 use helpers::{
     check_has_config_file, discover_config_files, is_external_plugin_active,
     prepare_config_pattern, process_config_result, process_external_plugins,
@@ -433,7 +434,7 @@ impl PluginRegistry {
         root: &Path,
         discovered_files: &[PathBuf],
     ) -> Result<AggregatedPluginResult, Vec<PluginRegexValidationError>> {
-        self.try_run_with_search_roots(pkg, root, discovered_files, &[root], false)
+        self.try_run_with_search_roots(pkg, root, discovered_files, &[root], false, None)
     }
 
     /// Run all plugins against a project with explicit config-file search roots,
@@ -445,6 +446,7 @@ impl PluginRegistry {
         discovered_files: &[PathBuf],
         config_search_roots: &[&Path],
         production_mode: bool,
+        candidate_index: Option<&ConfigCandidateIndex>,
     ) -> Result<AggregatedPluginResult, Vec<PluginRegexValidationError>> {
         let _span = tracing::info_span!("run_plugins").entered();
         let mut result = AggregatedPluginResult::default();
@@ -483,6 +485,7 @@ impl PluginRegistry {
             relative_files: &relative_files,
             config_search_roots,
             production_mode,
+            candidate_index,
             root,
             result: &mut result,
             regex_errors: &mut regex_errors,
@@ -533,6 +536,7 @@ impl PluginRegistry {
             relative_files,
             skip_config_plugins,
             production_mode,
+            None,
         )
         .unwrap_or_else(|errors| panic!("{}", format_plugin_regex_errors(&errors)))
     }
@@ -556,6 +560,7 @@ impl PluginRegistry {
         relative_files: &[(PathBuf, String)],
         skip_config_plugins: &FxHashSet<&str>,
         production_mode: bool,
+        candidate_index: Option<&ConfigCandidateIndex>,
     ) -> Result<AggregatedPluginResult, Vec<PluginRegexValidationError>> {
         let _span = tracing::info_span!("run_plugins").entered();
         let mut result = AggregatedPluginResult::default();
@@ -614,6 +619,7 @@ impl PluginRegistry {
             root,
             project_root,
             production_mode,
+            candidate_index,
             result: &mut result,
             regex_errors: &mut regex_errors,
         });
@@ -720,6 +726,7 @@ struct PluginConfigResolutionInput<'a> {
     relative_files: &'a [(PathBuf, String)],
     config_search_roots: &'a [&'a Path],
     production_mode: bool,
+    candidate_index: Option<&'a ConfigCandidateIndex>,
     root: &'a Path,
     result: &'a mut AggregatedPluginResult,
     regex_errors: &'a mut Vec<PluginRegexValidationError>,
@@ -750,6 +757,7 @@ struct WorkspaceFsConfigInput<'a> {
     root: &'a Path,
     project_root: &'a Path,
     production_mode: bool,
+    candidate_index: Option<&'a ConfigCandidateIndex>,
     result: &'a mut AggregatedPluginResult,
     regex_errors: &'a mut Vec<PluginRegexValidationError>,
 }
@@ -767,6 +775,7 @@ fn load_workspace_filesystem_configs(input: &mut WorkspaceFsConfigInput<'_>) {
         input.resolved_ws_plugins,
         search_roots,
         input.production_mode,
+        input.candidate_index,
     );
     for (abs_path, plugin) in &ws_json_configs {
         let Ok(source) = std::fs::read_to_string(abs_path) else {
@@ -818,6 +827,7 @@ fn resolve_plugin_config_files(input: &mut PluginConfigResolutionInput<'_>) {
         &resolved_plugins,
         input.config_search_roots,
         input.production_mode,
+        input.candidate_index,
     );
     for (abs_path, plugin) in &json_configs {
         resolve_plugin_filesystem_config(

@@ -319,12 +319,19 @@ impl HiddenDirScope {
 }
 
 /// Per-thread file collector for the parallel walker.
+///
+/// Source files (by extension) flow to `shared`; when `config_shared` is set,
+/// non-source files admitted by the config-candidate type group flow to it
+/// instead. The two channels are disjoint and the source channel is byte-for-byte
+/// identical to the config-capture-disabled walk.
 struct FileVisitor<'a> {
     root: &'a Path,
     ignore_patterns: &'a globset::GlobSet,
     production_excludes: &'a Option<globset::GlobSet>,
     shared: &'a Mutex<Vec<(std::path::PathBuf, u64)>>,
+    config_shared: Option<&'a Mutex<Vec<std::path::PathBuf>>>,
     local: Vec<(std::path::PathBuf, u64)>,
+    config_local: Vec<std::path::PathBuf>,
 }
 
 impl ignore::ParallelVisitor for FileVisitor<'_> {
@@ -349,8 +356,14 @@ impl ignore::ParallelVisitor for FileVisitor<'_> {
         {
             return ignore::WalkState::Continue;
         }
-        let size_bytes = entry.metadata().map_or(0, |m| m.len());
-        self.local.push((entry.into_path(), size_bytes));
+        if has_source_extension(entry.path()) {
+            let size_bytes = entry.metadata().map_or(0, |m| m.len());
+            self.local.push((entry.into_path(), size_bytes));
+        } else if self.config_shared.is_some() {
+            // A non-source file admitted by the config-candidate type group. No
+            // size metadata is needed; these are pattern-matched, never parsed.
+            self.config_local.push(entry.into_path());
+        }
         ignore::WalkState::Continue
     }
 }
@@ -367,6 +380,14 @@ impl Drop for FileVisitor<'_> {
                 .expect("walk collector lock poisoned")
                 .append(&mut self.local);
         }
+        if let Some(config_shared) = self.config_shared
+            && !self.config_local.is_empty()
+        {
+            config_shared
+                .lock()
+                .expect("walk config collector lock poisoned")
+                .append(&mut self.config_local);
+        }
     }
 }
 
@@ -376,6 +397,7 @@ struct FileVisitorBuilder<'a> {
     ignore_patterns: &'a globset::GlobSet,
     production_excludes: &'a Option<globset::GlobSet>,
     shared: &'a Mutex<Vec<(std::path::PathBuf, u64)>>,
+    config_shared: Option<&'a Mutex<Vec<std::path::PathBuf>>>,
 }
 
 impl<'s> ignore::ParallelVisitorBuilder<'s> for FileVisitorBuilder<'s> {
@@ -385,7 +407,9 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for FileVisitorBuilder<'s> {
             ignore_patterns: self.ignore_patterns,
             production_excludes: self.production_excludes,
             shared: self.shared,
+            config_shared: self.config_shared,
             local: Vec::new(),
+            config_local: Vec::new(),
         })
     }
 }
@@ -470,12 +494,49 @@ pub fn discover_files(config: &ResolvedConfig) -> Vec<DiscoveredFile> {
     discover_files_with_additional_hidden_dirs(config, &[])
 }
 
-/// Build the file-type filter selecting only known source extensions.
+/// The set of config-file basenames (last path component of every built-in
+/// plugin `config_patterns()` entry, brace forms preserved) that the walk should
+/// additionally admit so non-source configs (`tsconfig.json`, `bunfig.toml`,
+/// `.eslintrc.json`, ...) can be captured in one traversal instead of being
+/// re-discovered by a filesystem re-walk in `discover_config_files`.
+///
+/// Derived live from the built-in plugin list, so it can never drift behind a
+/// new plugin's config patterns. Source-extension config basenames
+/// (`vite.config.{ts,js}`) are admitted too, but the walk visitor routes them
+/// back to the source channel by extension, so the config channel only ever
+/// collects genuinely non-source files.
+fn config_candidate_basename_globs() -> &'static [String] {
+    static GLOBS: OnceLock<Vec<String>> = OnceLock::new();
+    GLOBS.get_or_init(|| {
+        let mut set: FxHashSet<String> = FxHashSet::default();
+        for plugin in crate::plugins::registry::builtin::create_builtin_plugins() {
+            for pattern in plugin.config_patterns() {
+                let basename = pattern.rsplit('/').next().unwrap_or(pattern);
+                set.insert(basename.to_string());
+            }
+        }
+        let mut globs: Vec<String> = set.into_iter().collect();
+        globs.sort_unstable();
+        globs
+    })
+}
+
+/// True when `path`'s extension is one of the known source extensions, i.e. the
+/// file belongs in the source channel rather than the config-candidate channel.
+fn has_source_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext))
+}
+
+/// Build the file-type filter. Always selects known source extensions; when
+/// `capture_config` is set, also selects config-candidate basenames so the
+/// walker yields them for the second collection channel.
 #[expect(
     clippy::expect_used,
     reason = "source file globs are hard-coded compile-time constants"
 )]
-fn build_source_types() -> ignore::types::Types {
+fn build_walk_types(capture_config: bool) -> ignore::types::Types {
     let mut types_builder = ignore::types::TypesBuilder::new();
     for ext in SOURCE_EXTENSIONS {
         types_builder
@@ -483,13 +544,25 @@ fn build_source_types() -> ignore::types::Types {
             .expect("valid glob");
     }
     types_builder.select("source");
+    if capture_config {
+        for glob in config_candidate_basename_globs() {
+            // Ignore individually-invalid plugin patterns rather than panicking;
+            // a malformed pattern simply fails to admit its config file (the
+            // pre-existing filesystem fallback still covers production mode).
+            let _ = types_builder.add("config", glob);
+        }
+        types_builder.select("config");
+    }
     types_builder.build().expect("valid types")
 }
 
 /// Construct the parallel walker, applying the appropriate hidden-dir filter.
+/// When `capture_config` is set the walk also yields config-candidate files for
+/// the secondary collection channel.
 fn build_source_walk_builder(
     config: &ResolvedConfig,
     additional_hidden_dir_scopes: &[HiddenDirScope],
+    capture_config: bool,
 ) -> WalkBuilder {
     let mut walk_builder = WalkBuilder::new(&config.root);
     walk_builder
@@ -497,7 +570,7 @@ fn build_source_walk_builder(
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
-        .types(build_source_types())
+        .types(build_walk_types(capture_config))
         .threads(config.threads);
     if additional_hidden_dir_scopes.is_empty() {
         walk_builder.filter_entry(is_allowed_hidden);
@@ -530,26 +603,52 @@ fn build_production_excludes(config: &ResolvedConfig) -> Option<globset::GlobSet
 /// # Panics
 ///
 /// Panics if the file type glob or progress template is invalid (compile-time constants).
+pub fn discover_files_with_additional_hidden_dirs(
+    config: &ResolvedConfig,
+    additional_hidden_dir_scopes: &[HiddenDirScope],
+) -> Vec<DiscoveredFile> {
+    discover_files_and_config_candidates(config, additional_hidden_dir_scopes).0
+}
+
+/// Discover source files AND, in one traversal, the non-source config-candidate
+/// files (`tsconfig.json`, `bunfig.toml`, `.eslintrc.json`, ...) used by
+/// `discover_config_files` to resolve plugin config patterns in-memory instead of
+/// re-walking the filesystem.
+///
+/// The returned `Vec<DiscoveredFile>` is byte-for-byte identical to the
+/// config-capture-disabled walk: config candidates are routed to the second
+/// return value by extension and never enter the source channel. Config capture
+/// is skipped in production mode (where the walk applies `PRODUCTION_EXCLUDE_PATTERNS`
+/// and `discover_config_files` keeps its filesystem path), so the second vector is
+/// empty there.
+///
+/// # Panics
+///
+/// Panics if the file type glob or progress template is invalid (compile-time constants).
 #[expect(
     clippy::cast_possible_truncation,
     reason = "file count is bounded by project size, well under u32::MAX"
 )]
 #[expect(clippy::expect_used, reason = "the collector lock must remain usable")]
-pub fn discover_files_with_additional_hidden_dirs(
+pub fn discover_files_and_config_candidates(
     config: &ResolvedConfig,
     additional_hidden_dir_scopes: &[HiddenDirScope],
-) -> Vec<DiscoveredFile> {
+) -> (Vec<DiscoveredFile>, Vec<PathBuf>) {
     let _span = tracing::info_span!("discover_files").entered();
 
-    let walk_builder = build_source_walk_builder(config, additional_hidden_dir_scopes);
+    let capture_config = !config.production;
+    let walk_builder =
+        build_source_walk_builder(config, additional_hidden_dir_scopes, capture_config);
     let production_excludes = build_production_excludes(config);
 
     let collected: Mutex<Vec<(std::path::PathBuf, u64)>> = Mutex::new(Vec::new());
+    let config_collected: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
     let mut visitor_builder = FileVisitorBuilder {
         root: &config.root,
         ignore_patterns: &config.ignore_patterns,
         production_excludes: &production_excludes,
         shared: &collected,
+        config_shared: capture_config.then_some(&config_collected),
     };
     walk_builder.build_parallel().visit(&mut visitor_builder);
 
@@ -557,6 +656,11 @@ pub fn discover_files_with_additional_hidden_dirs(
         .into_inner()
         .expect("walk collector lock poisoned");
     raw.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut config_candidates = config_collected
+        .into_inner()
+        .expect("walk config collector lock poisoned");
+    config_candidates.sort_unstable();
 
     // Drop any source-discovery diagnostics from a previous pass (watch-mode
     // rerun, combined-mode re-walk) BEFORE re-recording this walk's skips, so a
@@ -580,7 +684,7 @@ pub fn discover_files_with_additional_hidden_dirs(
 
     note_largest_files(config, &files);
 
-    files
+    (files, config_candidates)
 }
 
 #[cfg(test)]

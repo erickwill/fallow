@@ -456,6 +456,11 @@ struct AnalysisSetup {
     progress: progress::AnalysisProgress,
     project: project::ProjectState,
     root_pkg: Option<PackageJson>,
+    /// Non-source config-candidate files captured by the same discovery walk,
+    /// used to resolve plugin config patterns in-memory (empty in production
+    /// mode, where the filesystem path is kept). Carried alongside `project`
+    /// rather than inside it to avoid churning `ProjectState`'s many callers.
+    config_candidates: Vec<std::path::PathBuf>,
     discover_ms: f64,
     workspaces_ms: f64,
 }
@@ -473,8 +478,8 @@ fn run_analysis_setup(config: &ResolvedConfig) -> AnalysisSetup {
 
     let t = Instant::now();
     progress.set_stage("discovering files...");
-    let discovered_files =
-        discover::discover_files_with_additional_hidden_dirs(config, &discovery_hidden_dir_scopes);
+    let (discovered_files, config_candidates) =
+        discover::discover_files_and_config_candidates(config, &discovery_hidden_dir_scopes);
     let discover_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let project = project::ProjectState::new(discovered_files, workspaces_vec);
@@ -483,6 +488,7 @@ fn run_analysis_setup(config: &ResolvedConfig) -> AnalysisSetup {
         progress,
         project,
         root_pkg,
+        config_candidates,
         discover_ms,
         workspaces_ms,
     }
@@ -497,10 +503,18 @@ fn run_plugins_and_scripts(
     workspaces: &[fallow_config::WorkspaceInfo],
     root_pkg: Option<&PackageJson>,
     workspace_pkgs: &[LoadedWorkspacePackage<'_>],
+    config_candidates: &[std::path::PathBuf],
 ) -> Result<(plugins::AggregatedPluginResult, f64, f64), FallowError> {
     let t = Instant::now();
     progress.set_stage("detecting plugins...");
-    let mut plugin_result = run_plugins(config, files, workspaces, root_pkg, workspace_pkgs)?;
+    let mut plugin_result = run_plugins(
+        config,
+        files,
+        workspaces,
+        root_pkg,
+        workspace_pkgs,
+        config_candidates,
+    )?;
     let plugins_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let t = Instant::now();
@@ -542,6 +556,7 @@ pub fn analyze_with_parse_result(
         progress,
         project,
         root_pkg,
+        config_candidates,
         discover_ms,
         workspaces_ms,
     } = run_analysis_setup(config);
@@ -556,6 +571,7 @@ pub fn analyze_with_parse_result(
         workspaces,
         root_pkg.as_ref(),
         &workspace_pkgs,
+        &config_candidates,
     )?;
 
     let core = run_reused_analysis_core(&ReusedAnalysisCoreInput {
@@ -771,6 +787,7 @@ fn analyze_full(
         progress,
         project,
         root_pkg,
+        config_candidates,
         discover_ms,
         workspaces_ms,
     } = run_analysis_setup(config);
@@ -785,6 +802,7 @@ fn analyze_full(
         workspaces,
         root_pkg.as_ref(),
         &workspace_pkgs,
+        &config_candidates,
     )?;
 
     let t = Instant::now();
@@ -1635,11 +1653,31 @@ fn run_plugins(
     workspaces: &[fallow_config::WorkspaceInfo],
     root_pkg: Option<&PackageJson>,
     workspace_pkgs: &[LoadedWorkspacePackage<'_>],
+    config_candidates: &[std::path::PathBuf],
 ) -> Result<plugins::AggregatedPluginResult, FallowError> {
     let registry = plugins::PluginRegistry::new(config.external_plugins.clone());
     let file_paths: Vec<std::path::PathBuf> = files.iter().map(|f| f.path.clone()).collect();
 
-    let mut result = run_root_plugins(&registry, config, root_pkg, &file_paths)?;
+    // The non-production config-discovery fast path: resolve plugin config
+    // patterns against the files the discovery walk already collected (source
+    // files unioned with non-source config candidates) instead of re-walking the
+    // filesystem. Production keeps the filesystem path (no candidates captured).
+    let candidate_index = (!config.production).then(|| {
+        plugins::registry::ConfigCandidateIndex::build(
+            file_paths
+                .iter()
+                .map(std::path::PathBuf::as_path)
+                .chain(config_candidates.iter().map(std::path::PathBuf::as_path)),
+        )
+    });
+
+    let mut result = run_root_plugins(
+        &registry,
+        config,
+        root_pkg,
+        &file_paths,
+        candidate_index.as_ref(),
+    )?;
 
     if workspaces.is_empty() {
         gate_auto_import_entry_patterns(&mut result, config, workspaces);
@@ -1654,6 +1692,7 @@ fn run_plugins(
         workspace_pkgs,
         &file_paths,
         &result.active_plugins,
+        candidate_index.as_ref(),
     );
     merge_workspace_plugin_results(&mut result, ws_results)?;
 
@@ -1673,6 +1712,7 @@ fn run_root_plugins(
     config: &ResolvedConfig,
     root_pkg: Option<&PackageJson>,
     file_paths: &[std::path::PathBuf],
+    candidate_index: Option<&plugins::registry::ConfigCandidateIndex>,
 ) -> Result<plugins::AggregatedPluginResult, FallowError> {
     let root_config_search_roots = collect_config_search_roots(&config.root, file_paths);
     let root_config_search_root_refs: Vec<&Path> = root_config_search_roots
@@ -1688,6 +1728,7 @@ fn run_root_plugins(
                 file_paths,
                 &root_config_search_root_refs,
                 config.production,
+                candidate_index,
             )
             .map_err(|errors| {
                 FallowError::config(plugins::registry::format_plugin_regex_errors(&errors))
@@ -1709,6 +1750,7 @@ fn run_workspace_plugins(
     workspace_pkgs: &[LoadedWorkspacePackage<'_>],
     file_paths: &[std::path::PathBuf],
     root_active_plugins: &[String],
+    candidate_index: Option<&plugins::registry::ConfigCandidateIndex>,
 ) -> Vec<WorkspacePluginResult> {
     let root_active_plugins: rustc_hash::FxHashSet<&str> =
         root_active_plugins.iter().map(String::as_str).collect();
@@ -1728,6 +1770,7 @@ fn run_workspace_plugins(
                 relative_files,
                 &root_active_plugins,
                 config.production,
+                candidate_index,
             ) {
                 Ok(result) => result,
                 Err(errors) => return Some(Err(errors)),
