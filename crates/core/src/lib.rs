@@ -1814,15 +1814,37 @@ fn bucket_files_by_workspace(
     workspace_pkgs: &[LoadedWorkspacePackage<'_>],
     file_paths: &[std::path::PathBuf],
 ) -> Vec<Vec<(std::path::PathBuf, String)>> {
-    let mut buckets = vec![Vec::new(); workspace_pkgs.len()];
+    use rayon::prelude::*;
 
-    for file_path in file_paths {
-        for (idx, (ws, _)) in workspace_pkgs.iter().enumerate() {
-            if let Ok(relative) = file_path.strip_prefix(&ws.root) {
-                buckets[idx].push((file_path.clone(), relative.to_string_lossy().into_owned()));
-                break;
-            }
-        }
+    // Assign each file to its first matching workspace in parallel. On large
+    // monorepos this is O(files x workspaces) prefix scans plus a path clone and
+    // a relative-path allocation per file; doing it per file on one thread was a
+    // measurable slice of the plugins stage. The assignment is independent per
+    // file, so the only ordering contract to preserve is first-match-by-workspace-
+    // declaration-order (the original `break`) and per-bucket file order, both of
+    // which hold because the parallel map keeps file indexing and the bucket fill
+    // below walks the assignments in original file order.
+    let assignments: Vec<Option<(usize, std::path::PathBuf, String)>> = file_paths
+        .par_iter()
+        .map(|file_path| {
+            workspace_pkgs
+                .iter()
+                .enumerate()
+                .find_map(|(idx, (ws, _))| {
+                    file_path.strip_prefix(&ws.root).ok().map(|relative| {
+                        (
+                            idx,
+                            file_path.clone(),
+                            relative.to_string_lossy().into_owned(),
+                        )
+                    })
+                })
+        })
+        .collect();
+
+    let mut buckets = vec![Vec::new(); workspace_pkgs.len()];
+    for (idx, file_path, relative) in assignments.into_iter().flatten() {
+        buckets[idx].push((file_path, relative));
     }
 
     buckets
