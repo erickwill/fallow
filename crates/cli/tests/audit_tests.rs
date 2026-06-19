@@ -520,6 +520,13 @@ fn audit_new_only_inherits_shifted_duplicate_group() {
     fs::write(dir.join("fileA.ts"), &shifted_source).unwrap();
 
     git(dir, &["init", "-b", "main"]);
+    // The clone fingerprint is hashed over the raw fragment text, so CRLF vs LF
+    // shifts it. `fallow audit` spawns its own `git worktree add` for the base
+    // snapshot, which inherits the runner's global git config (Windows defaults
+    // to `core.autocrlf=true`), so the checked-out base would get CRLF while the
+    // head file written via `fs::write` keeps LF, making the inherited clone look
+    // introduced. Pin the repo to LF so base and head fingerprints match.
+    git(dir, &["config", "core.autocrlf", "false"]);
     commit_all(dir, "initial");
     git(dir, &["checkout", "-b", "edit"]);
 
