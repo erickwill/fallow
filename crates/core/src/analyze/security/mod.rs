@@ -365,6 +365,15 @@ fn scan_client_file_for_leaks(
         return;
     }
 
+    emit_direct_client_file_leaks(scan, client_id, findings);
+    emit_transitive_client_file_leaks(scan, client_id, findings, stats);
+}
+
+fn emit_direct_client_file_leaks(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    findings: &mut Vec<SecurityFinding>,
+) {
     // Direct case: the client file itself reads a non-public secret. The
     // most direct leak; no import hop needed.
     if scan.secret_sources.contains_key(&client_id) {
@@ -384,7 +393,14 @@ fn scan_client_file_for_leaks(
     if scan.server_only_sources.contains(&client_id) {
         findings.push(build_direct_server_only_finding(scan.graph, client_id));
     }
+}
 
+fn emit_transitive_client_file_leaks(
+    scan: &LeakScanInput<'_>,
+    client_id: FileId,
+    findings: &mut Vec<SecurityFinding>,
+    stats: &mut UnresolvedEdgeStats,
+) {
     // Transitive case: BFS the import cone.
     let cone = walk_client_cone(scan, client_id);
 
