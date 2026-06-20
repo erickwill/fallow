@@ -252,7 +252,10 @@ impl ModuleGraph {
 /// coordination gap. Co-located stories pairing with their component were the
 /// dominant low-value noise in the E0 coordination-gap evidence.
 fn is_dev_glue_path(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     if [".stories.", ".story.", ".spec.", ".test.", ".cy."]
         .iter()
         .any(|marker| name.contains(marker))

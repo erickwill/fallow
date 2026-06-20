@@ -8848,6 +8848,14 @@ anchor_line: number
  */
 signal_key: string
 /**
+ * The `signal_id` this decision WOULD have had before any rename in this
+ * change (the anchor file's pre-rename path). Present only when the anchor was
+ * renamed. A review-memory layer carries a dismissal across a `git mv`: if
+ * `previous_signal_id` was dismissed in an earlier PR, treat this decision as
+ * dismissed too. Keeps `signal_id` itself exact + deterministic.
+ */
+previous_signal_id?: (string | null)
+/**
  * Blast radius: count of modules affected beyond the diff by this decision.
  */
 blast: number

@@ -1861,6 +1861,15 @@ fn compute_decision_surface(
         resolve_line(path, &[name.to_string()])
     });
 
+    // Rename resolver: a head (post-rename) root-relative path -> its pre-rename
+    // path, from the diff's rename pairs. Best-effort (empty without a shared diff
+    // or renames); lets each decision carry a rename-durable `previous_signal_id`.
+    let rename_old_path = |rel: &str| -> Option<String> {
+        crate::report::ci::diff_filter::shared_diff_index()
+            .and_then(|idx| idx.old_path_for(rel))
+            .map(str::to_string)
+    };
+
     extract_decision_surface(&DecisionInputs {
         deltas,
         boundary_anchors: &boundary_anchors,
@@ -1869,6 +1878,7 @@ fn compute_decision_surface(
         affected_not_shown,
         routing,
         head_source: &head_source,
+        rename_old_path: &rename_old_path,
         cap: opts.max_decisions,
     })
 }

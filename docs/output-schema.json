@@ -16209,6 +16209,13 @@
           "type": "string",
           "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
         },
+        "previous_signal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `signal_id` this decision WOULD have had before any rename in this\nchange (the anchor file's pre-rename path). Present only when the anchor was\nrenamed. A review-memory layer carries a dismissal across a `git mv`: if\n`previous_signal_id` was dismissed in an earlier PR, treat this decision as\ndismissed too. Keeps `signal_id` itself exact + deterministic."
+        },
         "blast": {
           "type": "integer",
           "description": "Blast radius: count of modules affected beyond the diff by this decision."
@@ -16420,6 +16427,13 @@
         "signal_key": {
           "type": "string",
           "description": "The raw fallow-emitted candidate key the `signal_id` hashes (the evidence)."
+        },
+        "previous_signal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `signal_id` this decision WOULD have had before any rename in this\nchange (the anchor file's pre-rename path). Present only when the anchor was\nrenamed. A review-memory layer carries a dismissal across a `git mv`: if\n`previous_signal_id` was dismissed in an earlier PR, treat this decision as\ndismissed too. Keeps `signal_id` itself exact + deterministic."
         },
         "blast": {
           "type": "integer",

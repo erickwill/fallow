@@ -128,6 +128,13 @@ pub struct Decision {
     pub anchor_line: u32,
     /// The raw fallow-emitted candidate key the `signal_id` hashes (the evidence).
     pub signal_key: String,
+    /// The `signal_id` this decision WOULD have had before any rename in this
+    /// change (the anchor file's pre-rename path). Present only when the anchor was
+    /// renamed. A review-memory layer carries a dismissal across a `git mv`: if
+    /// `previous_signal_id` was dismissed in an earlier PR, treat this decision as
+    /// dismissed too. Keeps `signal_id` itself exact + deterministic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_signal_id: Option<String>,
     /// Blast radius: count of modules affected beyond the diff by this decision.
     pub blast: u64,
     /// `blast * reversibility_weight`: the rank key (sorted descending).
@@ -241,6 +248,10 @@ pub struct DecisionInputs<'a> {
     /// Per-anchor-file head source, for suppression checks. `None` for a file
     /// whose head content could not be read (the decision is then not suppressed).
     pub head_source: &'a dyn Fn(&str) -> Option<String>,
+    /// Resolve a head (post-rename) root-relative path to its pre-rename path, from
+    /// the diff's rename pairs. `None` when the file was not renamed. Lets each
+    /// decision carry a `previous_signal_id` so review memory survives a `git mv`.
+    pub rename_old_path: &'a dyn Fn(&str) -> Option<String>,
     /// The decision cap (default 4, clamped to [3, 5] by the caller).
     pub cap: usize,
 }
@@ -343,6 +354,11 @@ fn build_decision(
     inputs: &DecisionInputs<'_>,
 ) -> Decision {
     let signal_id = derive_signal_id(category, &candidate_key);
+    // Rename-durable review memory: if any path embedded in the candidate key was
+    // renamed, derive the signal_id this decision WOULD have had under the old
+    // path so the cloud can carry a prior dismissal across the move.
+    let previous_signal_id = remap_key_paths(&candidate_key, inputs.rename_old_path)
+        .map(|old_key| derive_signal_id(category, &old_key));
     let (expert, bus_factor_one) = route_for(inputs.routing, &anchor_file);
     let consequence = blast.saturating_mul(category.reversibility_weight());
     Decision {
@@ -352,11 +368,44 @@ fn build_decision(
         anchor_file,
         anchor_line,
         signal_key: candidate_key,
+        previous_signal_id,
         blast,
         consequence,
         expert,
         bus_factor_one,
     }
+}
+
+/// Rebuild a candidate key with every embedded rel path swapped to its pre-rename
+/// form via `rename_old_path`. The key embeds paths as `contract:<path>` or as
+/// `|`-joined `<path>::<name>` components (boundary zone-pair keys carry no path).
+/// Returns the rebuilt, re-sorted key iff at least one path moved, else `None`.
+fn remap_key_paths(key: &str, rename_old_path: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let mut moved = false;
+    let mut parts: Vec<String> = key
+        .split('|')
+        .map(|segment| {
+            if let Some(path) = segment.strip_prefix("contract:")
+                && let Some(old) = rename_old_path(path)
+            {
+                moved = true;
+                return format!("contract:{old}");
+            } else if let Some((path, name)) = segment.split_once("::")
+                && let Some(old) = rename_old_path(path)
+            {
+                moved = true;
+                return format!("{old}::{name}");
+            }
+            segment.to_string()
+        })
+        .collect();
+    if !moved {
+        return None;
+    }
+    // The public-API key is the SORTED added-key set joined; re-sort so the rebuilt
+    // key matches what the pre-rename change would have emitted.
+    parts.sort();
+    Some(parts.join("|"))
 }
 
 /// Classify the candidate signals into framed decisions (pre-rank, pre-cap).
@@ -665,6 +714,7 @@ mod tests {
             affected_not_shown: 3,
             routing,
             head_source,
+            rename_old_path: &no_source,
             cap,
         }
     }
@@ -923,6 +973,50 @@ mod tests {
         // The contract symbol's declaration line flows onto the decision so a PR
         // review can anchor an inline comment to the exact export.
         assert_eq!(surface.decisions[0].anchor_line, 7);
+        // No rename in this change -> no previous_signal_id (the default).
+        assert!(surface.decisions[0].previous_signal_id.is_none());
+    }
+
+    #[test]
+    fn renamed_anchor_carries_a_previous_signal_id_for_review_memory() {
+        // A coordination decision on a file renamed src/old.ts -> src/new.ts. The
+        // signal_id keys on the NEW path; previous_signal_id keys on the OLD path,
+        // so a cloud memory layer carries a prior dismissal across the `git mv`.
+        let d = deltas(&[], &[]);
+        let coordination = vec![CoordinationAnchor {
+            changed_file: "src/new.ts".to_string(),
+            consumed_symbols: vec!["compute".to_string()],
+            consumer_count: 2,
+            line: 0,
+        }];
+        let routing = empty_routing();
+        let rename = |rel: &str| -> Option<String> {
+            (rel == "src/new.ts").then(|| "src/old.ts".to_string())
+        };
+        let surface = extract_decision_surface(&DecisionInputs {
+            deltas: &d,
+            boundary_anchors: &[],
+            coordination: &coordination,
+            public_api_anchor_line: 0,
+            affected_not_shown: 2,
+            routing: &routing,
+            head_source: &no_source,
+            rename_old_path: &rename,
+            cap: 4,
+        });
+        assert_eq!(surface.decisions.len(), 1);
+        let decision = &surface.decisions[0];
+        assert_eq!(
+            decision.signal_id,
+            derive_signal_id(DecisionCategory::PublicApiContract, "contract:src/new.ts")
+        );
+        assert_eq!(
+            decision.previous_signal_id,
+            Some(derive_signal_id(
+                DecisionCategory::PublicApiContract,
+                "contract:src/old.ts"
+            ))
+        );
     }
 
     #[test]
