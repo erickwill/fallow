@@ -706,36 +706,54 @@ pub struct PrintCheckOptions {
     pub show_explain_tip: bool,
 }
 
-/// Print check results and return appropriate exit code.
-pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> ExitCode {
-    let effective_rules = if result.fail_on_issues {
-        let mut r = result.config.rules.clone();
-        rules::promote_warns_to_errors(&mut r);
-        r
+struct PreparedPrintCheck<'a> {
+    effective_rules: RulesConfig,
+    report_ctx: report::ReportContext<'a>,
+    regression_json: bool,
+    quiet: bool,
+}
+
+fn prepare_print_check(result: &CheckResult, opts: PrintCheckOptions) -> PreparedPrintCheck<'_> {
+    PreparedPrintCheck {
+        effective_rules: effective_check_rules(result),
+        report_ctx: report::ReportContext {
+            root: &result.config.root,
+            rules: &result.config.rules,
+            elapsed: result.elapsed,
+            quiet: opts.quiet,
+            explain: opts.explain,
+            group_by: opts.group_by,
+            top: opts.top,
+            summary: opts.summary,
+            summary_heading: opts.summary_heading,
+            show_explain_tip: opts.show_explain_tip,
+            baseline_matched: result.baseline_matched,
+            config_fixable: result.config_fixable,
+            skip_score_and_trend: false,
+        },
+        regression_json: opts.regression_json,
+        quiet: opts.quiet,
+    }
+}
+
+fn effective_check_rules(result: &CheckResult) -> RulesConfig {
+    if result.fail_on_issues {
+        let mut rules = result.config.rules.clone();
+        rules::promote_warns_to_errors(&mut rules);
+        rules
     } else {
         result.config.rules.clone()
-    };
+    }
+}
 
-    let ctx = report::ReportContext {
-        root: &result.config.root,
-        rules: &result.config.rules,
-        elapsed: result.elapsed,
-        quiet: opts.quiet,
-        explain: opts.explain,
-        group_by: opts.group_by,
-        top: opts.top,
-        summary: opts.summary,
-        summary_heading: opts.summary_heading,
-        show_explain_tip: opts.show_explain_tip,
-        baseline_matched: result.baseline_matched,
-        config_fixable: result.config_fixable,
-        skip_score_and_trend: false,
-    };
+/// Print check results and return appropriate exit code.
+pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> ExitCode {
+    let prepared = prepare_print_check(result, opts);
     let report_code = report::print_results(
         &result.results,
-        &ctx,
+        &prepared.report_ctx,
         result.config.output,
-        if opts.regression_json {
+        if prepared.regression_json {
             result.regression.as_ref()
         } else {
             None
@@ -745,29 +763,40 @@ pub fn print_check_result(result: &CheckResult, opts: PrintCheckOptions) -> Exit
         return report_code;
     }
 
-    if let Some(ref outcome) = result.regression {
-        if !opts.quiet {
-            regression::print_regression_outcome(outcome);
-        }
-        if outcome.is_failure() {
-            return ExitCode::from(1);
-        }
+    if let Some(exit) = check_regression_exit_code(result.regression.as_ref(), prepared.quiet) {
+        return exit;
     }
 
-    // S1 observability: when the load-data-key detector abstained project-wide
-    // (a whole-object use of page.data / $page.data was seen), a 0 finding count
-    // is NOT a clean bill, so say so on human output.
-    if result.results.unused_load_data_keys_global_abstain
-        && !opts.quiet
-        && matches!(result.config.output, OutputFormat::Human)
+    print_load_data_key_abstain_note(result, prepared.quiet);
+    issue_severity_exit_code(result, &prepared.effective_rules)
+}
+
+fn check_regression_exit_code(
+    outcome: Option<&RegressionOutcome>,
+    quiet: bool,
+) -> Option<ExitCode> {
+    let outcome = outcome?;
+    if !quiet {
+        regression::print_regression_outcome(outcome);
+    }
+    outcome.is_failure().then(|| ExitCode::from(1))
+}
+
+fn print_load_data_key_abstain_note(result: &CheckResult, quiet: bool) {
+    if !result.results.unused_load_data_keys_global_abstain
+        || quiet
+        || !matches!(result.config.output, OutputFormat::Human)
     {
-        eprintln!(
-            "Note: unused-load-data-key abstained project-wide (a whole-object use of \
-             page.data / $page.data was seen; any returned key could be read reflectively)."
-        );
+        return;
     }
+    eprintln!(
+        "Note: unused-load-data-key abstained project-wide (a whole-object use of \
+         page.data / $page.data was seen; any returned key could be read reflectively)."
+    );
+}
 
-    if rules::has_error_severity_issues(&result.results, &effective_rules, Some(&result.config)) {
+fn issue_severity_exit_code(result: &CheckResult, effective_rules: &RulesConfig) -> ExitCode {
+    if rules::has_error_severity_issues(&result.results, effective_rules, Some(&result.config)) {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
