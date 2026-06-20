@@ -497,45 +497,62 @@ pub fn analyze_churn_cached(
 ) -> Option<(ChurnResult, bool)> {
     let head_sha = get_head_sha(root)?;
 
-    if !no_cache && let Some(cache) = load_churn_cache(cache_dir, &since.git_after) {
-        if cache.last_indexed_sha == head_sha {
-            let shallow_clone = cache.shallow_clone;
-            let state = cache.into_event_state();
-            return Some((build_churn_result(state, shallow_clone), true));
-        }
-
-        if is_ancestor(root, &cache.last_indexed_sha, &head_sha) {
-            let shallow_clone = is_shallow_clone(root);
-            let range = format!("{}..HEAD", cache.last_indexed_sha);
-            if let Some(delta) = analyze_churn_events(root, since, Some(&range)) {
-                let mut state = cache.into_event_state();
-                merge_churn_states(&mut state, delta);
-                save_churn_cache(
-                    cache_dir,
-                    &head_sha,
-                    &since.git_after,
-                    &state,
-                    shallow_clone,
-                );
-                return Some((build_churn_result(state, shallow_clone), true));
-            }
-        }
+    if !no_cache && let Some(result) = try_reuse_churn_cache(root, since, cache_dir, &head_sha) {
+        return Some((result, true));
     }
 
+    analyze_fresh_churn(root, since, cache_dir, no_cache, &head_sha).map(|result| (result, false))
+}
+
+fn try_reuse_churn_cache(
+    root: &Path,
+    since: &SinceDuration,
+    cache_dir: &Path,
+    head_sha: &str,
+) -> Option<ChurnResult> {
+    let cache = load_churn_cache(cache_dir, &since.git_after)?;
+    if cache.last_indexed_sha == head_sha {
+        let shallow_clone = cache.shallow_clone;
+        return Some(build_churn_result(cache.into_event_state(), shallow_clone));
+    }
+
+    if !is_ancestor(root, &cache.last_indexed_sha, head_sha) {
+        return None;
+    }
+
+    extend_churn_cache(root, since, cache_dir, head_sha, cache)
+}
+
+fn extend_churn_cache(
+    root: &Path,
+    since: &SinceDuration,
+    cache_dir: &Path,
+    head_sha: &str,
+    cache: ChurnCache,
+) -> Option<ChurnResult> {
+    let shallow_clone = is_shallow_clone(root);
+    let range = format!("{}..HEAD", cache.last_indexed_sha);
+    let delta = analyze_churn_events(root, since, Some(&range))?;
+    let mut state = cache.into_event_state();
+    merge_churn_states(&mut state, delta);
+    save_churn_cache(cache_dir, head_sha, &since.git_after, &state, shallow_clone);
+    Some(build_churn_result(state, shallow_clone))
+}
+
+fn analyze_fresh_churn(
+    root: &Path,
+    since: &SinceDuration,
+    cache_dir: &Path,
+    no_cache: bool,
+    head_sha: &str,
+) -> Option<ChurnResult> {
     let shallow_clone = is_shallow_clone(root);
     let state = analyze_churn_events(root, since, None)?;
     if !no_cache {
-        save_churn_cache(
-            cache_dir,
-            &head_sha,
-            &since.git_after,
-            &state,
-            shallow_clone,
-        );
+        save_churn_cache(cache_dir, head_sha, &since.git_after, &state, shallow_clone);
     }
 
-    let result = build_churn_result(state, shallow_clone);
-    Some((result, false))
+    Some(build_churn_result(state, shallow_clone))
 }
 
 impl ChurnCache {
