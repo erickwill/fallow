@@ -249,25 +249,36 @@ fn evaluate_inject_site(
         resolved.file_id,
         site.span_start,
     );
-    if scan
-        .input
-        .suppressions
-        .is_suppressed(resolved.file_id, line, IssueKind::UnprovidedInject)
-        || scan
-            .input
-            .suppressions
-            .is_file_suppressed(resolved.file_id, IssueKind::UnprovidedInject)
-    {
+    if inject_site_suppressed(scan, resolved.file_id, line) {
         return None;
     }
     let path = scan.path_by_id.get(&resolved.file_id)?;
-    Some(UnprovidedInject {
+    Some(build_unprovided_inject(path, site, line, col))
+}
+
+fn inject_site_suppressed(scan: &InjectScanContext<'_>, file_id: FileId, line: u32) -> bool {
+    scan.input
+        .suppressions
+        .is_suppressed(file_id, line, IssueKind::UnprovidedInject)
+        || scan
+            .input
+            .suppressions
+            .is_file_suppressed(file_id, IssueKind::UnprovidedInject)
+}
+
+fn build_unprovided_inject(
+    path: &std::path::Path,
+    site: &fallow_types::extract::DiKeySite,
+    line: u32,
+    col: u32,
+) -> UnprovidedInject {
+    UnprovidedInject {
         path: path.to_path_buf(),
         key_name: site.key_local.clone(),
         framework: framework_str(site.framework).to_string(),
         line,
         col,
-    })
+    }
 }
 
 /// Resolve a key identifier to its cross-file identity, distinguishing an
