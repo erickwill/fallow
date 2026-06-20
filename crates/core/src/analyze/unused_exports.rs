@@ -405,12 +405,10 @@ fn find_unused_exports_for_module(
     module: &ModuleNode,
     ctx: &UnusedExportModuleContext<'_>,
 ) -> UnusedExportModuleResult {
-    let mut unused_exports = Vec::new();
-    let mut unused_types = Vec::new();
     let mut stale_expected_unused = Vec::new();
 
     if module.exports.is_empty() && !module.has_cjs_exports() {
-        return (unused_exports, unused_types, stale_expected_unused);
+        return (Vec::new(), Vec::new(), stale_expected_unused);
     }
 
     let (matching_ignore, matching_plugin) = matchers_for_module(
@@ -424,7 +422,7 @@ fn find_unused_exports_for_module(
         !matching_plugin.is_empty(),
         ctx.config.include_entry_exports,
     ) {
-        return (unused_exports, unused_types, stale_expected_unused);
+        return (Vec::new(), Vec::new(), stale_expected_unused);
     }
 
     let same_file_used_exports = same_file_used_exports(module, ctx);
@@ -434,17 +432,42 @@ fn find_unused_exports_for_module(
         .map(|re| re.exported_name.as_str())
         .collect();
 
+    let (unused_exports, unused_types) = collect_module_unused_export_findings(
+        module,
+        ctx,
+        &same_file_used_exports,
+        &re_export_names,
+        &matching_ignore,
+        &matching_plugin,
+        &mut stale_expected_unused,
+    );
+
+    (unused_exports, unused_types, stale_expected_unused)
+}
+
+fn collect_module_unused_export_findings(
+    module: &ModuleNode,
+    ctx: &UnusedExportModuleContext<'_>,
+    same_file_used_exports: &FxHashSet<String>,
+    re_export_names: &FxHashSet<&str>,
+    matching_ignore: &[&[String]],
+    matching_plugin: &[&[&str]],
+    stale_expected_unused: &mut Vec<StaleSuppression>,
+) -> (Vec<UnusedExport>, Vec<UnusedExport>) {
+    let mut unused_exports = Vec::new();
+    let mut unused_types = Vec::new();
+
     for export in &module.exports {
         if let Some(unused) = unused_export_for_module(
             module,
             export,
             ctx,
             UnusedExportMatchContext {
-                same_file_used_exports: &same_file_used_exports,
-                re_export_names: &re_export_names,
-                matching_ignore: &matching_ignore,
-                matching_plugin: &matching_plugin,
-                stale_expected_unused: &mut stale_expected_unused,
+                same_file_used_exports,
+                re_export_names,
+                matching_ignore,
+                matching_plugin,
+                stale_expected_unused: &mut *stale_expected_unused,
             },
         ) {
             if export.is_type_only {
@@ -455,7 +478,7 @@ fn find_unused_exports_for_module(
         }
     }
 
-    (unused_exports, unused_types, stale_expected_unused)
+    (unused_exports, unused_types)
 }
 
 fn same_file_used_exports(
