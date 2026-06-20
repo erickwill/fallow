@@ -121,6 +121,11 @@ pub struct WorkspacePluginRunInput<'a> {
     pub candidate_index: Option<&'a ConfigCandidateIndex>,
 }
 
+struct PluginRunContext<'a> {
+    all_deps: Vec<String>,
+    active: Vec<&'a dyn Plugin>,
+}
+
 /// Invalid user-authored regex extracted from a plugin config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginRegexValidationError {
@@ -464,22 +469,15 @@ impl PluginRegistry {
         let mut result = AggregatedPluginResult::default();
         let mut regex_errors = Vec::new();
 
-        let all_deps = pkg.all_dependency_names();
-        let script_packages = script_activation_packages(pkg, root, &all_deps, production_mode);
-        let active = self.collect_active_plugins(
+        let PluginRunContext { all_deps, active } = self.prepare_plugin_run_context(
             pkg,
             root,
             discovered_files,
-            &all_deps,
-            &script_packages,
+            production_mode,
             candidate_index,
         );
 
-        log_active_plugins(&active);
-
-        check_meta_framework_prerequisites(&active, root);
-
-        self.emit_silent_fail_diagnostics(&active, &all_deps, root, discovered_files);
+        self.run_plugin_preflight(&active, &all_deps, root, discovered_files);
 
         for plugin in &active {
             process_static_patterns(*plugin, root, &mut result);
@@ -673,6 +671,40 @@ impl Default for PluginRegistry {
 }
 
 impl PluginRegistry {
+    fn prepare_plugin_run_context<'a>(
+        &'a self,
+        pkg: &PackageJson,
+        root: &Path,
+        discovered_files: &[PathBuf],
+        production_mode: bool,
+        candidate_index: Option<&ConfigCandidateIndex>,
+    ) -> PluginRunContext<'a> {
+        let all_deps = pkg.all_dependency_names();
+        let script_packages = script_activation_packages(pkg, root, &all_deps, production_mode);
+        let active = self.collect_active_plugins(
+            pkg,
+            root,
+            discovered_files,
+            &all_deps,
+            &script_packages,
+            candidate_index,
+        );
+
+        PluginRunContext { all_deps, active }
+    }
+
+    fn run_plugin_preflight(
+        &self,
+        active: &[&dyn Plugin],
+        all_deps: &[String],
+        root: &Path,
+        discovered_files: &[PathBuf],
+    ) {
+        log_active_plugins(active);
+        check_meta_framework_prerequisites(active, root);
+        self.emit_silent_fail_diagnostics(active, all_deps, root, discovered_files);
+    }
+
     /// Collect every built-in plugin enabled for this project via files,
     /// scripts, or package.json. Shared by the root and workspace-fast paths.
     fn collect_active_plugins<'a>(
