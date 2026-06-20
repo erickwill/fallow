@@ -137,11 +137,44 @@ fn analysis_count_vitals(
     )
 }
 
+struct SelectedModuleMetrics {
+    total_loc: u64,
+    line_counts: Vec<u32>,
+    param_counts: Vec<u8>,
+}
+
+fn selected_module_metrics(input: &VitalSignsInput<'_>) -> SelectedModuleMetrics {
+    let mut total_loc = 0;
+    let mut line_counts = Vec::new();
+    let mut param_counts = Vec::new();
+
+    for module in input.selected_modules() {
+        total_loc += module.line_offsets.len() as u64;
+        line_counts.extend(module.complexity.iter().map(|c| c.line_count));
+        param_counts.extend(module.complexity.iter().map(|c| c.param_count));
+    }
+
+    SelectedModuleMetrics {
+        total_loc,
+        line_counts,
+        param_counts,
+    }
+}
+
+fn vital_sign_counts(input: &VitalSignsInput<'_>, total_loc: u64) -> Option<VitalSignsCounts> {
+    input.analysis_counts.as_ref().map(|ac| VitalSignsCounts {
+        total_files: input.total_files,
+        total_exports: ac.total_exports,
+        dead_files: ac.dead_files,
+        dead_exports: ac.dead_exports,
+        duplicated_lines: None,
+        total_lines: Some(total_loc as usize),
+        files_scored: input.file_scores.map(<[_]>::len),
+        total_deps: ac.total_deps,
+    })
+}
+
 /// Compute vital signs from available health data.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "remaining count conversions are bounded by project size"
-)]
 pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
     let all_cyclomatic = collect_sorted_cyclomatic(input);
     let avg_cyclomatic = average_cyclomatic(&all_cyclomatic);
@@ -159,30 +192,13 @@ pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
 
     let (hotspot_count, hotspot_top_pct_count) = hotspot_vitals(input.hotspots, input.total_files);
 
-    let total_loc: u64 = input
-        .selected_modules()
-        .map(|m| m.line_offsets.len() as u64)
-        .sum();
+    let module_metrics = selected_module_metrics(input);
+    let counts = vital_sign_counts(input, module_metrics.total_loc);
+    let functions_over_60_loc_per_k = functions_over_60_loc_per_k(&module_metrics.line_counts);
+    let unit_size_profile = unit_size_profile(&module_metrics.line_counts);
 
-    let counts = input.analysis_counts.as_ref().map(|ac| VitalSignsCounts {
-        total_files: input.total_files,
-        total_exports: ac.total_exports,
-        dead_files: ac.dead_files,
-        dead_exports: ac.dead_exports,
-        duplicated_lines: None,
-        total_lines: Some(total_loc as usize),
-        files_scored: input.file_scores.map(<[_]>::len),
-        total_deps: ac.total_deps,
-    });
-
-    let all_line_counts: Vec<u32> = input
-        .selected_modules()
-        .flat_map(|m| m.complexity.iter().map(|c| c.line_count))
-        .collect();
-    let functions_over_60_loc_per_k = functions_over_60_loc_per_k(&all_line_counts);
-    let unit_size_profile = unit_size_profile(&all_line_counts);
-
-    let unit_interfacing_profile = unit_interfacing_profile(input, &all_cyclomatic);
+    let unit_interfacing_profile =
+        unit_interfacing_profile(&module_metrics.param_counts, &all_cyclomatic);
 
     let (p95_fan_in, coupling_high_pct) = if let Some(scores) = input.file_scores {
         compute_coupling_concentration(scores)
@@ -222,7 +238,7 @@ pub fn compute_vital_signs(input: &VitalSignsInput<'_>) -> VitalSigns {
         render_fan_in_high_pct: None,
         max_render_fan_in: None,
         top_render_fan_in: Vec::new(),
-        total_loc,
+        total_loc: module_metrics.total_loc,
     }
 }
 
@@ -288,18 +304,11 @@ fn unit_size_profile(line_counts: &[u32]) -> Option<RiskProfile> {
     (!line_counts.is_empty()).then(|| compute_size_risk_profile(line_counts))
 }
 
-fn unit_interfacing_profile(
-    input: &VitalSignsInput<'_>,
-    all_cyclomatic: &[u16],
-) -> Option<RiskProfile> {
+fn unit_interfacing_profile(param_counts: &[u8], all_cyclomatic: &[u16]) -> Option<RiskProfile> {
     if all_cyclomatic.is_empty() {
         return None;
     }
-    let all_param_counts: Vec<u8> = input
-        .selected_modules()
-        .flat_map(|m| m.complexity.iter().map(|c| c.param_count))
-        .collect();
-    Some(compute_interfacing_risk_profile(&all_param_counts))
+    Some(compute_interfacing_risk_profile(param_counts))
 }
 
 /// Compute unit size risk profile from function line counts.
