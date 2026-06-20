@@ -319,65 +319,85 @@ impl CatalogLineIndex {
 /// `catalogs.<name>:` (a named catalog), and records each key at the
 /// expected indentation level.
 fn build_line_index(source: &str) -> CatalogLineIndex {
-    let mut entries = Vec::new();
-    let mut groups = Vec::new();
-    let mut section: Section = Section::None;
-    let mut named_catalog: Option<(String, usize)> = None;
+    let mut scan = YamlCatalogScan::default();
 
     for (idx, raw_line) in source.lines().enumerate() {
         let line_no = u32::try_from(idx).unwrap_or(u32::MAX).saturating_add(1);
+        scan.record_line(raw_line, line_no);
+    }
+
+    scan.finish()
+}
+
+#[derive(Default)]
+struct YamlCatalogScan {
+    entries: Vec<((String, String), u32)>,
+    groups: Vec<(String, u32)>,
+    section: Section,
+    named_catalog: Option<(String, usize)>,
+}
+
+impl YamlCatalogScan {
+    fn record_line(&mut self, raw_line: &str, line_no: u32) {
         let trimmed = strip_inline_comment(raw_line);
         let trimmed_left = trimmed.trim_start();
         let indent = trimmed.len() - trimmed_left.len();
 
         if trimmed_left.is_empty() {
-            continue;
+            return;
         }
 
         if indent == 0 {
-            section = if trimmed_left.starts_with("catalogs:") {
-                Section::NamedCatalogs
-            } else if trimmed_left.starts_with("catalog:") {
-                Section::DefaultCatalog
-            } else {
-                Section::None
-            };
-            named_catalog = None;
-            continue;
+            self.enter_top_level_section(trimmed_left);
+            return;
         }
 
-        match section {
+        self.record_catalog_key(trimmed_left, indent, line_no);
+    }
+
+    fn enter_top_level_section(&mut self, trimmed_left: &str) {
+        self.section = if trimmed_left.starts_with("catalogs:") {
+            Section::NamedCatalogs
+        } else if trimmed_left.starts_with("catalog:") {
+            Section::DefaultCatalog
+        } else {
+            Section::None
+        };
+        self.named_catalog = None;
+    }
+
+    fn record_catalog_key(&mut self, trimmed_left: &str, indent: usize, line_no: u32) {
+        let Some(name) = parse_key(trimmed_left) else {
+            return;
+        };
+
+        match self.section {
             Section::None => {}
             Section::DefaultCatalog => {
-                if let Some(name) = parse_key(trimmed_left) {
-                    entries.push((("default".to_string(), name), line_no));
-                }
+                self.entries.push((("default".to_string(), name), line_no));
             }
-            Section::NamedCatalogs => {
-                if let Some(name) = parse_key(trimmed_left) {
-                    match &named_catalog {
-                        Some((_, existing_indent)) if indent > *existing_indent => {
-                            entries.push((
-                                (
-                                    named_catalog
-                                        .as_ref()
-                                        .map_or_else(String::new, |(n, _)| n.clone()),
-                                    name,
-                                ),
-                                line_no,
-                            ));
-                        }
-                        _ => {
-                            groups.push((name.clone(), line_no));
-                            named_catalog = Some((name, indent));
-                        }
-                    }
-                }
-            }
+            Section::NamedCatalogs => self.record_named_catalog_key(name, indent, line_no),
         }
     }
 
-    CatalogLineIndex { entries, groups }
+    fn record_named_catalog_key(&mut self, name: String, indent: usize, line_no: u32) {
+        if let Some((catalog_name, existing_indent)) = &self.named_catalog
+            && indent > *existing_indent
+        {
+            self.entries.push(((catalog_name.clone(), name), line_no));
+            return;
+        }
+
+        self.groups.push((name.clone(), line_no));
+        self.named_catalog = Some((name, indent));
+    }
+
+    fn finish(self) -> CatalogLineIndex {
+        CatalogLineIndex {
+            entries: self.entries,
+            groups: self.groups,
+        }
+    }
 }
 
 /// Brace-depth scanner state for the package.json catalog line index.
