@@ -461,18 +461,14 @@ pub fn find_unrendered_angular_components(
     // instead. A component not reachable at all is left to `unused-file`.
     let mut findings = Vec::new();
     for node in &graph.modules {
-        if !node.is_reachable() {
-            continue;
-        }
-        let Some(module) = modules_by_id.get(&node.file_id) else {
+        let Some(module) = angular_component_scan_target(
+            node,
+            &modules_by_id,
+            &public_api,
+            public_api_entry_points,
+        ) else {
             continue;
         };
-        if module.angular_component_selectors.is_empty() {
-            continue;
-        }
-        if public_api.contains(&node.file_id) || public_api_entry_points.contains(&node.file_id) {
-            continue;
-        }
         emit_angular_component_findings(
             node,
             module,
@@ -484,6 +480,26 @@ pub fn find_unrendered_angular_components(
     }
 
     findings
+}
+
+fn angular_component_scan_target<'a>(
+    node: &ModuleNode,
+    modules_by_id: &'a FxHashMap<FileId, &'a ModuleInfo>,
+    public_api: &FxHashSet<FileId>,
+    public_api_entry_points: &FxHashSet<FileId>,
+) -> Option<&'a ModuleInfo> {
+    if !node.is_reachable() {
+        return None;
+    }
+    let module = modules_by_id.get(&node.file_id).copied()?;
+    if module.angular_component_selectors.is_empty() {
+        return None;
+    }
+    if public_api.contains(&node.file_id) || public_api_entry_points.contains(&node.file_id) {
+        return None;
+    }
+
+    Some(module)
 }
 
 /// Project-wide Angular render signals, all built LIBERALLY: a selector or class
