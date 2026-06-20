@@ -4668,15 +4668,16 @@ fn save_health_baseline_if_requested(
     targets: &[RefactoringTarget],
 ) -> Result<(), ExitCode> {
     if let Some(save_path) = opts.save_baseline {
-        save_health_baseline(
+        save_health_baseline(&HealthBaselineSaveInput {
             save_path,
             findings,
-            runtime_coverage.map_or(&[], |report| report.findings.as_slice()),
+            runtime_coverage_findings: runtime_coverage
+                .map_or(&[], |report| report.findings.as_slice()),
             targets,
-            &config.root,
-            opts.quiet,
-            opts.output,
-        )?;
+            config_root: &config.root,
+            quiet: opts.quiet,
+            output: opts.output,
+        })?;
     }
     Ok(())
 }
@@ -6345,16 +6346,27 @@ fn inherited_from_for(
     }
 }
 
-/// Save health baseline to disk.
-fn save_health_baseline(
-    save_path: &std::path::Path,
-    findings: &[ComplexityViolation],
-    runtime_coverage_findings: &[crate::health_types::RuntimeCoverageFinding],
-    targets: &[RefactoringTarget],
-    config_root: &std::path::Path,
+struct HealthBaselineSaveInput<'a> {
+    save_path: &'a std::path::Path,
+    findings: &'a [ComplexityViolation],
+    runtime_coverage_findings: &'a [crate::health_types::RuntimeCoverageFinding],
+    targets: &'a [RefactoringTarget],
+    config_root: &'a std::path::Path,
     quiet: bool,
     output: OutputFormat,
-) -> Result<(), ExitCode> {
+}
+
+/// Save health baseline to disk.
+fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Result<(), ExitCode> {
+    let HealthBaselineSaveInput {
+        save_path,
+        findings,
+        runtime_coverage_findings,
+        targets,
+        config_root,
+        quiet,
+        output,
+    } = *input;
     let baseline = HealthBaselineData::from_findings(
         findings,
         runtime_coverage_findings,
