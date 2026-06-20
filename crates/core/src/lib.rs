@@ -805,12 +805,7 @@ fn analyze_full(
         &config_candidates,
     )?;
 
-    let t = Instant::now();
-    progress.set_stage(&format!("parsing {} files...", files.len()));
-    let AnalysisParseOutput { modules, metrics } =
-        parse_analysis_modules(config, files, need_complexity, t);
-
-    let core = run_owned_analysis_core(OwnedAnalysisCoreInput {
+    let FullAnalysisCoreOutput { core, metrics } = run_full_analysis_core(&FullAnalysisCoreInput {
         config,
         progress: &progress,
         files,
@@ -818,25 +813,24 @@ fn analyze_full(
         root_pkg: root_pkg.as_ref(),
         workspace_pkgs: &workspace_pkgs,
         plugin_result: &plugin_result,
-        modules,
+        need_complexity,
         collect_usages,
     });
     progress.finish();
 
-    let timings = PreludeTimings {
-        discover_ms,
-        workspaces_ms,
-        plugins_ms,
-        scripts_ms,
-    };
-    let prelude = prelude_metrics(
-        &timings,
+    let profile = full_analysis_pipeline_profile(
+        &PreludeTimings {
+            discover_ms,
+            workspaces_ms,
+            plugins_ms,
+            scripts_ms,
+        },
         pipeline_start,
         files,
         workspaces,
-        core.modules.len(),
+        &core,
+        &metrics,
     );
-    let profile = full_pipeline_profile(&prelude, &core, &metrics);
     trace_pipeline_profile(&profile);
 
     Ok(assemble_full_output(
@@ -847,6 +841,74 @@ fn analyze_full(
         retain,
         retain_modules,
     ))
+}
+
+struct FullAnalysisCoreInput<'a> {
+    config: &'a ResolvedConfig,
+    progress: &'a progress::AnalysisProgress,
+    files: &'a [discover::DiscoveredFile],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    root_pkg: Option<&'a PackageJson>,
+    workspace_pkgs: &'a [LoadedWorkspacePackage<'a>],
+    plugin_result: &'a plugins::AggregatedPluginResult,
+    need_complexity: bool,
+    collect_usages: bool,
+}
+
+struct FullAnalysisCoreOutput {
+    core: OwnedAnalysisCore,
+    metrics: ParseMetrics,
+}
+
+fn run_full_analysis_core(input: &FullAnalysisCoreInput<'_>) -> FullAnalysisCoreOutput {
+    let &FullAnalysisCoreInput {
+        config,
+        progress,
+        files,
+        workspaces,
+        root_pkg,
+        workspace_pkgs,
+        plugin_result,
+        need_complexity,
+        collect_usages,
+    } = input;
+
+    let t = Instant::now();
+    progress.set_stage(&format!("parsing {} files...", files.len()));
+    let AnalysisParseOutput { modules, metrics } =
+        parse_analysis_modules(config, files, need_complexity, t);
+
+    let core = run_owned_analysis_core(OwnedAnalysisCoreInput {
+        config,
+        progress,
+        files,
+        workspaces,
+        root_pkg,
+        workspace_pkgs,
+        plugin_result,
+        modules,
+        collect_usages,
+    });
+
+    FullAnalysisCoreOutput { core, metrics }
+}
+
+fn full_analysis_pipeline_profile(
+    timings: &PreludeTimings,
+    pipeline_start: Instant,
+    files: &[discover::DiscoveredFile],
+    workspaces: &[fallow_config::WorkspaceInfo],
+    core: &OwnedAnalysisCore,
+    metrics: &ParseMetrics,
+) -> PipelineProfile {
+    let prelude = prelude_metrics(
+        timings,
+        pipeline_start,
+        files,
+        workspaces,
+        core.modules.len(),
+    );
+    full_pipeline_profile(&prelude, core, metrics)
 }
 
 /// Assemble the `AnalysisOutput` for the full pipeline, honoring the graph/module
