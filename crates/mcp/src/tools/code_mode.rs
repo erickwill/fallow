@@ -522,6 +522,34 @@ fn merge_default_root(
 
 fn build_tool_args(tool: CodeModeTool, params: serde_json::Value) -> Result<Vec<String>, String> {
     match tool {
+        CodeModeTool::Analyze
+        | CodeModeTool::CheckChanged
+        | CodeModeTool::SecurityCandidates
+        | CodeModeTool::FindDupes
+        | CodeModeTool::ProjectInfo => build_project_tool_args(tool, params),
+        CodeModeTool::TraceExport
+        | CodeModeTool::TraceFile
+        | CodeModeTool::TraceDependency
+        | CodeModeTool::TraceClone => build_trace_tool_args(tool, params),
+        CodeModeTool::CheckHealth
+        | CodeModeTool::Audit
+        | CodeModeTool::FallowExplain
+        | CodeModeTool::ListBoundaries
+        | CodeModeTool::FeatureFlags
+        | CodeModeTool::Impact => build_health_and_config_tool_args(tool, params),
+        CodeModeTool::CheckRuntimeCoverage
+        | CodeModeTool::GetHotPaths
+        | CodeModeTool::GetBlastRadius
+        | CodeModeTool::GetImportance
+        | CodeModeTool::GetCleanupCandidates => build_runtime_coverage_tool_args(tool, params),
+    }
+}
+
+fn build_project_tool_args(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+) -> Result<Vec<String>, String> {
+    match tool {
         CodeModeTool::Analyze => {
             let params: AnalyzeParams = parse_params(params)?;
             build_analyze_args(&params)
@@ -542,6 +570,15 @@ fn build_tool_args(tool: CodeModeTool, params: serde_json::Value) -> Result<Vec<
             let params: ProjectInfoParams = parse_params(params)?;
             Ok(build_project_info_args(&params))
         }
+        _ => unreachable!("project tool helper called with non-project tool"),
+    }
+}
+
+fn build_trace_tool_args(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+) -> Result<Vec<String>, String> {
+    match tool {
         CodeModeTool::TraceExport => {
             let params: TraceExportParams = parse_params(params)?;
             build_trace_export_args(&params)
@@ -558,6 +595,15 @@ fn build_tool_args(tool: CodeModeTool, params: serde_json::Value) -> Result<Vec<
             let params: TraceCloneParams = parse_params(params)?;
             build_trace_clone_args(&params)
         }
+        _ => unreachable!("trace tool helper called with non-trace tool"),
+    }
+}
+
+fn build_health_and_config_tool_args(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+) -> Result<Vec<String>, String> {
+    match tool {
         CodeModeTool::CheckHealth => {
             let params: HealthParams = parse_params(params)?;
             Ok(build_health_args(&params))
@@ -582,6 +628,15 @@ fn build_tool_args(tool: CodeModeTool, params: serde_json::Value) -> Result<Vec<
             let params: ImpactParams = parse_params(params)?;
             Ok(build_impact_args(&params))
         }
+        _ => unreachable!("health/config helper called with unrelated tool"),
+    }
+}
+
+fn build_runtime_coverage_tool_args(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+) -> Result<Vec<String>, String> {
+    match tool {
         CodeModeTool::CheckRuntimeCoverage => {
             let params: CheckRuntimeCoverageParams = parse_params(params)?;
             Ok(build_check_runtime_coverage_args(&params))
@@ -602,6 +657,7 @@ fn build_tool_args(tool: CodeModeTool, params: serde_json::Value) -> Result<Vec<
             let params: CheckRuntimeCoverageParams = parse_params(params)?;
             Ok(build_get_cleanup_candidates_args(&params))
         }
+        _ => unreachable!("runtime coverage helper called with unrelated tool"),
     }
 }
 
