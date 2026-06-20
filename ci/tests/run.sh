@@ -161,6 +161,7 @@ SCRIPT_PREP_TMP="$INSTALL_TMP/script-prep"
 mkdir -p "$SCRIPT_PREP_TMP/ci/scripts"
 printf '%s\n' '#!/usr/bin/env bash' 'echo comment' > "$SCRIPT_PREP_TMP/ci/scripts/comment.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'echo review' > "$SCRIPT_PREP_TMP/ci/scripts/review.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo common' > "$SCRIPT_PREP_TMP/ci/scripts/gitlab_common.sh"
 rm -rf /tmp/fallow-scripts
 OUT=$(cd "$SCRIPT_PREP_TMP" && FALLOW_COMMENT=true FALLOW_REVIEW=false /bin/sh -c "$GITLAB_SCRIPT_PREP_SCRIPT" 2>&1)
 cmd_status=$?
@@ -169,7 +170,7 @@ if [ "$cmd_status" -eq 0 ]; then
 else
   fail "script prep: wrapped block runs under sh" "$OUT"
 fi
-if [ -x /tmp/fallow-scripts/comment.sh ] && [ -x /tmp/fallow-scripts/review.sh ]; then
+if [ -x /tmp/fallow-scripts/comment.sh ] && [ -x /tmp/fallow-scripts/review.sh ] && [ -x /tmp/fallow-scripts/gitlab_common.sh ]; then
   pass "script prep: copies vendored scripts"
 else
   fail "script prep: copies vendored scripts" "expected executable scripts in /tmp/fallow-scripts"
@@ -991,6 +992,7 @@ assert_contains "$(cat "$CI_YAML")" "GIT_DEPTH" "fetches full history for change
 assert_contains "$(cat "$CI_YAML")" "CI_MERGE_REQUEST_DIFF_BASE_SHA" "auto changed-since uses diff base SHA"
 assert_contains "$(cat "$CI_YAML")" "comment.sh" "references comment.sh"
 assert_contains "$(cat "$CI_YAML")" "review.sh" "references review.sh"
+assert_contains "$(cat "$CI_YAML")" "gitlab_common.sh" "references shared GitLab helper script"
 assert_contains "$(cat "$CI_YAML")" "gl-code-quality-report" "generates Code Quality report"
 assert_contains "$(cat "$CI_YAML")" 'type == "array"' "preserves valid Code Quality reports from nonzero audit exits"
 assert_contains "$(cat "$CI_YAML")" '.error == true' "fails on structured fallow error JSON"
@@ -1005,6 +1007,7 @@ echo ""
 echo "=== Bash script structure ==="
 
 SCRIPTS_DIR="$DIR/../scripts"
+GITLAB_COMMON="$(cat "$SCRIPTS_DIR/gitlab_common.sh")"
 
 echo "  comment.sh:"
 assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "PRIVATE-TOKEN" "supports GITLAB_TOKEN"
@@ -1012,8 +1015,9 @@ assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "CI_JOB_TOKEN is read-only" "
 assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "fallow-results" "uses fallow-results marker"
 assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "PUT" "can update existing comment"
 assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "POST" "can create new comment"
-assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "curl_retry" "wraps GitLab API calls with retry"
-assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "rate limit response; retrying" "retries GitLab rate-limit responses"
+assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "gitlab_common.sh" "loads shared GitLab API helpers"
+assert_contains "$GITLAB_COMMON" "curl_retry" "wraps GitLab API calls with retry"
+assert_contains "$GITLAB_COMMON" "rate limit response; retrying" "retries GitLab rate-limit responses"
 assert_contains "$(cat "$SCRIPTS_DIR/comment.sh")" "Unsupported FALLOW_SUMMARY_SCOPE" "comment.sh warns on invalid summary scope"
 
 echo "  review.sh:"
@@ -1025,8 +1029,7 @@ assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "position" "posts with positio
 assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "suggestion" "adds suggestion blocks"
 assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "fallow-review" "uses fallow-review marker"
 assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "fallow-fingerprint" "deduplicates by typed fingerprint"
-assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "curl_retry" "wraps GitLab API calls with retry"
-assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "rate limit response; retrying" "retries GitLab rate-limit responses"
+assert_contains "$(cat "$SCRIPTS_DIR/review.sh")" "gitlab_common.sh" "loads shared GitLab API helpers"
 assert_not_contains "$(cat "$SCRIPTS_DIR/review.sh")" "merge-comments" "does not keep legacy jq merge fallback"
 assert_not_contains "$(cat "$SCRIPTS_DIR/review.sh")" "FALLOW_SHARED_JQ_DIR" "does not use shared jq fallback scripts"
 assert_not_contains "$(cat "$SCRIPTS_DIR/review.sh")" "FALLOW_SUMMARY_SCOPE" "review.sh does not consume summary scope"
@@ -1177,14 +1180,13 @@ rm -rf "$CI_TYPED_WORK"
 echo ""
 echo "=== curl_paginate Link-header walk ==="
 
-# Extract curl_paginate at top level (outside any nested $()) so the awk
-# pattern parses cleanly, then define paginate_test_run as a regular
-# function and capture its output once. Disable pipefail just for the test
-# run because curl_paginate uses `url=$(grep | tr | sed | head -1)` and
-# `head -1` SIGPIPE-cancels the upstream pipeline on the no-Link-header
-# page, which under pipefail propagates as a non-zero exit.
-PAGINATE_FN_SRC=$(awk '/^curl_paginate\(\) \{/,/^\}$/' "$SCRIPTS_DIR/comment.sh")
-eval "$PAGINATE_FN_SRC"
+# Load the shared helper, then define paginate_test_run as a regular function
+# and capture its output once. Disable pipefail just for the test run because
+# curl_paginate uses `url=$(grep | tr | sed | head -1)` and `head -1`
+# SIGPIPE-cancels the upstream pipeline on the no-Link-header page, which
+# under pipefail propagates as a non-zero exit.
+# shellcheck source=../scripts/gitlab_common.sh
+source "$SCRIPTS_DIR/gitlab_common.sh"
 
 paginate_test_run() {
   set +o pipefail
