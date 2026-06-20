@@ -407,15 +407,14 @@ fn follow_chain(
             // Pathological depth: stop (still a valid drilled chain, capped).
             return Some(hops);
         }
-        match advance_chain_step(
-            &current_key,
-            &current_local,
+        let mut ctx = ChainAdvanceContext {
             states,
             resolver,
             line_offsets_by_file,
-            &mut hops,
-            &mut visited,
-        )? {
+            hops: &mut hops,
+            visited: &mut visited,
+        };
+        match advance_chain_step(&current_key, &current_local, &mut ctx)? {
             ChainStep::Done => return Some(hops),
             ChainStep::Continue { key, local } => {
                 current_key = key;
@@ -432,6 +431,16 @@ enum ChainStep {
     Continue { key: CompKey, local: String },
 }
 
+/// Mutable state and immutable lookup tables used while advancing one
+/// prop-drilling chain.
+struct ChainAdvanceContext<'a, 'b> {
+    states: &'a FxHashMap<CompKey, CompState<'a>>,
+    resolver: &'a ChildResolver<'a>,
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    hops: &'b mut Vec<PropDrillHop>,
+    visited: &'b mut FxHashSet<CompKey>,
+}
+
 /// Advance the chain one hop from `(current_key, current_local)`: resolve the
 /// single forwarded child, push its located hop, and report whether the chain
 /// terminates (consumer) or continues (pass-through). `None` abstains on a
@@ -440,13 +449,9 @@ enum ChainStep {
 fn advance_chain_step(
     current_key: &CompKey,
     current_local: &str,
-    states: &FxHashMap<CompKey, CompState<'_>>,
-    resolver: &ChildResolver<'_>,
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-    hops: &mut Vec<PropDrillHop>,
-    visited: &mut FxHashSet<CompKey>,
+    ctx: &mut ChainAdvanceContext<'_, '_>,
 ) -> Option<ChainStep> {
-    let state = states.get(current_key)?;
+    let state = ctx.states.get(current_key)?;
     // The current component must FORWARD this prop to exactly one child the
     // chain can follow. A forward to >= 2 distinct children is a fan-out (not
     // a single drilling line); abstain to stay high-confidence.
@@ -454,7 +459,7 @@ fn advance_chain_step(
     let resolved: Vec<(CompKey, &ForwardTarget)> = targets
         .iter()
         .filter_map(|t| {
-            resolver
+            ctx.resolver
                 .resolve(current_key.file, &t.child_name)
                 .map(|k| (k, t))
         })
@@ -466,11 +471,11 @@ fn advance_chain_step(
         return None;
     }
     let (child_key, target) = single_child(&resolved)?;
-    if !visited.insert(child_key.clone()) {
+    if !ctx.visited.insert(child_key.clone()) {
         // Cycle: abstain.
         return None;
     }
-    let child_state = states.get(&child_key)?;
+    let child_state = ctx.states.get(&child_key)?;
     if child_state.abstain {
         return None;
     }
@@ -482,11 +487,11 @@ fn advance_chain_step(
         return None;
     };
     let role = *child_state.prop_roles.get(&child_local)?;
-    hops.push(hop_at(
+    ctx.hops.push(hop_at(
         &child_key,
         child_state.path,
         child_state.span_start,
-        line_offsets_by_file,
+        ctx.line_offsets_by_file,
     ));
     match role {
         PropRole::Consumer => Some(ChainStep::Done),
