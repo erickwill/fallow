@@ -26,6 +26,11 @@ const GITLAB_FILES: &[VendoredFile] = &[
         content: include_str!("../templates/ci/scripts/review.sh"),
         executable: true,
     },
+    VendoredFile {
+        path: "ci/scripts/gitlab_common.sh",
+        content: include_str!("../templates/ci/scripts/gitlab_common.sh"),
+        executable: true,
+    },
 ];
 
 pub struct GitlabTemplateOptions {
@@ -120,6 +125,7 @@ mod tests {
         assert!(dir.path().join("ci/gitlab-ci.yml").is_file());
         assert!(dir.path().join("ci/scripts/comment.sh").is_file());
         assert!(dir.path().join("ci/scripts/review.sh").is_file());
+        assert!(dir.path().join("ci/scripts/gitlab_common.sh").is_file());
     }
 
     #[test]
