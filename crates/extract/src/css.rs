@@ -687,44 +687,61 @@ fn scan_css_module_exports(
     is_scss: bool,
     class_filter: Option<&FxHashSet<String>>,
 ) -> Vec<ExportInfo> {
+    let masked = mask_css_module_class_candidates(source, is_scss, class_filter.is_some());
+    let mut seen = FxHashSet::default();
+    let mut exports = Vec::new();
+    for cap in CSS_CLASS_RE.captures_iter(&masked) {
+        if let Some(m) = cap.get(1) {
+            push_css_class_export(m, class_filter, &mut seen, &mut exports);
+        }
+    }
+    exports
+}
+
+fn mask_css_module_class_candidates(source: &str, is_scss: bool, has_class_filter: bool) -> String {
     let mut masked = mask_with_whitespace(source, &CSS_COMMENT_RE);
     if is_scss {
         masked = mask_with_whitespace(&masked, &SCSS_LINE_COMMENT_RE);
     }
     masked = mask_with_whitespace(&masked, &CSS_NON_SELECTOR_RE);
-    if class_filter.is_none() {
+    if !has_class_filter {
         masked = mask_with_whitespace(&masked, &CSS_AT_RULE_PRELUDE_RE);
     }
+    masked
+}
 
-    let mut seen = FxHashSet::default();
-    let mut exports = Vec::new();
-    for cap in CSS_CLASS_RE.captures_iter(&masked) {
-        if let Some(m) = cap.get(1) {
-            let class_name = m.as_str().to_string();
-            if class_filter.is_some_and(|filter| !filter.contains(&class_name)) {
-                continue;
-            }
-            if seen.insert(class_name.clone()) {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "CSS files exceeding u32::MAX bytes are not a realistic input"
-                )]
-                let span = Span::new(m.start() as u32, m.end() as u32);
-                exports.push(ExportInfo {
-                    name: ExportName::Named(class_name),
-                    local_name: None,
-                    is_type_only: false,
-                    visibility: VisibilityTag::None,
-                    expected_unused_reason: None,
-                    span,
-                    members: Vec::new(),
-                    is_side_effect_used: false,
-                    super_class: None,
-                });
-            }
-        }
+fn push_css_class_export(
+    class_match: regex::Match<'_>,
+    class_filter: Option<&FxHashSet<String>>,
+    seen: &mut FxHashSet<String>,
+    exports: &mut Vec<ExportInfo>,
+) {
+    let class_name = class_match.as_str().to_string();
+    if class_filter.is_some_and(|filter| !filter.contains(&class_name)) {
+        return;
     }
-    exports
+    if seen.insert(class_name.clone()) {
+        exports.push(css_class_export(class_name, class_match));
+    }
+}
+
+fn css_class_export(class_name: String, class_match: regex::Match<'_>) -> ExportInfo {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CSS files exceeding u32::MAX bytes are not a realistic input"
+    )]
+    let span = Span::new(class_match.start() as u32, class_match.end() as u32);
+    ExportInfo {
+        name: ExportName::Named(class_name),
+        local_name: None,
+        is_type_only: false,
+        visibility: VisibilityTag::None,
+        expected_unused_reason: None,
+        span,
+        members: Vec::new(),
+        is_side_effect_used: false,
+        super_class: None,
+    }
 }
 
 /// Build the import edges for a CSS/SCSS source: every `@import`/`@use`/etc.
