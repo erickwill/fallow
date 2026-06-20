@@ -106,8 +106,8 @@ use unused_component_prop::{find_unused_component_props, find_unused_react_props
     reason = "ADR-008 deprecates detector helpers for external callers; core orchestration still calls them internally"
 )]
 use unused_deps::{
-    find_test_only_dependencies, find_type_only_dependencies, find_unlisted_dependencies,
-    find_unresolved_imports, find_unused_dependencies,
+    UnlistedDependencyInput, find_test_only_dependencies, find_type_only_dependencies,
+    find_unlisted_dependencies, find_unresolved_imports, find_unused_dependencies,
 };
 #[expect(
     deprecated,
@@ -2256,15 +2256,15 @@ fn run_dependency_detectors(input: DependencyDetectorInput<'_>) -> AnalysisResul
     populate_unused_dependency_findings(input, pkg, &mut results);
 
     if input.config.rules.unlisted_dependencies != Severity::Off {
-        results.unlisted_dependencies = find_unlisted_dependencies(
-            input.graph,
+        results.unlisted_dependencies = find_unlisted_dependencies(UnlistedDependencyInput {
+            graph: input.graph,
             pkg,
-            input.config,
-            input.workspaces,
-            input.plugin_result,
-            input.resolved_modules,
-            input.line_offsets_by_file,
-        )
+            config: input.config,
+            workspaces: input.workspaces,
+            plugin_result: input.plugin_result,
+            resolved_modules: input.resolved_modules,
+            line_offsets_by_file: input.line_offsets_by_file,
+        })
         .into_iter()
         .map(UnlistedDependencyFinding::with_actions)
         .collect();

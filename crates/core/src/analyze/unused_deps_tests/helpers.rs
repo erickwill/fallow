@@ -26,11 +26,31 @@ pub(super) use crate::suppress::{self, Suppression, SuppressionContext};
 
 #[allow(unused_imports, reason = "shared re-export for sibling test modules")]
 pub(super) use super::super::{
-    DepCategoryConfig, LineOffsetsMap, SharedDepSets, collect_unused_for_category,
-    find_import_location, find_test_only_dependencies, find_type_only_dependencies,
-    find_unlisted_dependencies, find_unresolved_imports, find_unused_dependencies,
+    DepCategoryConfig, LineOffsetsMap, SharedDepSets, UnlistedDependencyInput,
+    collect_unused_for_category, find_import_location, find_test_only_dependencies,
+    find_type_only_dependencies, find_unresolved_imports, find_unused_dependencies,
     is_package_listed_for_file, should_skip_dependency,
 };
+
+pub(super) fn find_unlisted_dependencies(
+    graph: &ModuleGraph,
+    pkg: &PackageJson,
+    config: &ResolvedConfig,
+    workspaces: &[WorkspaceInfo],
+    plugin_result: Option<&AggregatedPluginResult>,
+    resolved_modules: &[ResolvedModule],
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) -> Vec<UnlistedDependency> {
+    super::super::find_unlisted_dependencies(UnlistedDependencyInput {
+        graph,
+        pkg,
+        config,
+        workspaces,
+        plugin_result,
+        resolved_modules,
+        line_offsets_by_file,
+    })
+}
 
 /// Build a minimal ResolvedConfig for testing.
 pub(super) fn test_config(root: PathBuf) -> ResolvedConfig {

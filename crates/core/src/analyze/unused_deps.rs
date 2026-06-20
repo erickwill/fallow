@@ -1095,16 +1095,28 @@ fn import_spans_by_file(
     import_spans_by_file
 }
 
+#[derive(Clone, Copy)]
+pub struct UnlistedDependencyInput<'a> {
+    pub graph: &'a ModuleGraph,
+    pub pkg: &'a PackageJson,
+    pub config: &'a ResolvedConfig,
+    pub workspaces: &'a [fallow_config::WorkspaceInfo],
+    pub plugin_result: Option<&'a crate::plugins::AggregatedPluginResult>,
+    pub resolved_modules: &'a [ResolvedModule],
+    pub line_offsets_by_file: &'a LineOffsetsMap<'a>,
+}
+
 /// Find dependencies used in imports but not listed in package.json.
-pub fn find_unlisted_dependencies(
-    graph: &ModuleGraph,
-    pkg: &PackageJson,
-    config: &ResolvedConfig,
-    workspaces: &[fallow_config::WorkspaceInfo],
-    plugin_result: Option<&crate::plugins::AggregatedPluginResult>,
-    resolved_modules: &[ResolvedModule],
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-) -> Vec<UnlistedDependency> {
+pub fn find_unlisted_dependencies(input: UnlistedDependencyInput<'_>) -> Vec<UnlistedDependency> {
+    let UnlistedDependencyInput {
+        graph,
+        pkg,
+        config,
+        workspaces,
+        plugin_result,
+        resolved_modules,
+        line_offsets_by_file,
+    } = input;
     let mut all_deps: FxHashSet<String> = pkg.all_dependency_names().into_iter().collect();
     if let Some(root_name) = &pkg.name {
         all_deps.insert(root_name.clone());
