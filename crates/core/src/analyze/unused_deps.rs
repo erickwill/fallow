@@ -1201,6 +1201,52 @@ struct UnlistedDependencyContextParts<'a> {
     ignore_deps: FxHashSet<&'a str>,
 }
 
+struct UnlistedDependencyPluginParts<'a> {
+    virtual_prefixes: Vec<&'a str>,
+    virtual_suffixes: Vec<&'a str>,
+    plugin_tooling: FxHashSet<&'a str>,
+    provided_dependency_rules: &'a [ProvidedDependencyRule],
+    compiled_provided_dependency_rules: Vec<CompiledProvidedDependencyRule<'a>>,
+}
+
+fn build_unlisted_dependency_plugin_parts(
+    plugin_result: Option<&crate::plugins::AggregatedPluginResult>,
+) -> UnlistedDependencyPluginParts<'_> {
+    let virtual_prefixes = plugin_result
+        .map(|pr| {
+            pr.virtual_module_prefixes
+                .iter()
+                .map(String::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let virtual_suffixes = plugin_result
+        .map(|pr| {
+            pr.virtual_package_suffixes
+                .iter()
+                .map(String::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let plugin_tooling = plugin_result
+        .map(|pr| pr.tooling_dependencies.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let provided_dependency_rules: &[ProvidedDependencyRule] =
+        plugin_result.map_or(&[], |pr| pr.provided_dependencies.as_slice());
+    let compiled_provided_dependency_rules =
+        compile_provided_dependency_rules(provided_dependency_rules);
+
+    UnlistedDependencyPluginParts {
+        virtual_prefixes,
+        virtual_suffixes,
+        plugin_tooling,
+        provided_dependency_rules,
+        compiled_provided_dependency_rules,
+    }
+}
+
 fn build_unlisted_dependency_context_parts<'a>(
     input: &UnlistedDependencyInput<'a>,
 ) -> UnlistedDependencyContextParts<'a> {
@@ -1211,36 +1257,7 @@ fn build_unlisted_dependency_context_parts<'a>(
 
     let ws_dep_map = workspace_dependency_map(input.workspaces, input.config);
 
-    let virtual_prefixes = input
-        .plugin_result
-        .map(|pr| {
-            pr.virtual_module_prefixes
-                .iter()
-                .map(String::as_str)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let virtual_suffixes = input
-        .plugin_result
-        .map(|pr| {
-            pr.virtual_package_suffixes
-                .iter()
-                .map(String::as_str)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let plugin_tooling = input
-        .plugin_result
-        .map(|pr| pr.tooling_dependencies.iter().map(String::as_str).collect())
-        .unwrap_or_default();
-    let provided_dependency_rules: &[ProvidedDependencyRule] = input
-        .plugin_result
-        .map_or(&[], |pr| pr.provided_dependencies.as_slice());
-    let compiled_provided_dependency_rules =
-        compile_provided_dependency_rules(provided_dependency_rules);
-
+    let plugin_parts = build_unlisted_dependency_plugin_parts(input.plugin_result);
     let import_spans_by_file = import_spans_by_file(input.resolved_modules);
 
     let ignore_deps = input
@@ -1253,11 +1270,11 @@ fn build_unlisted_dependency_context_parts<'a>(
     UnlistedDependencyContextParts {
         all_deps,
         ws_dep_map,
-        virtual_prefixes,
-        virtual_suffixes,
-        plugin_tooling,
-        provided_dependency_rules,
-        compiled_provided_dependency_rules,
+        virtual_prefixes: plugin_parts.virtual_prefixes,
+        virtual_suffixes: plugin_parts.virtual_suffixes,
+        plugin_tooling: plugin_parts.plugin_tooling,
+        provided_dependency_rules: plugin_parts.provided_dependency_rules,
+        compiled_provided_dependency_rules: plugin_parts.compiled_provided_dependency_rules,
         import_spans_by_file,
         ignore_deps,
     }
