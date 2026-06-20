@@ -344,6 +344,8 @@ fn sink_source<'t>(
     None
 }
 
+type TaintedSinkSource<'a> = (&'a str, &'a str, Option<u32>);
+
 fn matcher_admits_sink(matcher: &Matcher, sink: &SinkSite, source: Option<(&str, &str)>) -> bool {
     matcher.sink_shape == sink.sink_shape
         && matcher.arg_index == sink.arg_index
@@ -614,6 +616,51 @@ struct TaintedSinkRun<'a> {
     context: &'a TaintedSinkContext<'a>,
 }
 
+/// Skip modules that cannot produce useful tainted-sink candidates. Low-value
+/// anchors use project-relative paths, and suppression lookup goes through
+/// `SuppressionContext` so file-level markers are recorded as consumed.
+fn module_allows_tainted_sink_scan(
+    run: &TaintedSinkRun<'_>,
+    node: &ModuleNode,
+    module: &ModuleInfo,
+) -> bool {
+    if module.security_sinks.is_empty() {
+        return false;
+    }
+
+    let rel_path = node
+        .path
+        .strip_prefix(run.context.root)
+        .unwrap_or(&node.path);
+    if is_low_value_anchor(rel_path) {
+        return false;
+    }
+
+    !run.suppressions
+        .is_file_suppressed(node.file_id, IssueKind::SecuritySink)
+}
+
+fn match_tainted_sink<'a>(
+    run: &TaintedSinkRun<'_>,
+    module: &ModuleInfo,
+    sink: &SinkSite,
+    tainted_locals: &FxHashMap<&str, (&'a str, &'a str, u32)>,
+) -> Option<(&'static Matcher, Option<TaintedSinkSource<'a>>)> {
+    let source = sink_source(
+        sink,
+        tainted_locals,
+        run.declared_deps,
+        run.context.request_receivers,
+    );
+    let source_id = source.map(|(id, title, _)| (id, title));
+    let matcher = run.active.iter().copied().find(|m| {
+        matcher_admits_sink(m, sink, source_id)
+            && provenance_satisfied(m, module, &sink.callee_path)
+    })?;
+
+    Some((matcher, source))
+}
+
 /// Match every sink in one module against the active catalogue and push a
 /// finding per admitted, non-sanitized, non-suppressed sink. Low-value-anchor
 /// and file-level-suppressed modules are skipped wholesale.
@@ -623,31 +670,8 @@ fn collect_module_tainted_sinks(
     module: &ModuleInfo,
     findings: &mut Vec<SecurityFinding>,
 ) {
-    if module.security_sinks.is_empty() {
-        return;
-    }
-    // Skip test / spec / story / fixture files and tooling config files
-    // (`vite.config.ts`, `jest.config.js`, etc.). A sink there is low-value
-    // noise: build configs run at build time and test files exercise code
-    // with synthetic inputs, neither is an attacker-reachable surface. This
-    // mirrors the production-mode dead-code exclusion. Matching runs on the
-    // PROJECT-RELATIVE path so the `**/tests/**` glob does not catch every
-    // file when the project itself lives under a `tests/` directory.
-    let rel_path = node
-        .path
-        .strip_prefix(run.context.root)
-        .unwrap_or(&node.path);
-    if is_low_value_anchor(rel_path) {
-        return;
-    }
     let file_id = node.file_id;
-    // File-level suppression opts the whole file out. Routed through the
-    // SuppressionContext so the marker is recorded as consumed (otherwise a
-    // working suppression would later be flagged stale).
-    if run
-        .suppressions
-        .is_file_suppressed(file_id, IssueKind::SecuritySink)
-    {
+    if !module_allows_tainted_sink_scan(run, node, module) {
         return;
     }
 
@@ -660,19 +684,7 @@ fn collect_module_tainted_sinks(
     );
 
     for sink in &module.security_sinks {
-        let source = sink_source(
-            sink,
-            &tainted_locals,
-            run.declared_deps,
-            run.context.request_receivers,
-        );
-        // The matcher gate only needs (id, title); the optional source-read
-        // span (third element) anchors the trace and is handled below.
-        let source_id = source.map(|(id, title, _)| (id, title));
-        let Some(matcher) = run.active.iter().copied().find(|m| {
-            matcher_admits_sink(m, sink, source_id)
-                && provenance_satisfied(m, module, &sink.callee_path)
-        }) else {
+        let Some((matcher, source)) = match_tainted_sink(run, module, sink, &tainted_locals) else {
             continue;
         };
 
