@@ -412,74 +412,64 @@ fn compute_coupling_concentration(scores: &[FileHealthScore]) -> (Option<u32>, O
 /// Missing metrics (from pipelines that didn't run) don't penalize.
 /// `total_files` is used to normalize the hotspot count penalty.
 pub fn compute_health_score(vs: &VitalSigns, total_files: usize) -> HealthScore {
-    let mut score = 100.0_f64;
-
-    let dead_files_penalty = vs.dead_file_pct.map(|pct| round1((pct * 0.2).min(15.0)));
-    subtract_optional_penalty(&mut score, dead_files_penalty);
-
-    let dead_exports_penalty = vs.dead_export_pct.map(|pct| round1((pct * 0.2).min(15.0)));
-    subtract_optional_penalty(&mut score, dead_exports_penalty);
-
-    let complexity_penalty = complexity_penalty(vs);
-    score -= complexity_penalty;
-
-    let p90_penalty = p90_complexity_penalty(vs);
-    score -= p90_penalty;
-
-    let maintainability_penalty = maintainability_penalty(vs);
-    subtract_optional_penalty(&mut score, maintainability_penalty);
-
-    let hotspot_penalty = hotspot_penalty(vs, total_files);
-    subtract_optional_penalty(&mut score, hotspot_penalty);
-
-    let unused_deps_penalty =
-        dependency_count_penalty(vs.unused_deps_per_k_files, vs.unused_dep_count, 25.0, 10.0);
-    subtract_optional_penalty(&mut score, unused_deps_penalty);
-
-    let circular_deps_penalty = dependency_count_penalty(
-        vs.circular_deps_per_k_files,
-        vs.circular_dep_count,
-        25.0,
-        10.0,
-    );
-    subtract_optional_penalty(&mut score, circular_deps_penalty);
-
-    let unit_size_penalty = unit_size_penalty(vs);
-    subtract_optional_penalty(&mut score, unit_size_penalty);
-
-    let coupling_penalty = coupling_penalty(vs);
-    subtract_optional_penalty(&mut score, coupling_penalty);
-
-    let duplication_penalty = vs
-        .duplication_pct
-        .map(|dp| round1((dp - 5.0).clamp(0.0, 10.0)));
-    subtract_optional_penalty(&mut score, duplication_penalty);
-
-    let prop_drilling_penalty = prop_drilling_penalty(vs);
-    subtract_optional_penalty(&mut score, prop_drilling_penalty);
-
-    let score = round1(score).clamp(0.0, 100.0);
+    let penalties = compute_health_score_penalties(vs, total_files);
+    let score = apply_health_score_penalties(&penalties);
     let grade = letter_grade(score);
 
     HealthScore {
         formula_version: HEALTH_SCORE_FORMULA_VERSION,
         score,
         grade,
-        penalties: HealthScorePenalties {
-            dead_files: dead_files_penalty,
-            dead_exports: dead_exports_penalty,
-            complexity: complexity_penalty,
-            p90_complexity: p90_penalty,
-            maintainability: maintainability_penalty,
-            hotspots: hotspot_penalty,
-            unused_deps: unused_deps_penalty,
-            circular_deps: circular_deps_penalty,
-            unit_size: unit_size_penalty,
-            coupling: coupling_penalty,
-            duplication: duplication_penalty,
-            prop_drilling: prop_drilling_penalty,
-        },
+        penalties,
     }
+}
+
+fn compute_health_score_penalties(vs: &VitalSigns, total_files: usize) -> HealthScorePenalties {
+    HealthScorePenalties {
+        dead_files: vs.dead_file_pct.map(|pct| round1((pct * 0.2).min(15.0))),
+        dead_exports: vs.dead_export_pct.map(|pct| round1((pct * 0.2).min(15.0))),
+        complexity: complexity_penalty(vs),
+        p90_complexity: p90_complexity_penalty(vs),
+        maintainability: maintainability_penalty(vs),
+        hotspots: hotspot_penalty(vs, total_files),
+        unused_deps: dependency_count_penalty(
+            vs.unused_deps_per_k_files,
+            vs.unused_dep_count,
+            25.0,
+            10.0,
+        ),
+        circular_deps: dependency_count_penalty(
+            vs.circular_deps_per_k_files,
+            vs.circular_dep_count,
+            25.0,
+            10.0,
+        ),
+        unit_size: unit_size_penalty(vs),
+        coupling: coupling_penalty(vs),
+        duplication: vs
+            .duplication_pct
+            .map(|dp| round1((dp - 5.0).clamp(0.0, 10.0))),
+        prop_drilling: prop_drilling_penalty(vs),
+    }
+}
+
+fn apply_health_score_penalties(penalties: &HealthScorePenalties) -> f64 {
+    let mut score = 100.0_f64;
+
+    subtract_optional_penalty(&mut score, penalties.dead_files);
+    subtract_optional_penalty(&mut score, penalties.dead_exports);
+    score -= penalties.complexity;
+    score -= penalties.p90_complexity;
+    subtract_optional_penalty(&mut score, penalties.maintainability);
+    subtract_optional_penalty(&mut score, penalties.hotspots);
+    subtract_optional_penalty(&mut score, penalties.unused_deps);
+    subtract_optional_penalty(&mut score, penalties.circular_deps);
+    subtract_optional_penalty(&mut score, penalties.unit_size);
+    subtract_optional_penalty(&mut score, penalties.coupling);
+    subtract_optional_penalty(&mut score, penalties.duplication);
+    subtract_optional_penalty(&mut score, penalties.prop_drilling);
+
+    round1(score).clamp(0.0, 100.0)
 }
 
 /// Small capped penalty for prop-drilling chains, sized like the coupling
