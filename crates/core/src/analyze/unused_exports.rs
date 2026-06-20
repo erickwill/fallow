@@ -509,38 +509,10 @@ fn unused_export_for_module(
     ctx: &UnusedExportModuleContext<'_>,
     match_ctx: UnusedExportMatchContext<'_>,
 ) -> Option<UnusedExport> {
-    let UnusedExportMatchContext {
-        same_file_used_exports,
-        re_export_names,
-        matching_ignore,
-        matching_plugin,
-        stale_expected_unused,
-    } = match_ctx;
-
-    let has_cross_file_ref = export_has_reachable_reference(ctx.graph, module, export);
-    let is_referenced = has_cross_file_ref || (module.is_reachable() && export.is_side_effect_used);
-    if matches!(
-        export.visibility,
-        fallow_types::extract::VisibilityTag::ExpectedUnused
-    ) {
-        record_expected_unused_stale(module, export, ctx, is_referenced, stale_expected_unused);
-        return None;
-    }
-
-    if export.visibility.suppresses_unused() || is_referenced {
-        return None;
-    }
-
+    let mut match_ctx = match_ctx;
     let export_str = export.name.to_string();
-    if ctx
-        .config
-        .ignore_exports_used_in_file
-        .suppresses(export.is_type_only)
-        && same_file_used_exports.contains(export_str.as_str())
-    {
-        return None;
-    }
-    if is_export_ignored(&export_str, matching_ignore, matching_plugin) {
+
+    if unused_export_candidate_is_skipped(module, export, ctx, &export_str, &mut match_ctx) {
         return None;
     }
 
@@ -555,7 +527,7 @@ fn unused_export_for_module(
         return None;
     }
 
-    let is_re_export = re_export_names.contains(export_str.as_str());
+    let is_re_export = match_ctx.re_export_names.contains(export_str.as_str());
     Some(build_unused_export(
         module,
         export,
@@ -564,6 +536,49 @@ fn unused_export_for_module(
         col,
         is_re_export,
     ))
+}
+
+fn unused_export_candidate_is_skipped(
+    module: &ModuleNode,
+    export: &ExportSymbol,
+    ctx: &UnusedExportModuleContext<'_>,
+    export_str: &str,
+    match_ctx: &mut UnusedExportMatchContext<'_>,
+) -> bool {
+    let has_cross_file_ref = export_has_reachable_reference(ctx.graph, module, export);
+    let is_referenced = has_cross_file_ref || (module.is_reachable() && export.is_side_effect_used);
+    if matches!(
+        export.visibility,
+        fallow_types::extract::VisibilityTag::ExpectedUnused
+    ) {
+        record_expected_unused_stale(
+            module,
+            export,
+            ctx,
+            is_referenced,
+            match_ctx.stale_expected_unused,
+        );
+        return true;
+    }
+
+    if export.visibility.suppresses_unused() || is_referenced {
+        return true;
+    }
+
+    if ctx
+        .config
+        .ignore_exports_used_in_file
+        .suppresses(export.is_type_only)
+        && match_ctx.same_file_used_exports.contains(export_str)
+    {
+        return true;
+    }
+
+    is_export_ignored(
+        export_str,
+        match_ctx.matching_ignore,
+        match_ctx.matching_plugin,
+    )
 }
 
 fn unused_export_suppressed(
