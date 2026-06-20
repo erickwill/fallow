@@ -451,6 +451,26 @@ pub fn find_unrendered_angular_components(
     // point (an Angular library surface) is rendered by a downstream consumer.
     let public_api = public_api_reexported_files(graph, public_api_entry_points);
 
+    collect_unrendered_angular_component_findings(
+        graph,
+        &modules_by_id,
+        &public_api,
+        public_api_entry_points,
+        &signals,
+        line_offsets_by_file,
+        suppressions,
+    )
+}
+
+fn collect_unrendered_angular_component_findings(
+    graph: &ModuleGraph,
+    modules_by_id: &FxHashMap<FileId, &ModuleInfo>,
+    public_api: &FxHashSet<FileId>,
+    public_api_entry_points: &FxHashSet<FileId>,
+    signals: &AngularRenderSignals<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+    suppressions: &SuppressionContext<'_>,
+) -> Vec<UnrenderedComponent> {
     // Pass 2: emit.
     //
     // Unlike the Vue/Svelte arm, an entry-point component is NOT skipped here: the
@@ -461,18 +481,15 @@ pub fn find_unrendered_angular_components(
     // instead. A component not reachable at all is left to `unused-file`.
     let mut findings = Vec::new();
     for node in &graph.modules {
-        let Some(module) = angular_component_scan_target(
-            node,
-            &modules_by_id,
-            &public_api,
-            public_api_entry_points,
-        ) else {
+        let Some(module) =
+            angular_component_scan_target(node, modules_by_id, public_api, public_api_entry_points)
+        else {
             continue;
         };
         emit_angular_component_findings(
             node,
             module,
-            &signals,
+            signals,
             line_offsets_by_file,
             suppressions,
             &mut findings,
