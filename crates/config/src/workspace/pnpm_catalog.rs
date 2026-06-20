@@ -94,54 +94,78 @@ pub fn parse_pnpm_catalog_data(source: &str) -> PnpmCatalogData {
     let mut catalogs = Vec::new();
     let mut empty_named_catalog_groups = Vec::new();
 
-    if let Some(default_value) = mapping.get("catalog")
-        && let Some(default_map) = default_value.as_mapping()
-    {
-        let entries = collect_entries(default_map, &line_index, "default");
-        if !entries.is_empty() {
-            catalogs.push(PnpmCatalog {
-                name: "default".to_string(),
-                entries,
-            });
-        }
-    }
-
-    if let Some(named_value) = mapping.get("catalogs")
-        && let Some(named_map) = named_value.as_mapping()
-    {
-        for (name_value, catalog_value) in named_map {
-            let Some(name) = name_value.as_str() else {
-                continue;
-            };
-            if let Some(catalog_map) = catalog_value.as_mapping() {
-                let entries = collect_entries(catalog_map, &line_index, name);
-                if entries.is_empty() {
-                    if let Some(line) = line_index.group_line_for(name) {
-                        empty_named_catalog_groups.push(PnpmCatalogGroup {
-                            name: name.to_string(),
-                            line,
-                        });
-                    }
-                } else {
-                    catalogs.push(PnpmCatalog {
-                        name: name.to_string(),
-                        entries,
-                    });
-                }
-            } else if catalog_value.is_null()
-                && let Some(line) = line_index.group_line_for(name)
-            {
-                empty_named_catalog_groups.push(PnpmCatalogGroup {
-                    name: name.to_string(),
-                    line,
-                });
-            }
-        }
-    }
+    collect_yaml_default_catalog(mapping.get("catalog"), &line_index, &mut catalogs);
+    collect_yaml_named_catalogs(
+        mapping.get("catalogs"),
+        &line_index,
+        &mut catalogs,
+        &mut empty_named_catalog_groups,
+    );
 
     PnpmCatalogData {
         catalogs,
         empty_named_catalog_groups,
+    }
+}
+
+/// Push the default pnpm catalog when it contains package entries.
+fn collect_yaml_default_catalog(
+    default_value: Option<&serde_yaml_ng::Value>,
+    line_index: &CatalogLineIndex,
+    catalogs: &mut Vec<PnpmCatalog>,
+) {
+    let Some(default_map) = default_value.and_then(serde_yaml_ng::Value::as_mapping) else {
+        return;
+    };
+    let entries = collect_entries(default_map, line_index, "default");
+    if !entries.is_empty() {
+        catalogs.push(PnpmCatalog {
+            name: "default".to_string(),
+            entries,
+        });
+    }
+}
+
+/// Split named pnpm `catalogs:` entries into populated catalogs and empty groups.
+fn collect_yaml_named_catalogs(
+    named_value: Option<&serde_yaml_ng::Value>,
+    line_index: &CatalogLineIndex,
+    catalogs: &mut Vec<PnpmCatalog>,
+    empty_named_catalog_groups: &mut Vec<PnpmCatalogGroup>,
+) {
+    let Some(named_map) = named_value.and_then(serde_yaml_ng::Value::as_mapping) else {
+        return;
+    };
+    for (name_value, catalog_value) in named_map {
+        let Some(name) = name_value.as_str() else {
+            continue;
+        };
+        if let Some(catalog_map) = catalog_value.as_mapping() {
+            let entries = collect_entries(catalog_map, line_index, name);
+            if entries.is_empty() {
+                push_yaml_empty_catalog_group(name, line_index, empty_named_catalog_groups);
+            } else {
+                catalogs.push(PnpmCatalog {
+                    name: name.to_string(),
+                    entries,
+                });
+            }
+        } else if catalog_value.is_null() {
+            push_yaml_empty_catalog_group(name, line_index, empty_named_catalog_groups);
+        }
+    }
+}
+
+fn push_yaml_empty_catalog_group(
+    name: &str,
+    line_index: &CatalogLineIndex,
+    empty_named_catalog_groups: &mut Vec<PnpmCatalogGroup>,
+) {
+    if let Some(line) = line_index.group_line_for(name) {
+        empty_named_catalog_groups.push(PnpmCatalogGroup {
+            name: name.to_string(),
+            line,
+        });
     }
 }
 
