@@ -994,9 +994,19 @@ struct FrameworkSpecificFindingsInput<'a> {
 }
 
 fn populate_framework_specific_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
+    populate_client_boundary_findings(input);
+    populate_component_contract_findings(input);
+    populate_react_health_findings(input);
+    populate_nextjs_findings(input);
+}
+
+fn populate_client_boundary_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     populate_invalid_client_export_findings(input);
     populate_mixed_client_server_barrel_findings(input);
     populate_misplaced_directive_findings(input);
+}
+
+fn populate_component_contract_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     populate_unprovided_inject_findings(input);
     populate_unrendered_component_findings(input);
     populate_unused_component_prop_findings(input);
@@ -1033,10 +1043,16 @@ fn populate_framework_specific_findings(input: &mut FrameworkSpecificFindingsInp
         input.results,
     );
     populate_unused_load_data_key_findings(input);
+}
+
+fn populate_react_health_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     populate_prop_drilling_findings(input);
     populate_thin_wrapper_findings(input);
     populate_render_fan_in(input);
     populate_duplicate_prop_shape_findings(input);
+}
+
+fn populate_nextjs_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     populate_nextjs_route_tree_findings(
         input.graph,
         input.config,
