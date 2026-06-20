@@ -176,6 +176,16 @@ struct NamespaceCreditInput<'a> {
     pending: &'a mut Vec<PendingCredit>,
 }
 
+struct ConsumerCreditInput<'a> {
+    graph: &'a ModuleGraph,
+    consumer: &'a ResolvedModule,
+    import: &'a crate::resolve::ResolvedImport,
+    reachable: &'a FxHashSet<(FileId, String)>,
+    prefix_match: &'a str,
+    target_module_idx: usize,
+    pending: &'a mut Vec<PendingCredit>,
+}
+
 fn collect_credits_for_alias(input: NamespaceCreditInput<'_>) {
     let NamespaceCreditInput {
         graph,
@@ -192,15 +202,15 @@ fn collect_credits_for_alias(input: NamespaceCreditInput<'_>) {
             continue;
         }
         for import in &consumer.resolved_imports {
-            collect_credits_for_consumer_import(
+            collect_credits_for_consumer_import(&mut ConsumerCreditInput {
                 graph,
                 consumer,
                 import,
                 reachable,
-                &prefix_match,
+                prefix_match: &prefix_match,
                 target_module_idx,
                 pending,
-            );
+            });
         }
     }
 }
@@ -208,15 +218,15 @@ fn collect_credits_for_alias(input: NamespaceCreditInput<'_>) {
 /// Collect credits for one consumer import that resolves to a reachable alias
 /// barrel: match `<local>.<suffix>` member accesses and walk chained
 /// `export * as N` re-exports on the alias target side.
-fn collect_credits_for_consumer_import(
-    graph: &ModuleGraph,
-    consumer: &ResolvedModule,
-    import: &crate::resolve::ResolvedImport,
-    reachable: &FxHashSet<(FileId, String)>,
-    prefix_match: &str,
-    target_module_idx: usize,
-    pending: &mut Vec<PendingCredit>,
-) {
+fn collect_credits_for_consumer_import(input: &mut ConsumerCreditInput<'_>) {
+    let graph = input.graph;
+    let consumer = input.consumer;
+    let import = input.import;
+    let reachable = input.reachable;
+    let prefix_match = input.prefix_match;
+    let target_module_idx = input.target_module_idx;
+    let pending = &mut *input.pending;
+
     let Some(target_file_id) = import.target.internal_file_id() else {
         return;
     };
