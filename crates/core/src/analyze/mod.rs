@@ -1786,55 +1786,60 @@ fn run_boundary_cycle_and_usage_detectors(
     input: DeadCodeDetectorInput<'_>,
 ) -> BoundaryCycleUsageResults {
     rayon::join(
+        || run_boundary_detectors(input),
+        || run_cycle_and_usage_detectors(input),
+    )
+}
+
+fn run_boundary_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> (Vec<BoundaryViolationFinding>, BoundaryAuxResults) {
+    rayon::join(
         || {
-            rayon::join(
-                || {
-                    run_boundary_violation_detector(
-                        input.graph,
-                        input.config,
-                        input.suppressions,
-                        input.line_offsets_by_file,
-                    )
-                },
-                || {
-                    run_boundary_aux_detectors(
-                        input.graph,
-                        input.modules,
-                        input.config,
-                        input.declared_deps,
-                        input.suppressions,
-                        input.line_offsets_by_file,
-                    )
-                },
+            run_boundary_violation_detector(
+                input.graph,
+                input.config,
+                input.suppressions,
+                input.line_offsets_by_file,
+            )
+        },
+        || {
+            run_boundary_aux_detectors(
+                input.graph,
+                input.modules,
+                input.config,
+                input.declared_deps,
+                input.suppressions,
+                input.line_offsets_by_file,
+            )
+        },
+    )
+}
+
+fn run_cycle_and_usage_detectors(
+    input: DeadCodeDetectorInput<'_>,
+) -> (
+    Vec<CircularDependencyFinding>,
+    (Vec<ReExportCycleFinding>, Vec<crate::results::ExportUsage>),
+) {
+    rayon::join(
+        || {
+            run_circular_dep_detector(
+                input.graph,
+                input.config,
+                input.line_offsets_by_file,
+                input.suppressions,
+                input.workspaces,
             )
         },
         || {
             rayon::join(
+                || run_re_export_cycle_detector(input.graph, input.config, input.suppressions),
                 || {
-                    run_circular_dep_detector(
+                    run_export_usages_collector(
                         input.graph,
-                        input.config,
                         input.line_offsets_by_file,
-                        input.suppressions,
-                        input.workspaces,
-                    )
-                },
-                || {
-                    rayon::join(
-                        || {
-                            run_re_export_cycle_detector(
-                                input.graph,
-                                input.config,
-                                input.suppressions,
-                            )
-                        },
-                        || {
-                            run_export_usages_collector(
-                                input.graph,
-                                input.line_offsets_by_file,
-                                input.collect_usages,
-                            )
-                        },
+                        input.collect_usages,
                     )
                 },
             )
