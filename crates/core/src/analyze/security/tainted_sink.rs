@@ -454,18 +454,26 @@ fn source_read_location(
     }
 }
 
+struct TaintedSinkFindingInput<'a> {
+    matcher: &'a Matcher,
+    sink: &'a SinkSite,
+    node: &'a ModuleNode,
+    source: Option<(&'a str, &'a str, Option<u32>)>,
+    sink_line_col: (u32, u32),
+    line_offsets_by_file: &'a LineOffsetsMap<'a>,
+    file_id: FileId,
+}
+
 /// Build a `SecurityFinding` for one matched sink: evidence, source-read anchor,
 /// network destination, candidate slots, and the single sink trace hop.
-fn build_tainted_sink_finding(
-    matcher: &Matcher,
-    sink: &SinkSite,
-    node: &ModuleNode,
-    source: Option<(&str, &str, Option<u32>)>,
-    sink_line_col: (u32, u32),
-    line_offsets_by_file: &LineOffsetsMap<'_>,
-    file_id: FileId,
-) -> SecurityFinding {
-    let (line, col) = sink_line_col;
+fn build_tainted_sink_finding(input: &TaintedSinkFindingInput<'_>) -> SecurityFinding {
+    let matcher = input.matcher;
+    let sink = input.sink;
+    let node = input.node;
+    let source = input.source;
+    let (line, col) = input.sink_line_col;
+    let line_offsets_by_file = input.line_offsets_by_file;
+    let file_id = input.file_id;
     let url_shape = candidate_url_shape(&matcher.id, sink);
     let source_backed = source.is_some();
     let evidence =
@@ -681,15 +689,15 @@ fn collect_module_tainted_sinks(
             continue;
         }
 
-        findings.push(build_tainted_sink_finding(
+        findings.push(build_tainted_sink_finding(&TaintedSinkFindingInput {
             matcher,
             sink,
             node,
             source,
-            (line, col),
-            run.line_offsets_by_file,
+            sink_line_col: (line, col),
+            line_offsets_by_file: run.line_offsets_by_file,
             file_id,
-        ));
+        }));
     }
 }
 
