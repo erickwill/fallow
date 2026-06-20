@@ -1329,34 +1329,42 @@ pub(super) fn resolve_specifier(
         }
     };
 
-    if let Some(result) = try_storybook_static_dir_mapping(ctx, from_file, specifier) {
+    if let Some(result) = try_pre_file_resolution_fallbacks(ctx, from_file, specifier, from_style) {
         return result;
+    }
+
+    let flags = FailedSpecifierFlags::new(ctx, specifier);
+    resolve_file_or_failed(ctx, from_file, specifier, from_style, flags)
+}
+
+fn try_pre_file_resolution_fallbacks(
+    ctx: &ResolveContext<'_>,
+    from_file: &Path,
+    specifier: &str,
+    from_style: bool,
+) -> Option<ResolveResult> {
+    if let Some(result) = try_storybook_static_dir_mapping(ctx, from_file, specifier) {
+        return Some(result);
     }
 
     if let Some(result) = try_root_relative_specifier(ctx, from_file, specifier) {
-        return result;
+        return Some(result);
     }
 
     if from_style && let Some(result) = try_scss_fallbacks(ctx, from_file, specifier, true) {
-        return result;
+        return Some(result);
     }
 
-    let flags = FailedSpecifierFlags {
-        used_tsconfig_fallback: false,
-        is_bare: is_bare_specifier(specifier),
-        is_alias: is_path_alias(specifier),
-        matches_plugin_alias: ctx
-            .path_aliases
-            .iter()
-            .any(|(prefix, _)| specifier_matches_alias_prefix(specifier, prefix)),
-    };
+    try_style_condition_package_resolution(ctx, from_file, specifier, from_style)
+}
 
-    if let Some(result) =
-        try_style_condition_package_resolution(ctx, from_file, specifier, from_style)
-    {
-        return result;
-    }
-
+fn resolve_file_or_failed(
+    ctx: &ResolveContext<'_>,
+    from_file: &Path,
+    specifier: &str,
+    from_style: bool,
+    flags: FailedSpecifierFlags,
+) -> ResolveResult {
     match resolve_file_with_tsconfig_fallback(ctx, from_file, specifier) {
         ResolveFileAttempt::Resolved {
             resolution: resolved,
@@ -1435,6 +1443,20 @@ struct FailedSpecifierFlags {
     is_bare: bool,
     is_alias: bool,
     matches_plugin_alias: bool,
+}
+
+impl FailedSpecifierFlags {
+    fn new(ctx: &ResolveContext<'_>, specifier: &str) -> Self {
+        Self {
+            used_tsconfig_fallback: false,
+            is_bare: is_bare_specifier(specifier),
+            is_alias: is_path_alias(specifier),
+            matches_plugin_alias: ctx
+                .path_aliases
+                .iter()
+                .any(|(prefix, _)| specifier_matches_alias_prefix(specifier, prefix)),
+        }
+    }
 }
 
 fn resolve_failed_specifier(
