@@ -74,7 +74,9 @@ use fallow_types::output_dead_code::{
     UnusedTypeFinding,
 };
 
-use crate::results::{AnalysisResults, CircularDependency, CircularDependencyEdge};
+use crate::results::{
+    AnalysisResults, CircularDependency, CircularDependencyEdge, StaleSuppression, UnusedExport,
+};
 use crate::suppress::{IssueKind, SuppressionContext};
 
 use duplicate_prop_shape::find_duplicate_prop_shapes;
@@ -2182,10 +2184,7 @@ fn run_export_detectors(
     line_offsets_by_file: &LineOffsetsMap<'_>,
 ) -> AnalysisResults {
     let mut results = AnalysisResults::default();
-    if config.rules.unused_exports == Severity::Off
-        && config.rules.unused_types == Severity::Off
-        && config.rules.private_type_leaks == Severity::Off
-    {
+    if export_rules_are_disabled(config) {
         return results;
     }
 
@@ -2197,27 +2196,81 @@ fn run_export_detectors(
         suppressions,
         line_offsets_by_file,
     );
-    if config.rules.unused_exports != Severity::Off {
-        results.unused_exports = exports
+    populate_unused_export_findings(&mut results, config, exports);
+    populate_unused_type_findings(&mut results, config, graph, modules, types);
+    populate_private_type_leak_findings(
+        &mut results,
+        graph,
+        modules,
+        config,
+        suppressions,
+        line_offsets_by_file,
+    );
+    populate_expected_stale_suppressions(&mut results, config, stale_expected);
+    results
+}
+
+fn export_rules_are_disabled(config: &ResolvedConfig) -> bool {
+    config.rules.unused_exports == Severity::Off
+        && config.rules.unused_types == Severity::Off
+        && config.rules.private_type_leaks == Severity::Off
+}
+
+fn populate_unused_export_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    exports: Vec<UnusedExport>,
+) {
+    if config.rules.unused_exports == Severity::Off {
+        return;
+    }
+    results.unused_exports = exports
+        .into_iter()
+        .map(UnusedExportFinding::with_actions)
+        .collect();
+}
+
+fn populate_unused_type_findings(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    types: Vec<UnusedExport>,
+) {
+    if config.rules.unused_types == Severity::Off {
+        return;
+    }
+    let mut typed = types;
+    suppress_signature_backing_types(&mut typed, graph, modules);
+    results.unused_types = typed
+        .into_iter()
+        .map(UnusedTypeFinding::with_actions)
+        .collect();
+}
+
+fn populate_private_type_leak_findings(
+    results: &mut AnalysisResults,
+    graph: &ModuleGraph,
+    modules: &[ModuleInfo],
+    config: &ResolvedConfig,
+    suppressions: &crate::suppress::SuppressionContext<'_>,
+    line_offsets_by_file: &LineOffsetsMap<'_>,
+) {
+    if config.rules.private_type_leaks == Severity::Off {
+        return;
+    }
+    results.private_type_leaks =
+        find_private_type_leaks(graph, modules, config, suppressions, line_offsets_by_file)
             .into_iter()
-            .map(UnusedExportFinding::with_actions)
+            .map(PrivateTypeLeakFinding::with_actions)
             .collect();
-    }
-    if config.rules.unused_types != Severity::Off {
-        let mut typed = types;
-        suppress_signature_backing_types(&mut typed, graph, modules);
-        results.unused_types = typed
-            .into_iter()
-            .map(UnusedTypeFinding::with_actions)
-            .collect();
-    }
-    if config.rules.private_type_leaks != Severity::Off {
-        results.private_type_leaks =
-            find_private_type_leaks(graph, modules, config, suppressions, line_offsets_by_file)
-                .into_iter()
-                .map(PrivateTypeLeakFinding::with_actions)
-                .collect();
-    }
+}
+
+fn populate_expected_stale_suppressions(
+    results: &mut AnalysisResults,
+    config: &ResolvedConfig,
+    stale_expected: Vec<StaleSuppression>,
+) {
     if config.rules.stale_suppressions != Severity::Off {
         results.stale_suppressions.extend(stale_expected);
     } else if config.rules.require_suppression_reason != Severity::Off {
@@ -2225,7 +2278,6 @@ fn run_export_detectors(
             .stale_suppressions
             .extend(stale_expected.into_iter().filter(|s| s.missing_reason));
     }
-    results
 }
 
 #[derive(Clone, Copy)]
