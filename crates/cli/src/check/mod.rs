@@ -587,61 +587,22 @@ fn resolve_check_regression(
     regression::compare_check_regression(results, &opts.regression_opts, config_baseline)
 }
 
-/// Run analysis, filtering, and baseline handling. Returns results without printing.
-pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
-    let start = Instant::now();
-
-    let config = prepare_check_config(opts)?;
-
-    let ws_roots = filtering::resolve_workspace_scope(
-        opts.root,
-        opts.workspace,
-        opts.changed_workspaces,
-        opts.output,
-    )?;
-
-    let changed_files: Option<rustc_hash::FxHashSet<std::path::PathBuf>> = opts
-        .changed_since
-        .and_then(|git_ref| filtering::get_changed_files(opts.root, git_ref));
-
+fn complete_check_execution(
+    opts: &CheckOptions<'_>,
+    config: ResolvedConfig,
+    data: CheckAnalysisData,
+    elapsed: Duration,
+    regression_outcome: Option<RegressionOutcome>,
+    baseline_matched: Option<(usize, usize)>,
+) -> CheckResult {
     let CheckAnalysisData {
-        mut results,
+        results,
         trace_graph,
         trace_timings,
         retained_modules,
         retained_files,
         script_used_packages,
-    } = run_check_analysis(opts, &config)?;
-    let elapsed = start.elapsed();
-
-    handle_trace_side_effects(
-        opts,
-        &config,
-        trace_graph.as_ref(),
-        trace_timings.as_ref(),
-        &script_used_packages,
-    )?;
-
-    apply_scope_filters(
-        opts,
-        &mut results,
-        ws_roots.as_ref(),
-        changed_files.as_ref(),
-    );
-    apply_file_filter(opts, &mut results);
-
-    apply_rules_and_filters(opts, &config, &mut results);
-
-    let baseline_matched = handle_baseline(
-        &mut results,
-        opts.save_baseline,
-        opts.baseline,
-        &config.root,
-        opts.quiet,
-        opts.output,
-    )?;
-
-    let regression_outcome = resolve_check_regression(opts, &config, &results)?;
+    } = data;
 
     if let Some(sarif_path) = opts.sarif_file {
         output::write_sarif_file(&results, &config, sarif_path, opts.quiet);
@@ -661,7 +622,7 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
     // the exit-code gate. Exact counts are bucketed before serialization.
     crate::telemetry::note_result_count(results.total_issues());
 
-    Ok(CheckResult {
+    CheckResult {
         results,
         config,
         config_fixable,
@@ -672,7 +633,66 @@ pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
         baseline_matched,
         timings: trace_timings,
         shared_parse,
-    })
+    }
+}
+
+/// Run analysis, filtering, and baseline handling. Returns results without printing.
+pub fn execute_check(opts: &CheckOptions<'_>) -> Result<CheckResult, ExitCode> {
+    let start = Instant::now();
+
+    let config = prepare_check_config(opts)?;
+
+    let ws_roots = filtering::resolve_workspace_scope(
+        opts.root,
+        opts.workspace,
+        opts.changed_workspaces,
+        opts.output,
+    )?;
+
+    let changed_files: Option<rustc_hash::FxHashSet<std::path::PathBuf>> = opts
+        .changed_since
+        .and_then(|git_ref| filtering::get_changed_files(opts.root, git_ref));
+
+    let mut data = run_check_analysis(opts, &config)?;
+    let elapsed = start.elapsed();
+
+    handle_trace_side_effects(
+        opts,
+        &config,
+        data.trace_graph.as_ref(),
+        data.trace_timings.as_ref(),
+        &data.script_used_packages,
+    )?;
+
+    apply_scope_filters(
+        opts,
+        &mut data.results,
+        ws_roots.as_ref(),
+        changed_files.as_ref(),
+    );
+    apply_file_filter(opts, &mut data.results);
+
+    apply_rules_and_filters(opts, &config, &mut data.results);
+
+    let baseline_matched = handle_baseline(
+        &mut data.results,
+        opts.save_baseline,
+        opts.baseline,
+        &config.root,
+        opts.quiet,
+        opts.output,
+    )?;
+
+    let regression_outcome = resolve_check_regression(opts, &config, &data.results)?;
+
+    Ok(complete_check_execution(
+        opts,
+        config,
+        data,
+        elapsed,
+        regression_outcome,
+        baseline_matched,
+    ))
 }
 
 pub struct PrintCheckOptions {
