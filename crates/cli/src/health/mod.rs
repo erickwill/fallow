@@ -4538,34 +4538,15 @@ struct HealthAnalysisDataInput<'a> {
 fn prepare_health_analysis_data(
     input: HealthAnalysisDataInput<'_>,
 ) -> Result<HealthAnalysisData, ExitCode> {
+    let mut input = input;
     let needs_analysis_output = input.needs_file_scores || input.opts.runtime_coverage.is_some();
-    let mut shared_analysis_output = prepare_shared_analysis_output(
-        input.opts,
-        input.config,
-        input.modules,
-        input.pre_computed_analysis,
-        needs_analysis_output,
-    )?;
-    let framework_health_facts =
-        shared_analysis_output
-            .as_ref()
-            .map(|output| FrameworkHealthFacts {
-                unused_load_data_keys_global_abstain: output
-                    .results
-                    .unused_load_data_keys_global_abstain,
-            });
-    if let Some(graph) = shared_analysis_output
-        .as_ref()
-        .and_then(|output| output.graph.as_ref())
-    {
-        crate::telemetry::note_graph_structure(graph);
-    }
+    let mut shared_analysis = prepare_shared_health_analysis(&mut input, needs_analysis_output)?;
 
     let runtime_coverage = analyze_runtime_coverage(RuntimeCoverageAnalysisScope {
         opts: input.opts,
         config: input.config,
         modules: input.modules,
-        shared_analysis_output: shared_analysis_output.as_ref(),
+        shared_analysis_output: shared_analysis.output.as_ref(),
         istanbul_coverage: input.istanbul_coverage,
         file_paths: input.file_paths,
         ignore_set: input.ignore_set,
@@ -4573,11 +4554,7 @@ fn prepare_health_analysis_data(
         ws_roots: input.ws_roots,
     })?;
 
-    let precomputed_for_scores = if input.needs_file_scores {
-        shared_analysis_output.take()
-    } else {
-        None
-    };
+    let precomputed_for_scores = shared_analysis.take_for_file_scores(input.needs_file_scores);
 
     let (file_score_result, file_scores_ms, churn_fetch) = compute_file_scores_and_churn(
         FileScoresAndChurnInput {
@@ -4605,11 +4582,53 @@ fn prepare_health_analysis_data(
         score_output,
         files_scored,
         average_maintainability,
-        framework_health_facts,
+        framework_health_facts: shared_analysis.framework_health_facts,
         file_scores_ms,
         git_churn_ms,
         git_churn_cache_hit,
         churn_fetch,
+    })
+}
+
+struct PreparedSharedHealthAnalysis {
+    output: Option<fallow_core::AnalysisOutput>,
+    framework_health_facts: Option<FrameworkHealthFacts>,
+}
+
+impl PreparedSharedHealthAnalysis {
+    fn take_for_file_scores(
+        &mut self,
+        needs_file_scores: bool,
+    ) -> Option<fallow_core::AnalysisOutput> {
+        if needs_file_scores {
+            self.output.take()
+        } else {
+            None
+        }
+    }
+}
+
+fn prepare_shared_health_analysis(
+    input: &mut HealthAnalysisDataInput<'_>,
+    needs_analysis_output: bool,
+) -> Result<PreparedSharedHealthAnalysis, ExitCode> {
+    let output = prepare_shared_analysis_output(
+        input.opts,
+        input.config,
+        input.modules,
+        input.pre_computed_analysis.take(),
+        needs_analysis_output,
+    )?;
+    let framework_health_facts = output.as_ref().map(|output| FrameworkHealthFacts {
+        unused_load_data_keys_global_abstain: output.results.unused_load_data_keys_global_abstain,
+    });
+    if let Some(graph) = output.as_ref().and_then(|output| output.graph.as_ref()) {
+        crate::telemetry::note_graph_structure(graph);
+    }
+
+    Ok(PreparedSharedHealthAnalysis {
+        output,
+        framework_health_facts,
     })
 }
 
