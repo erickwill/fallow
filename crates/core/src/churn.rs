@@ -277,7 +277,7 @@ pub fn analyze_churn_from_file(path: &Path, root: &Path) -> Result<ChurnResult, 
         ));
     }
 
-    let state = churn_event_state_from_doc(doc, path, root)?;
+    let state = churn_event_state_from_doc(&doc, path, root)?;
     Ok(build_churn_result(state, false))
 }
 
@@ -286,45 +286,55 @@ pub fn analyze_churn_from_file(path: &Path, root: &Path) -> Result<ChurnResult, 
 /// Rejects empty paths and far-future (likely millisecond) timestamps; interns
 /// authors into the pool exactly as the git-log path does.
 fn churn_event_state_from_doc(
-    doc: ChurnFileDoc,
+    doc: &ChurnFileDoc,
     path: &Path,
     root: &Path,
 ) -> Result<ChurnEventState, String> {
+    let mut builder = ChurnFileImportBuilder::new(path, root, churn_file_future_limit());
+
+    for event in &doc.events {
+        builder.push_event(event)?;
+    }
+
+    Ok(builder.finish())
+}
+
+fn churn_file_future_limit() -> u64 {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let future_limit = now_secs.saturating_add(MAX_FUTURE_TIMESTAMP_SECS);
+    now_secs.saturating_add(MAX_FUTURE_TIMESTAMP_SECS)
+}
 
-    let mut files: FxHashMap<PathBuf, FileEvents> = FxHashMap::default();
-    let mut author_pool: Vec<String> = Vec::new();
-    let mut author_index: FxHashMap<String, u32> = FxHashMap::default();
+struct ChurnFileImportBuilder<'a> {
+    path: &'a Path,
+    root: &'a Path,
+    future_limit: u64,
+    files: FxHashMap<PathBuf, FileEvents>,
+    author_pool: Vec<String>,
+    author_index: FxHashMap<String, u32>,
+}
 
-    for event in doc.events {
-        let normalized = event.path.replace('\\', "/");
-        let rel = normalized.trim();
-        if rel.is_empty() {
-            return Err(format!(
-                "churn file {} has an event with an empty path",
-                path.display()
-            ));
+impl<'a> ChurnFileImportBuilder<'a> {
+    fn new(path: &'a Path, root: &'a Path, future_limit: u64) -> Self {
+        Self {
+            path,
+            root,
+            future_limit,
+            files: FxHashMap::default(),
+            author_pool: Vec::new(),
+            author_index: FxHashMap::default(),
         }
-        if event.timestamp > future_limit {
-            return Err(format!(
-                "churn file {} has event timestamp {} for \"{rel}\" more than a year in the \
-                 future; timestamps must be unix SECONDS (not milliseconds), UTC",
-                path.display(),
-                event.timestamp
-            ));
-        }
-        let abs_path = root.join(rel);
-        let author_idx = event
-            .author
-            .as_deref()
-            .map(str::trim)
-            .filter(|email| !email.is_empty())
-            .map(|email| intern_author(email, &mut author_pool, &mut author_index));
-        files
+    }
+
+    fn push_event(&mut self, event: &ChurnFileEvent) -> Result<(), String> {
+        let rel = normalize_churn_event_path(self.path, &event.path)?;
+        validate_churn_event_timestamp(self.path, event.timestamp, self.future_limit, &rel)?;
+
+        let abs_path = self.root.join(&rel);
+        let author_idx = self.intern_author(event.author.as_deref());
+        self.files
             .entry(abs_path)
             .or_insert_with(|| FileEvents { events: Vec::new() })
             .events
@@ -334,9 +344,52 @@ fn churn_event_state_from_doc(
                 lines_deleted: event.deleted,
                 author_idx,
             });
+        Ok(())
     }
 
-    Ok(ChurnEventState { files, author_pool })
+    fn intern_author(&mut self, author: Option<&str>) -> Option<u32> {
+        author
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .map(|email| intern_author(email, &mut self.author_pool, &mut self.author_index))
+    }
+
+    fn finish(self) -> ChurnEventState {
+        ChurnEventState {
+            files: self.files,
+            author_pool: self.author_pool,
+        }
+    }
+}
+
+fn normalize_churn_event_path(path: &Path, event_path: &str) -> Result<String, String> {
+    let normalized = event_path.replace('\\', "/");
+    let rel = normalized.trim();
+    if rel.is_empty() {
+        return Err(format!(
+            "churn file {} has an event with an empty path",
+            path.display()
+        ));
+    }
+    Ok(rel.to_string())
+}
+
+fn validate_churn_event_timestamp(
+    path: &Path,
+    timestamp: u64,
+    future_limit: u64,
+    rel: &str,
+) -> Result<(), String> {
+    if timestamp <= future_limit {
+        return Ok(());
+    }
+
+    Err(format!(
+        "churn file {} has event timestamp {} for \"{rel}\" more than a year in the \
+         future; timestamps must be unix SECONDS (not milliseconds), UTC",
+        path.display(),
+        timestamp
+    ))
 }
 
 /// Check if the repository is a shallow clone.
