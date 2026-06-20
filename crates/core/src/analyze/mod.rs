@@ -1239,24 +1239,15 @@ fn retain_unsuppressed_unused_component_prop_findings(
     // `// fallow-ignore-file unused-component-prop`) drops the finding. The
     // finding's `path` is the absolute graph node path, so it maps directly to a
     // FileId for the line-anchored suppression check.
-    let path_to_id: FxHashMap<&std::path::Path, FileId> = input
-        .graph
-        .modules
-        .iter()
-        .map(|node| (node.path.as_path(), node.file_id))
-        .collect();
+    let path_to_id = graph_file_ids_by_path(input.graph);
     input.results.unused_component_props.retain(|finding| {
-        let Some(&file_id) = path_to_id.get(finding.prop.path.as_path()) else {
-            return true;
-        };
-        let suppressed = input.suppressions.is_suppressed(
-            file_id,
+        !path_line_is_suppressed(
+            &path_to_id,
+            input.suppressions,
+            finding.prop.path.as_path(),
             finding.prop.line,
             IssueKind::UnusedComponentProp,
-        ) || input
-            .suppressions
-            .is_file_suppressed(file_id, IssueKind::UnusedComponentProp);
-        !suppressed
+        )
     });
 }
 
@@ -1318,27 +1309,18 @@ fn populate_prop_drilling_findings(input: &mut FrameworkSpecificFindingsInput<'_
     // `// fallow-ignore-file prop-drilling` on the source file) drops the chain.
     // The source hop's `file` is the absolute graph node path, so it maps to a
     // FileId for the line-anchored check.
-    let path_to_id: FxHashMap<&std::path::Path, FileId> = input
-        .graph
-        .modules
-        .iter()
-        .map(|node| (node.path.as_path(), node.file_id))
-        .collect();
+    let path_to_id = graph_file_ids_by_path(input.graph);
     input.results.prop_drilling_chains.retain(|finding| {
         let Some(source) = finding.chain.hops.first() else {
             return true;
         };
-        let Some(&file_id) = path_to_id.get(source.file.as_path()) else {
-            return true;
-        };
-        let suppressed =
-            input
-                .suppressions
-                .is_suppressed(file_id, source.line, IssueKind::PropDrilling)
-                || input
-                    .suppressions
-                    .is_file_suppressed(file_id, IssueKind::PropDrilling);
-        !suppressed
+        !path_line_is_suppressed(
+            &path_to_id,
+            input.suppressions,
+            source.file.as_path(),
+            source.line,
+            IssueKind::PropDrilling,
+        )
     });
 }
 
@@ -1351,6 +1333,14 @@ fn populate_thin_wrapper_findings(input: &mut FrameworkSpecificFindingsInput<'_>
     if input.config.rules.thin_wrapper == Severity::Off {
         return;
     }
+    input.results.thin_wrappers = collect_thin_wrapper_findings(input);
+
+    retain_unsuppressed_thin_wrapper_findings(input);
+}
+
+fn collect_thin_wrapper_findings(
+    input: &FrameworkSpecificFindingsInput<'_>,
+) -> Vec<ThinWrapperFinding> {
     let scan = find_thin_wrappers(
         input.graph,
         input.modules,
@@ -1367,35 +1357,27 @@ fn populate_thin_wrapper_findings(input: &mut FrameworkSpecificFindingsInput<'_>
             scan.components_scanned
         );
     }
-    input.results.thin_wrappers = scan
-        .wrappers
+    scan.wrappers
         .into_iter()
         .map(ThinWrapperFinding::with_actions)
-        .collect();
+        .collect()
+}
 
+fn retain_unsuppressed_thin_wrapper_findings(input: &mut FrameworkSpecificFindingsInput<'_>) {
     // Inline-suppression filter: a `// fallow-ignore-next-line thin-wrapper`
     // above the wrapper component definition (or a file-level
     // `// fallow-ignore-file thin-wrapper` on the wrapper's file) drops it. The
     // wrapper's `file` is the absolute graph node path, so it maps to a FileId
     // for the line-anchored check.
-    let path_to_id: FxHashMap<&std::path::Path, FileId> = input
-        .graph
-        .modules
-        .iter()
-        .map(|node| (node.path.as_path(), node.file_id))
-        .collect();
+    let path_to_id = graph_file_ids_by_path(input.graph);
     input.results.thin_wrappers.retain(|finding| {
-        let Some(&file_id) = path_to_id.get(finding.wrapper.file.as_path()) else {
-            return true;
-        };
-        let suppressed =
-            input
-                .suppressions
-                .is_suppressed(file_id, finding.wrapper.line, IssueKind::ThinWrapper)
-                || input
-                    .suppressions
-                    .is_file_suppressed(file_id, IssueKind::ThinWrapper);
-        !suppressed
+        !path_line_is_suppressed(
+            &path_to_id,
+            input.suppressions,
+            finding.wrapper.file.as_path(),
+            finding.wrapper.line,
+            IssueKind::ThinWrapper,
+        )
     });
 }
 
@@ -1442,25 +1424,38 @@ fn populate_duplicate_prop_shape_findings(input: &mut FrameworkSpecificFindingsI
     // definition or a file-level marker on the component's file drops THIS
     // member; its slot in the siblings' `sharing_components` is unaffected (the
     // roster was built at emit time).
-    let path_to_id: FxHashMap<&std::path::Path, FileId> = input
-        .graph
+    let path_to_id = graph_file_ids_by_path(input.graph);
+    input.results.duplicate_prop_shapes.retain(|finding| {
+        !path_line_is_suppressed(
+            &path_to_id,
+            input.suppressions,
+            finding.shape.file.as_path(),
+            finding.shape.line,
+            IssueKind::DuplicatePropShape,
+        )
+    });
+}
+
+fn graph_file_ids_by_path(graph: &ModuleGraph) -> FxHashMap<&std::path::Path, FileId> {
+    graph
         .modules
         .iter()
         .map(|node| (node.path.as_path(), node.file_id))
-        .collect();
-    input.results.duplicate_prop_shapes.retain(|finding| {
-        let Some(&file_id) = path_to_id.get(finding.shape.file.as_path()) else {
-            return true;
-        };
-        let suppressed = input.suppressions.is_suppressed(
-            file_id,
-            finding.shape.line,
-            IssueKind::DuplicatePropShape,
-        ) || input
-            .suppressions
-            .is_file_suppressed(file_id, IssueKind::DuplicatePropShape);
-        !suppressed
-    });
+        .collect()
+}
+
+fn path_line_is_suppressed(
+    path_to_id: &FxHashMap<&std::path::Path, FileId>,
+    suppressions: &SuppressionContext<'_>,
+    path: &std::path::Path,
+    line: u32,
+    kind: IssueKind,
+) -> bool {
+    let Some(&file_id) = path_to_id.get(path) else {
+        return false;
+    };
+    suppressions.is_suppressed(file_id, line, kind)
+        || suppressions.is_file_suppressed(file_id, kind)
 }
 
 /// Populate `unused_component_inputs` when the rule is enabled. Gated on the
