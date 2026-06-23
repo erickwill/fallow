@@ -270,6 +270,9 @@ Fallow answers those questions with deterministic, graph-based analysis and stru
 ```bash
 fallow                       # Full codebase analysis: cleanup + duplication + health
 fallow audit                 # Audit changed files (verdict: pass/warn/fail)
+fallow review                # Advisory review brief over changed files (always exits 0)
+fallow decision-surface      # Ranked structural decisions a change embeds
+fallow trace src/u.ts:fn     # Symbol-level call chains (callers up, callees down)
 fallow health                # Complexity + refactor targets
 fallow health --css          # + structural CSS analytics (specificity, !important, nesting)
 fallow dupes                 # Repeated logic

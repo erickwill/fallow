@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.102.0] - 2026-06-23
+
 ### Added
+
+- **Code review brief (`fallow review`, or `fallow audit --brief`).** A new advisory
+  orientation mode over changed code. It runs the same dead-code + complexity +
+  duplication analysis as `fallow audit` but answers "where do I look?" instead of
+  "will CI block this?": it ALWAYS exits 0 (the verdict is carried informationally),
+  so a reviewer or agent can read it regardless of the gate outcome. The brief renders
+  a ranked decision surface, a weighted focus map, and change-impact context. `--format`
+  is orthogonal to `--brief`. `fallow review` is an alias for `fallow audit --brief`.
+
+- **`fallow decision-surface` command and `decision_surface` MCP tool.** Surfaces the
+  consequential structural decisions a change embeds (the apex of the review brief):
+  a ranked, capped (3-5) set of coupling/boundary, public-API/contract, and dependency
+  decisions, each framed as a judgment question with the routed expert to ask. Each
+  decision carries an honest count of how many internal consumers it affects plus an
+  explicit trade-off clause, so the reader sees the cost as well as the call. Separable
+  and cheap, advisory (always exits 0), and every decision is suppressible with
+  `// fallow-ignore`. Use `--base` / `--changed-since` to pick the comparison point,
+  exactly like `fallow audit`.
+
+- **`fallow trace <FILE:SYMBOL>` symbol-level call chains.** Walks callers UP (modules
+  that import the symbol) and callees DOWN (import-symbol edges plus intra-module call
+  sites) through the module graph, bounded by `--depth` (default 2). `--callers` /
+  `--callees` scope the direction; both are walked by default. Best-effort and syntactic
+  per ADR-001: resolved-vs-unresolved callees are reported honestly, never silently
+  dropped. It is its own surface, never folded into the ranked review brief.
+
+- **Agent-contract walkthrough loop (`--walkthrough-guide` / `--walkthrough-file`).**
+  `--walkthrough-guide` emits a deterministic digest (the brief, the decision surface,
+  the review direction, the JSON schema the agent must return, and a graph-snapshot hash)
+  built from the graph only, so PR prose is never folded in and the digest is
+  injection-resistant. `--walkthrough-file` ingests an agent's judgment JSON and
+  post-validates it against the LIVE graph: it rejects any judgment whose `signal_id`
+  fallow did not emit (anti-hallucination) and refuses the whole payload as stale when
+  the echoed graph-snapshot hash no longer matches. The verifier is the graph, not a
+  second model. Both imply the brief and always exit 0.
+
+- **Weighted focus map with a de-prioritized escape hatch.** The review brief ranks
+  changed units by review weight and collapses the de-prioritized tail by default;
+  `--show-deprioritized` re-expands the human render. The `deprioritized` list is always
+  present in `--format json` regardless of the flag.
+
+- **LLM-call prompt-injection candidate (`fallow security`).** A new `llm-call-injection`
+  category (CWE-1427) in the tainted-sink catalogue. It fires only when an untrusted
+  source flows into the prompt/messages argument of a known LLM-call sink (a taint PATH
+  into the call, not every LLM call), pinned to the distinctive LLM SDK call shapes. Like
+  all `fallow security` output it is a CANDIDATE for verification, not a verified
+  vulnerability, and never appears under bare `fallow` or the `audit` gate.
 
 - **React component intelligence in the editor.** The LSP now surfaces ambient React/Preact
   context with no new rule, finding, severity, or gating. A code lens above each component
@@ -62,6 +111,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discontinuity in baselined health trends for projects with `.astro` files: a previously
   unscored `.astro` frontmatter/template now contributes to the complexity aggregate.
 
+- **VS Code: clearer tree badges, hardened health spawn, and de-duplicated diagnostics.**
+  The sidebar tree badges are tightened, the background `fallow health` spawn is more
+  resilient, and overlapping diagnostics for the same location are de-duplicated so the
+  Problems panel no longer double-reports.
+
+- **Faster command-only surfaces.** Commands that do not run a full analysis (schema and
+  template printers, and similar metadata surfaces) start up faster.
+
 ### Fixed
 
 - **Merged namespace values imported through star barrels are no longer falsely reported as unused.**
@@ -70,6 +127,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   side stays governed by type usage, so unrelated unused type findings and sibling value exports
   remain reportable. Thanks [@TeoVezza95](https://github.com/TeoVezza95) for the report.
   (Closes [#1373](https://github.com/fallow-rs/fallow/issues/1373))
+
+- **VS Code now resolves the native fallow binary from platform packages.** When the
+  binary is reached through a `.cmd` / `.ps1` launcher shim on `PATH`, the extension
+  re-resolves it to the sibling native executable so LSP-backed diagnostics start
+  reliably. Thanks [@ivan-palatov](https://github.com/ivan-palatov) for the report.
+  (Closes [#1359](https://github.com/fallow-rs/fallow/issues/1359))
+
+- **TanStack Router: custom `routeFileIgnorePrefix` is honored.** Files using a project's
+  configured ignore prefix are no longer flagged as dead code. Thanks
+  [@Spiralis](https://github.com/Spiralis) for the report.
+  (Closes [#1358](https://github.com/fallow-rs/fallow/issues/1358))
+
+- **`fallow audit` base-snapshot worktree paths are unique per call.** Non-reusable
+  base-worktree directory names can no longer collide across concurrent audit runs, which
+  could intermittently fail an audit with exit 2.
+
+- **More precise telemetry failure classification.** When telemetry is enabled, a failed
+  run now records a specific failure reason (validation, config, network, and the like)
+  instead of a generic bucket.
+
+- **Review direction no longer routes through ownership for the current reviewer**, and
+  story/test-only coordination-gap noise is dropped from the review brief.
+
+- **Vendored GitLab CI now bundles `gitlab_common.sh`.** `fallow ci-template gitlab --vendor`
+  writes the shared helper both `comment.sh` and `review.sh` source, so vendored pipelines
+  run without reaching out to `raw.githubusercontent.com`.
 
 ## [2.101.0] - 2026-06-21
 
@@ -3310,7 +3393,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.101.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v2.102.0...HEAD
+[2.102.0]: https://github.com/fallow-rs/fallow/compare/v2.101.0...v2.102.0
 [2.101.0]: https://github.com/fallow-rs/fallow/compare/v2.100.0...v2.101.0
 [2.100.0]: https://github.com/fallow-rs/fallow/compare/v2.99.0...v2.100.0
 [2.99.0]: https://github.com/fallow-rs/fallow/compare/v2.98.0...v2.99.0

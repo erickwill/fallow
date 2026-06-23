@@ -45,6 +45,7 @@ Analyzes the project for unused files, exports, dependencies, types, members, an
 | `--trace` | `string` | - | Trace export usage chain |
 | `--trace-file` | `string` | - | Show all edges for a file |
 | `--trace-dependency` | `string` | - | Trace where a dependency is used |
+| `--impact-closure` | `string` | - | Compute the impact closure for a file (the transitive affected-but-not-in-diff set + coordination gap). Walks reverse-deps and re-export chains; powers the `inspect_target` MCP tool |
 | `--top` | `string` | - | Show only the top N items per category |
 | `--file` | `string` | - | Scope output to specific files. Only issues in the specified files are reported. Project-wide dependency issues are suppressed. Warns on non-existent paths. Useful for lint-staged |
 
@@ -505,7 +506,7 @@ fallow health --format json --quiet --trend
 {
   "kind": "health",
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 32,
   "summary": {
     "files_analyzed": 482,
@@ -828,6 +829,11 @@ Audits changed files for dead code, complexity, and duplication. Returns a verdi
 | `--runtime-coverage` | `string` | - | Paid runtime-coverage sidecar input. Accepts a V8 directory, a single V8 JSON file, or an Istanbul coverage map JSON. Spawns the `fallow-cov` sidecar as part of the audit pipeline so the `hot-path-touched` verdict surfaces alongside dead-code and complexity findings without requiring a second `fallow health` invocation in CI. License-gated; the verdict is informational (no exit code change) until a future `--gate hot-path-touched` knob lands |
 | `--min-invocations-hot` | `string` | `100` | Threshold for hot-path classification, forwarded to the sidecar when `--runtime-coverage` is set |
 | `--gate-marker` | `string` | - | Internal marker identifying a gate run (e.g. `pre-commit`), set by the generated git hook so Fallow Impact can record a containment event when the gate blocks then clears. Hidden; never changes the verdict, exit code, or output |
+| `--brief` | `bool` | `false` | Render the deterministic review brief instead of the gating audit report. The brief answers "where do I look?" rather than "will CI block this?", runs the same analysis, and ALWAYS exits 0 (the verdict is carried informationally). Implied by `fallow review`. Orthogonal to `--format` |
+| `--max-decisions` | `string` | `4` | Cap on the number of consequential structural decisions surfaced in the review brief's decision surface (the working-memory limit). Default 4; clamped to the 3-5 band (4 plus or minus 1). Only consulted on the brief path |
+| `--walkthrough-guide` | `bool` | `false` | Emit the agent-contract WALKTHROUGH GUIDE: the current digest (brief + decision surface), the review direction, the JSON schema the agent must return, and a deterministic graph-snapshot hash pinned into the digest. The digest is built from the graph only (PR prose is never folded in, so it is injection-resistant). Implies the brief; always exits 0. A thin agent skill calls this to fetch the current guide, produces judgment JSON, then reopens with `--walkthrough-file` |
+| `--walkthrough-file` | `string` | - | Ingest an agent's judgment JSON and POST-VALIDATE it against the LIVE graph. Rejects any judgment whose `signal_id` fallow did not emit (anti-hallucination); refuses the whole payload as stale when the echoed graph-snapshot hash no longer matches (the tree moved). The verifier is the graph, not a second model. Implies the brief; always exits 0. The agent's free-text framing is fenced as non-deterministic and never gates or auto-posts |
+| `--show-deprioritized` | `bool` | `false` | Expand the de-prioritized units in the review brief's weighted focus map ("show me what you de-prioritized"). The `deprioritized` escape-hatch list is ALWAYS present in `--format json` regardless; this flag only re-expands the collapse-by-default human focus render. Only consulted on the brief path |
 
 Common global flags for this command: [`--format`](#global-flags), [`--quiet`](#global-flags), [`--changed-since`](#global-flags), [`--diff-file`](#global-flags), [`--diff-stdin`](#global-flags), [`--workspace`](#global-flags), [`--changed-workspaces`](#global-flags), [`--group-by`](#global-flags), [`--output-file`](#global-flags).
 <!-- generated:flags:audit:end -->
@@ -892,7 +898,7 @@ fallow audit \
 {
   "kind": "audit",
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "command": "audit",
   "verdict": "fail",
   "changed_files_count": 12,
@@ -967,7 +973,7 @@ fallow flags --format json --quiet --workspace my-package
 ```json
 {
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 116,
   "feature_flags": [],
   "total_flags": 0
@@ -1067,7 +1073,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1096,7 +1102,7 @@ fallow security --gate newly-reachable --changed-since origin/main
 {
   "kind": "security",
   "schema_version": "4",
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 42,
   "config": {
     "rules": {
@@ -1762,7 +1768,7 @@ The HTTP layer mirrors the bash `gh_api_retry` / `curl_retry` helpers: `FALLOW_A
 {
   "kind": "dead-code",
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 45,
   "total_issues": 12,
   "entry_points": {
@@ -1922,7 +1928,7 @@ When `--baseline` is used in combined output, the JSON includes a `baseline_delt
 {
   "kind": "dupes",
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 82,
   "total_clones": 15,
   "total_lines_duplicated": 230,
@@ -1966,11 +1972,11 @@ When running `fallow` with no subcommand (all analyses), the JSON output combine
 {
   "kind": "combined",
   "schema_version": 7,
-  "version": "2.101.0",
+  "version": "2.102.0",
   "elapsed_ms": 159,
   "check": {
     "schema_version": 7,
-    "version": "2.101.0",
+    "version": "2.102.0",
     "elapsed_ms": 45,
     "total_issues": 12,
     "unused_files": [],
