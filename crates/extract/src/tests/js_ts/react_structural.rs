@@ -1267,3 +1267,464 @@ fn host_element_child_in_passthrough_is_not_pure() {
         "spread onto a host element must not be pure passthrough",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Feature A: typed-interface + `props.x` harvest shape-parity matrix.
+// Each case is a harvest/credit pairing whose miss would false-positive the
+// already-trusted `unused-component-prop` React arm.
+// ---------------------------------------------------------------------------
+
+fn typed_prop<'a>(
+    info: &'a crate::ModuleInfo,
+    name: &str,
+) -> &'a fallow_types::extract::ComponentProp {
+    info.react_props
+        .iter()
+        .find(|p| p.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected harvested prop `{name}`, got {:?}",
+                info.react_props
+            )
+        })
+}
+
+#[test]
+fn matrix_a_member_access_credits_prop() {
+    // (a) `(props: Props) => <div>{props.size}</div>` -> `size` used.
+    let info = parse_tsx(
+        "interface Props { size: string }\nexport const App = (props: Props) => <div>{props.size}</div>;",
+    );
+    let prop = typed_prop(&info, "size");
+    assert!(
+        prop.used_in_script,
+        "props.size member access must credit `size` as used",
+    );
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn matrix_b_renamed_destructure_after_credits_prop() {
+    // (b) `const { size: s } = props; s` -> `size` used (the destructure key).
+    let info = parse_tsx(
+        "interface Props { size: string }\nexport const App = (props: Props) => { const { size: s } = props; return <div>{s}</div>; };",
+    );
+    let prop = typed_prop(&info, "size");
+    assert!(
+        prop.used_in_script,
+        "const {{ size: s }} = props destructure must credit `size`",
+    );
+}
+
+#[test]
+fn matrix_c_default_valued_inline_destructure_credits_prop() {
+    // (c) `({ size = 4 }: Props) =>` -> `size` used (the default-read counts).
+    // This goes through the existing inline-destructure path; the type
+    // annotation is incidental.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = ({ size = 4 }: Props) => <div style={{ width: size }} />;",
+    );
+    let prop = typed_prop(&info, "size");
+    assert_eq!(prop.local, "size");
+    assert!(
+        prop.used_in_script,
+        "default-valued destructure must credit `size`"
+    );
+}
+
+#[test]
+fn matrix_d_rest_after_named_typed_destructure_abstains() {
+    // (d) `({ size, ...rest }: Props)` -> abstain (the existing rest guard).
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = ({ size, ...rest }: Props) => <div {...rest}>{size}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "rest after named must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn matrix_e_props_spread_into_child_abstains() {
+    // (e) `<X {...props}/>` -> whole-object use -> abstain.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = (props: Props) => <Child {...props} />;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "spreading props into a child is a whole-object use; must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn matrix_e_props_passed_to_hook_abstains() {
+    // (e') `useFoo(props)` -> whole-object use -> abstain.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = (props: Props) => { const v = useFoo(props); return <div>{v}</div>; };",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "passing props to a hook is a whole-object use; must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn matrix_f_genuinely_unused_typed_prop_is_harvested_unused() {
+    // (f) `(props: Props) => <div/>` with `Props { size }` and no `props.size`
+    // -> `size` harvested, used_in_script=false (the new TP this unlocks).
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = (props: Props) => <div />;",
+    );
+    let prop = typed_prop(&info, "size");
+    assert!(
+        !prop.used_in_script,
+        "a typed prop read nowhere must be harvested with used_in_script=false",
+    );
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn matrix_g_imported_interface_abstains() {
+    // (g) `import { Props } from './types'; (props: Props) =>` -> abstain
+    // (same-file-only v1; the type is not in `react_object_type_props`).
+    let info = parse_tsx(
+        "import { Props } from './types';\nexport const App = (props: Props) => <div>{props.size}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "an imported props interface must abstain in v1",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn type_alias_object_literal_backs_typed_props() {
+    // `type Props = { a; b }` object literal resolves the same as an interface.
+    let info = parse_tsx(
+        "type Props = { a: string; b: number };\nexport const App = (props: Props) => <div>{props.a}</div>;",
+    );
+    assert!(typed_prop(&info, "a").used_in_script);
+    assert!(!typed_prop(&info, "b").used_in_script);
+}
+
+#[test]
+fn typed_interface_hoists_after_component() {
+    // The backing interface declared AFTER the component must still resolve
+    // (finalize phase), because TypeScript hoists type declarations.
+    let info = parse_tsx(
+        "export const App = (props: Props) => <div>{props.size}</div>;\ninterface Props { size: string }",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn interface_extends_abstains() {
+    // `interface Props extends Base` cannot expand the parent members; abstain.
+    let info = parse_tsx(
+        "interface Base { x: number }\ninterface Props extends Base { size: string }\nexport const App = (props: Props) => <div>{props.size}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "interface extends must abstain (cannot expand parent members)",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn generic_props_type_abstains() {
+    // `Props<T>` generic-with-args cannot be substituted; abstain.
+    let info = parse_tsx(
+        "interface Props<T> { value: T }\nexport const App = (props: Props<string>) => <div>{props.value}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "a generic props type reference with args must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn props_with_children_wrapper_abstains() {
+    // `React.PropsWithChildren<P>` is a qualified-name generic wrapper; abstain.
+    let info = parse_tsx(
+        "interface Own { size: number }\nexport const App = (props: React.PropsWithChildren<Own>) => <div>{props.size}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "a React.PropsWithChildren wrapper must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn function_declaration_typed_props_are_harvested() {
+    // The typed-props path also fires for `function Foo(props: Props)`.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport function App(props: Props) { return <div>{props.size}</div>; }",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+}
+
+#[test]
+fn props_returned_whole_object_abstains() {
+    // Returning the props binding itself is a whole-object use; abstain.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = (props: Props) => { doSomething(props); return <div>{props.size}</div>; };",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "passing props to a function call must abstain (whole-object use)",
+    );
+}
+
+#[test]
+fn computed_member_access_on_props_abstains() {
+    // `props[key]` is opaque (the member name is unknowable); abstain.
+    let info = parse_tsx(
+        "interface Props { size: number }\nexport const App = (props: Props) => <div>{props[key]}</div>;",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "computed member access on props must abstain",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Feature A v2: forwardRef / memo prop harvest shape-parity matrix.
+// The inner render function's body is what is scanned for usage; the props
+// local (or the destructured locals) targets the INNER arrow, not the outer
+// wrapper call. Each case is a harvest/credit pairing whose miss would
+// false-positive the already-trusted `unused-component-prop` React arm.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn forwardref_inline_destructure_used_and_unused() {
+    // `forwardRef(({ a, b }, ref) => ... a ...)` -> inline-destructure harvest on
+    // the inner function's FIRST param; `ref` (second param) is ignored.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef(({ size, label }, ref) => <input ref={ref}>{size}</input>);",
+    );
+    assert!(
+        typed_prop(&info, "size").used_in_script,
+        "destructured `size` read in the inner body must be credited",
+    );
+    assert!(
+        !typed_prop(&info, "label").used_in_script,
+        "destructured `label` read nowhere must be unused",
+    );
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn forwardref_inline_destructure_renamed_local() {
+    // `forwardRef(({ size: s }, ref) => ... s ...)` -> the prop name is `size`,
+    // the local is `s`; usage on the renamed local credits the prop.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef(({ size: s }, ref) => <input ref={ref}>{s}</input>);",
+    );
+    let prop = typed_prop(&info, "size");
+    assert_eq!(prop.local, "s");
+    assert!(prop.used_in_script, "renamed local read must credit `size`");
+}
+
+#[test]
+fn forwardref_inline_destructure_default_valued() {
+    // `forwardRef(({ size = 4 }, ref) => ... size ...)` -> default-read counts.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef(({ size = 4 }, ref) => <input ref={ref} width={size} />);",
+    );
+    assert!(
+        typed_prop(&info, "size").used_in_script,
+        "default-valued destructure read must credit `size`",
+    );
+}
+
+#[test]
+fn forwardref_inline_destructure_rest_abstains() {
+    // `forwardRef(({ size, ...rest }, ref) => ...)` -> the existing rest guard.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef(({ size, ...rest }, ref) => <input ref={ref} {...rest}>{size}</input>);",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "rest after named in a forwardRef inner param must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn forwardref_bare_typed_param_same_file_used_and_unused() {
+    // `forwardRef((props: Props, ref) => props.x)` with same-file `Props` ->
+    // bare-typed path (props.x crediting) on the inner body.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         interface Props { size: number; label: string }\n\
+         export const Input = forwardRef((props: Props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+    assert!(!typed_prop(&info, "label").used_in_script);
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn forwardref_generic_type_arg_same_file_used_and_unused() {
+    // `forwardRef<Ref, Props>((props, ref) => props.x)` where `Props` is the
+    // SECOND generic type arg resolving to a same-file interface. The inner
+    // `props` param has no annotation; the type comes from the wrapper generic.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         interface Props { size: number; label: string }\n\
+         export const Input = forwardRef<HTMLInputElement, Props>((props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(
+        typed_prop(&info, "size").used_in_script,
+        "props.size read in the inner body must credit `size`",
+    );
+    assert!(
+        !typed_prop(&info, "label").used_in_script,
+        "unread `label` from the generic type arg must be harvested unused",
+    );
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn forwardref_generic_type_arg_type_alias_same_file() {
+    // The generic second arg also resolves a `type X = { ... }` object alias.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         type Props = { size: number; label: string };\n\
+         export const Input = forwardRef<HTMLInputElement, Props>((props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+    assert!(!typed_prop(&info, "label").used_in_script);
+}
+
+#[test]
+fn forwardref_generic_inner_annotation_wins_over_generic() {
+    // When the inner param IS annotated, that annotation wins over the wrapper
+    // generic (the author annotated deliberately).
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         interface A { a: number }\n\
+         interface B { b: number }\n\
+         export const Input = forwardRef<HTMLInputElement, A>((props: B, ref) => <input ref={ref}>{props.b}</input>);",
+    );
+    // `b` (from B, the inner annotation) is harvested; `a` (from A) is not.
+    assert!(typed_prop(&info, "b").used_in_script);
+    assert!(
+        info.react_props.iter().all(|p| p.name != "a"),
+        "the wrapper generic `A` must not back the harvest when the inner param is annotated",
+    );
+}
+
+#[test]
+fn forwardref_generic_imported_type_arg_abstains() {
+    // `forwardRef<Ref, Props>` where `Props` is IMPORTED -> abstain (same-file
+    // only; Priority 2 is deferred).
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         import { Props } from './types';\n\
+         export const Input = forwardRef<HTMLInputElement, Props>((props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "an imported props generic arg must abstain in v2",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn forwardref_generic_single_type_arg_abstains() {
+    // `forwardRef<Ref>(...)` has only the ref type, no props type arg -> the
+    // bare inner `props` param abstains (no own annotation, no wrapper type).
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef<HTMLInputElement>((props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "a single ref-only generic arg leaves the bare props param unharvestable",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn forwardref_generic_inline_object_type_arg_abstains() {
+    // `forwardRef<Ref, { a: number }>` with an inline object-literal type arg ->
+    // abstain (only a bare named type resolves to a same-file declaration).
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         export const Input = forwardRef<HTMLInputElement, { size: number }>((props, ref) => <input ref={ref}>{props.size}</input>);",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "an inline object-literal generic type arg must abstain",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn memo_bare_typed_param_same_file() {
+    // `memo((props: Props) => props.x)` with same-file `Props` -> bare-typed path.
+    let info = parse_tsx(
+        "import { memo } from 'react';\n\
+         interface Props { size: number; label: string }\n\
+         export const Card = memo((props: Props) => <div>{props.size}</div>);",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+    assert!(!typed_prop(&info, "label").used_in_script);
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}
+
+#[test]
+fn memo_inline_destructure_used_and_unused() {
+    // `memo(({ a, b }) => ... a ...)` -> inline-destructure harvest.
+    let info = parse_tsx(
+        "import { memo } from 'react';\n\
+         export const Card = memo(({ size, label }) => <div>{size}</div>);",
+    );
+    assert!(typed_prop(&info, "size").used_in_script);
+    assert!(!typed_prop(&info, "label").used_in_script);
+}
+
+#[test]
+fn forwardref_whole_object_props_use_in_inner_body_abstains() {
+    // A whole-object props use (`<X {...props}/>`) inside a forwardRef inner body
+    // makes the prop set opaque -> abstain, even with a same-file generic type.
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         interface Props { size: number }\n\
+         export const Input = forwardRef<HTMLInputElement, Props>((props, ref) => <Child {...props} ref={ref} />);",
+    );
+    assert!(
+        info.component_functions[0].has_unharvestable_props,
+        "spreading props into a child in the inner body must abstain (whole-object use)",
+    );
+    assert!(info.react_props.is_empty());
+}
+
+#[test]
+fn forwardref_genuinely_unused_generic_prop_is_harvested_unused() {
+    // The new TP this unlocks: a forwardRef generic prop read NOWHERE is
+    // harvested with used_in_script=false (and is non-exported so the detector
+    // could flag it; here the binding IS exported, but the harvest itself is the
+    // unit under test).
+    let info = parse_tsx(
+        "import { forwardRef } from 'react';\n\
+         interface Props { size: number }\n\
+         const Input = forwardRef<HTMLInputElement, Props>((props, ref) => <input ref={ref} />);",
+    );
+    assert!(
+        !typed_prop(&info, "size").used_in_script,
+        "a generic-typed prop read nowhere must be harvested unused",
+    );
+    assert!(!info.component_functions[0].has_unharvestable_props);
+}

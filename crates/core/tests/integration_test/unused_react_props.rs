@@ -63,11 +63,36 @@ fn flags_unused_react_prop_and_abstains_on_every_ladder_case() {
         "a prop read in a JSX expression must not be flagged: {flagged:?}"
     );
 
-    // The ONLY finding is the single true positive (zero false positives).
+    // Feature A: a NON-exported component typed by a SAME-FILE `interface` object
+    // literal harvests its member names. `typedDead` (read nowhere via
+    // `props.typedDead`) is the new true positive the typed-interface harvest
+    // unlocks, attributed to the right component.
+    assert!(
+        flagged.contains(&("TypedInner", "typedDead")),
+        "a typed-interface prop read nowhere should be flagged: {flagged:?}"
+    );
+
+    // Feature A: `props.size` member access credits `size` (not flagged).
+    assert!(
+        !flagged.iter().any(|(_, prop)| *prop == "size"),
+        "a typed prop read via props.size must not be flagged: {flagged:?}"
+    );
+
+    // Feature A v2: a NON-exported `forwardRef<Ref, Props>` whose props type is
+    // the SECOND generic argument resolving to a SAME-FILE `interface` harvests
+    // its member names. `genericDead` (read nowhere via `props.genericDead`) is
+    // the new true positive the generic-forwardRef harvest unlocks; `props.size`
+    // is credited as used so only the dead member flags.
+    assert!(
+        flagged.contains(&("GenericInner", "genericDead")),
+        "a generic-forwardRef same-file-typed prop read nowhere should be flagged: {flagged:?}"
+    );
+
+    // The ONLY findings are the three true positives (zero false positives).
     assert_eq!(
         flagged.len(),
-        1,
-        "exactly one React prop finding expected (zero FP): {flagged:?}"
+        3,
+        "exactly three React prop findings expected (zero FP): {flagged:?}"
     );
 }
 
