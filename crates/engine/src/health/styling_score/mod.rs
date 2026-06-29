@@ -4,24 +4,64 @@
 //! start at 100, subtract capped per-category penalties, map the result to a
 //! letter grade via the shared [`letter_grade`]. The code score is never touched.
 //!
-//! # Penalty rubric (v1, [`STYLING_HEALTH_FORMULA_VERSION`])
+//! # Penalty rubric (v2, [`STYLING_HEALTH_FORMULA_VERSION`])
 //!
-//! The weights below are the provisional first-slice rubric, pending corpus
-//! calibration; any recalibration bumps [`STYLING_HEALTH_FORMULA_VERSION`] (the
-//! same versioning discipline the code score uses). Every category is capped and
-//! evaluated against the analytics that are always present once `--css` ran, so
-//! there is no "missing pipeline" partial-credit case to model.
+//! The weights below were recalibrated from v1 after running v1 across real
+//! projects (government design systems plus small Tailwind apps); any further
+//! recalibration bumps [`STYLING_HEALTH_FORMULA_VERSION`] (the same versioning
+//! discipline the code score uses). Every category is capped and evaluated
+//! against the analytics that are always present once `--css` ran, so there is
+//! no "missing pipeline" partial-credit case to model.
 //!
 //! | Category | Cap | Signal | Scaling |
 //! |---|---|---|---|
 //! | `duplication` | 20pt | `summary.duplicate_declarations_total` (removable declarations from copy-paste blocks) | `total / max(total_declarations, 1) * 200`, capped (so ~10% of declarations removable = full 20pt) |
-//! | `dead_surface` | 20pt | unreferenced classes + unused `@theme` tokens + unused at-rules + dead `@font-face` | `count_per_stylesheet * 10`, capped (so ~2 dead entities per analyzed stylesheet = full 20pt) |
+//! | `dead_surface` | 20pt | (a) unused `@theme` tokens, as a share of all defined `@theme` tokens; (b) unreferenced classes + unused at-rules + dead `@font-face`, as a share of `total_declarations` | token term `min(unused_theme_tokens / max(theme_tokens_defined, 1) * 15, 15)` + other term `min(other_dead / max(total_declarations, 1) * 150, 8)`, summed then capped at 20 (the token term is a *per-population* death ratio so a handful of dead tokens in a declaration-sparse Tailwind project no longer explodes the penalty) |
 //! | `broken_references` | 15pt | `unresolved_class_references` + `keyframes_undefined` | `count * 3`, capped (so 5 broken refs = full 15pt) |
-//! | `token_erosion` | 10pt | mixed `font-size` units (above 2) + distinct Tailwind arbitrary-value tokens | `(extra_units * 3) + min(arbitrary_tokens, ...)`, capped |
+//! | `token_erosion` | 10pt | mixed `font-size` units (above 2) + distinct Tailwind arbitrary-value tokens | `min((extra_units * 2), 4)` unit term + `min(arbitrary / 18, 8)` arbitrary term, summed then capped (arbitrary term saturates gently around ~50-100+ values rather than capping at 10) |
 //! | `structural` | 10pt | `!important` density + deep nesting | `(important_pct - 5).clamp * 1` + `(max_nesting - 4).clamp * 1`, capped |
 //!
 //! All point values are rounded to one decimal, the final score is clamped to
 //! `[0, 100]`, matching the code score's `round1` / clamp behaviour.
+//!
+//! ## What v1 -> v2 changed, and why
+//!
+//! - `dead_surface` was normalized by `files_analyzed` in v1, so a 2-stylesheet
+//!   Tailwind project with a few dead entities scored far higher than a 32-file
+//!   design system with one dead entity. v2 splits the category into two
+//!   independently-normalized terms. Unused `@theme` tokens are divided by the
+//!   *total number of `@theme` tokens defined* (a per-population death ratio,
+//!   threaded in as `theme_tokens_defined`): this is the principled denominator
+//!   because Tailwind projects author almost no CSS declarations, so dividing a
+//!   few unused tokens by `total_declarations` exploded the penalty (a project
+//!   with 4 unused tokens over 24 declarations capped the whole category at 20).
+//!   The remaining dead entities (unreferenced classes, unused at-rules, dead
+//!   `@font-face`) still divide by `total_declarations`, the size-stable
+//!   denominator `duplication` uses, so neither term swings with stylesheet count.
+//! - `token_erosion` in v1 added `tailwind_arbitrary_values` raw, so just ~10
+//!   distinct arbitrary values maxed the category, punishing ordinary Tailwind
+//!   apps. v2 saturates the arbitrary term via a divisor and caps the unit term
+//!   so neither sub-signal alone reaches the ceiling.
+//!
+//! ## Deliberately excluded signals
+//!
+//! `custom_properties_unreferenced` and `custom_properties_undefined` are
+//! intentionally NOT folded into this score. They are false-positive-prone for
+//! exactly the projects this axis most needs to grade fairly: a design system
+//! exports custom properties that are referenced by *consumers*, not within its
+//! own package, so "unreferenced-in-package" is the intended state rather than a
+//! smell; and in a cross-package monorepo a property defined in one package and
+//! consumed in another reads as "undefined" to a single-package analysis. Both
+//! signals stay available in the raw `CssAnalyticsReport` for descriptive
+//! surfaces, but they do not move the grade.
+//!
+//! Two related robustness improvements are deferred upstream follow-ups, NOT
+//! rubric changes: (a) confidence-gating the styling grade when `files_analyzed`
+//! is tiny (so a 2-file sample is not graded with the same authority as a full
+//! design system), and (b) emitting an explicit reason when `css_analytics` is
+//! empty because module resolution failed (so an empty report is not silently
+//! scored as a clean 100). Both live in the analytics/pipeline layer, above this
+//! pure-function rubric.
 
 use fallow_output::{
     CssAnalyticsReport, STYLING_HEALTH_FORMULA_VERSION, StylingHealth, StylingHealthPenalties,
@@ -47,14 +87,70 @@ const NESTING_DEPTH_FLOOR: f64 = 4.0;
 /// token system.
 const FONT_SIZE_UNIT_BASELINE: u32 = 2;
 
+/// `dead_surface` unused-`@theme`-token term scale (v2): the unused-token count
+/// is normalized by the TOTAL number of `@theme` tokens defined (a per-population
+/// death ratio that is `>= 0`; the [`TOKEN_DEATH_TERM_CAP`] `.min` bounds the
+/// term even if a caller violates the population invariant and the ratio exceeds
+/// 1.0), then multiplied by this factor. So 100% of defined tokens dead
+/// contributes the full [`TOKEN_DEATH_TERM_CAP`], 20% dead ~= 3pt. This is the
+/// principled, size-independent denominator: Tailwind projects author almost no
+/// CSS declarations, so the v1 `total_declarations` denominator let a few unused
+/// tokens explode the penalty; dividing by the token population fixes that
+/// without rewarding or punishing project size.
+const TOKEN_DEATH_SCALE: f64 = 15.0;
+
+/// `dead_surface` unused-`@theme`-token term cap (v2). Bounds the token-death
+/// contribution so even a fully-dead token population leaves room for the other
+/// dead-entity term within the 20pt category cap.
+const TOKEN_DEATH_TERM_CAP: f64 = 15.0;
+
+/// `dead_surface` non-token-dead-entity term scale (v2): unreferenced classes,
+/// unused `@property`/`@layer` at-rules, and dead `@font-face` families are
+/// normalized by `total_declarations` (the same size-stable denominator the
+/// duplication penalty uses) and multiplied by this factor before the term cap.
+const OTHER_DEAD_SCALE: f64 = 150.0;
+
+/// `dead_surface` non-token-dead-entity term cap (v2). Bounds the
+/// declaration-share dead-entity contribution so it cannot dominate the category
+/// on its own; the token-death term carries the rest of the 20pt budget.
+const OTHER_DEAD_TERM_CAP: f64 = 8.0;
+
+/// `token_erosion` per-extra-unit weight (v2). Each distinct `font-size` unit
+/// past [`FONT_SIZE_UNIT_BASELINE`] adds this many points to the unit term.
+const FONT_SIZE_UNIT_WEIGHT: f64 = 2.0;
+
+/// `token_erosion` font-size-unit term cap (v2). Bounds the unit contribution so
+/// `font-size` units alone can never dominate the category; the arbitrary-value
+/// term carries the rest of the budget.
+const FONT_SIZE_UNIT_TERM_CAP: f64 = 4.0;
+
+/// `token_erosion` arbitrary-value divisor (v2). Distinct Tailwind arbitrary
+/// values are divided by this before the arbitrary term cap, so the term
+/// saturates gently around ~50-100+ distinct values instead of instant-capping
+/// at 10. Normal Tailwind usage yields a moderate penalty, not the ceiling.
+const ARBITRARY_VALUE_DIVISOR: f64 = 18.0;
+
+/// `token_erosion` arbitrary-value term cap (v2). Bounds the arbitrary-value
+/// contribution so the unit term still has room within the 10pt category cap.
+const ARBITRARY_VALUE_TERM_CAP: f64 = 8.0;
+
 /// Compute the styling-health score from the structural CSS analytics.
 ///
 /// Mirrors the code score: penalties subtract from a starting 100, the result is
 /// rounded and clamped, and the grade reuses the shared [`letter_grade`]
-/// thresholds. See the module docs for the per-category rubric (v1).
+/// thresholds. See the module docs for the per-category rubric (v2).
+///
+/// `theme_tokens_defined` is the total number of Tailwind `@theme` tokens DEFINED
+/// across the project (the population from which `summary.unused_theme_tokens` is
+/// a subset). It is the denominator for the per-population token-death ratio in
+/// `dead_surface`; it is an internal scoring input only, NOT a serialized field
+/// on any output struct, so the wire contract / schema is unchanged.
 #[must_use]
-pub fn compute_styling_health(report: &CssAnalyticsReport) -> StylingHealth {
-    let penalties = compute_styling_penalties(report);
+pub fn compute_styling_health(
+    report: &CssAnalyticsReport,
+    theme_tokens_defined: u32,
+) -> StylingHealth {
+    let penalties = compute_styling_penalties(report, theme_tokens_defined);
     let score = apply_styling_penalties(&penalties);
     let grade = letter_grade(score);
 
@@ -66,10 +162,13 @@ pub fn compute_styling_health(report: &CssAnalyticsReport) -> StylingHealth {
     }
 }
 
-fn compute_styling_penalties(report: &CssAnalyticsReport) -> StylingHealthPenalties {
+fn compute_styling_penalties(
+    report: &CssAnalyticsReport,
+    theme_tokens_defined: u32,
+) -> StylingHealthPenalties {
     StylingHealthPenalties {
         duplication: duplication_penalty(report),
-        dead_surface: dead_surface_penalty(report),
+        dead_surface: dead_surface_penalty(report, theme_tokens_defined),
         broken_references: broken_references_penalty(report),
         token_erosion: token_erosion_penalty(report),
         structural: structural_penalty(report),
@@ -94,20 +193,41 @@ fn duplication_penalty(report: &CssAnalyticsReport) -> f64 {
     round1((removable / total * 200.0).min(DUPLICATION_CAP))
 }
 
-/// Dead styling surface: unreferenced classes, unused `@theme` tokens, unused
-/// `@property`/`@layer` at-rules, and dead `@font-face` families, normalized per
-/// analyzed stylesheet so a large project is not penalized for absolute counts.
-fn dead_surface_penalty(report: &CssAnalyticsReport) -> f64 {
+/// Dead styling surface, computed as two independently-normalized terms:
+///
+/// 1. **Token-death term** ([`TOKEN_DEATH_SCALE`], capped at
+///    [`TOKEN_DEATH_TERM_CAP`]): unused `@theme` tokens as a share of ALL defined
+///    `@theme` tokens (`theme_tokens_defined`). This per-population death ratio is
+///    size-independent. v1 divided unused tokens by `total_declarations`, which
+///    exploded for Tailwind projects (they author almost no CSS declarations, so
+///    a few unused tokens capped the whole category); normalizing by the token
+///    population the tokens are drawn from is the principled fix.
+/// 2. **Other-dead term** ([`OTHER_DEAD_SCALE`], capped at
+///    [`OTHER_DEAD_TERM_CAP`]): unreferenced classes, unused `@property`/`@layer`
+///    at-rules, and dead `@font-face` families as a share of `total_declarations`
+///    (the same size-stable denominator the duplication penalty uses). These
+///    scale with authored-CSS size, so the declaration denominator is correct for
+///    them; only the `@theme` tokens needed the per-population treatment.
+///
+/// The two terms are summed and capped at [`DEAD_SURFACE_CAP`]. Both `@theme`
+/// tokens are EXCLUDED from the other-dead term (they live only in term 1).
+fn dead_surface_penalty(report: &CssAnalyticsReport, theme_tokens_defined: u32) -> f64 {
     let s = &report.summary;
-    let dead = f64::from(
+
+    let token_population = f64::from(theme_tokens_defined).max(1.0);
+    let token_death_ratio = f64::from(s.unused_theme_tokens) / token_population;
+    let token_term = (token_death_ratio * TOKEN_DEATH_SCALE).min(TOKEN_DEATH_TERM_CAP);
+
+    let other_dead = f64::from(
         s.unreferenced_css_classes
-            .saturating_add(s.unused_theme_tokens)
             .saturating_add(s.unused_property_registrations)
             .saturating_add(s.unused_layers)
             .saturating_add(s.unused_font_faces),
     );
-    let stylesheets = f64::from(s.files_analyzed).max(1.0);
-    round1((dead / stylesheets * 10.0).min(DEAD_SURFACE_CAP))
+    let total = f64::from(s.total_declarations).max(1.0);
+    let other_term = (other_dead / total * OTHER_DEAD_SCALE).min(OTHER_DEAD_TERM_CAP);
+
+    round1((token_term + other_term).min(DEAD_SURFACE_CAP))
 }
 
 /// Broken references: markup classes one edit from a defined class, plus
@@ -125,14 +245,24 @@ fn broken_references_penalty(report: &CssAnalyticsReport) -> f64 {
 /// Design-token erosion: mixing `font-size` units past a healthy baseline and
 /// Tailwind arbitrary-value bypasses both work against a single source of truth
 /// for the scale.
+///
+/// v2 splits the category into two saturating terms. The unit term is capped at
+/// [`FONT_SIZE_UNIT_TERM_CAP`] so `font-size` units alone cannot dominate. The
+/// arbitrary-value term divides the distinct-value count by
+/// [`ARBITRARY_VALUE_DIVISOR`] and caps at [`ARBITRARY_VALUE_TERM_CAP`], so it
+/// saturates gently around ~50-100+ distinct values instead of instant-capping
+/// the whole category at 10 (v1 reached the ceiling at just 10 arbitrary
+/// values, punishing normal Tailwind usage). The category cap stays 10pt.
 fn token_erosion_penalty(report: &CssAnalyticsReport) -> f64 {
     let s = &report.summary;
     let extra_units = f64::from(
         s.font_size_units_used
             .saturating_sub(FONT_SIZE_UNIT_BASELINE),
     );
+    let unit_term = (extra_units * FONT_SIZE_UNIT_WEIGHT).min(FONT_SIZE_UNIT_TERM_CAP);
     let arbitrary = f64::from(s.tailwind_arbitrary_values);
-    round1(extra_units.mul_add(3.0, arbitrary).min(TOKEN_EROSION_CAP))
+    let arbitrary_term = (arbitrary / ARBITRARY_VALUE_DIVISOR).min(ARBITRARY_VALUE_TERM_CAP);
+    round1((unit_term + arbitrary_term).min(TOKEN_EROSION_CAP))
 }
 
 /// Structural smells: `!important` density above a healthy floor and deep

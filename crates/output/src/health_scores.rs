@@ -22,9 +22,11 @@ pub const HEALTH_SCORE_FORMULA_VERSION: u32 = 2;
 /// Formula version for the styling-health score (the CSS / design-system axis).
 /// Bumped independently of [`HEALTH_SCORE_FORMULA_VERSION`] whenever the styling
 /// penalty rubric is recalibrated, so consumers can distinguish a score shift
-/// caused by a weight change from one caused by an actual codebase change. v1 is
-/// the provisional first-slice rubric pending corpus calibration.
-pub const STYLING_HEALTH_FORMULA_VERSION: u32 = 1;
+/// caused by a weight change from one caused by an actual codebase change. v2
+/// recalibrated `dead_surface` (size-stable declaration-share denominator) and
+/// `token_erosion` (gently saturating arbitrary-value term) from real-project
+/// evidence; see `engine::health::styling_score` for the full rubric.
+pub const STYLING_HEALTH_FORMULA_VERSION: u32 = 2;
 
 /// `skip_serializing_if` predicate: drop a `u16` field from JSON when zero, so
 /// the React descriptive counts never bloat non-React complexity findings.
@@ -105,9 +107,12 @@ pub struct StylingHealthPenalties {
     /// Copy-paste declaration blocks (`duplicate_declaration_blocks`), scaled by
     /// total removable declarations. Capped at 20pt.
     pub duplication: f64,
-    /// Dead styling surface: unreferenced classes, unused `@theme` tokens, unused
-    /// `@property`/`@layer` at-rules, and dead `@font-face` families, normalized
-    /// per analyzed stylesheet. Capped at 20pt.
+    /// Dead styling surface, two independently-normalized terms summed and capped
+    /// at 20pt: (a) unused `@theme` tokens as a share of the total `@theme` token
+    /// population (size-independent, so a declaration-sparse Tailwind project is
+    /// not penalized for a few dead tokens); plus (b) the other dead entities
+    /// (unreferenced classes, unused `@property`/`@layer` at-rules, dead
+    /// `@font-face` families) as a share of `total_declarations`.
     pub dead_surface: f64,
     /// Broken references: markup classes one edit from a defined class
     /// (`unresolved_class_references`) and animations referencing a `@keyframes`

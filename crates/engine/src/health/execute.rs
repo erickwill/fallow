@@ -438,7 +438,7 @@ struct HealthFinalizeInput<'a, R> {
 
 fn finalize_health_report_side_effects(input: &mut HealthReportSideEffectsInput<'_>) {
     if input.opts.css {
-        input.report.css_analytics = compute_css_analytics_report(
+        let computation = compute_css_analytics_report(
             input.files,
             HealthScanCtx {
                 config: input.config,
@@ -450,12 +450,17 @@ fn finalize_health_report_side_effects(input: &mut HealthReportSideEffectsInput<
         // Styling health is the SECOND health axis: a separate score + grade
         // derived from the CSS analytics, surfaced only alongside `css_analytics`
         // (the same `--css` condition) so a plain `fallow health` run stays
-        // byte-identical. It never affects the code `health_score`.
-        input.report.styling_health = input
-            .report
-            .css_analytics
-            .as_ref()
-            .map(crate::health::styling_score::compute_styling_health);
+        // byte-identical. It never affects the code `health_score`. The
+        // `@theme`-token population (`theme_tokens_defined`) is an internal scoring
+        // input only (the per-population token-death denominator); it is NOT
+        // serialized, so the report wire contract is unchanged.
+        input.report.styling_health = computation.as_ref().map(|computation| {
+            crate::health::styling_score::compute_styling_health(
+                &computation.report,
+                computation.theme_tokens_defined,
+            )
+        });
+        input.report.css_analytics = computation.map(|computation| computation.report);
     }
 }
 
@@ -2539,10 +2544,22 @@ fn finalize_css_token_metrics(
     }
 }
 
+/// The CSS analytics report plus the internal scoring inputs that are NOT part of
+/// the serialized report. `theme_tokens_defined` is the total number of Tailwind
+/// `@theme` tokens defined across the project (the population `summary.unused_theme_tokens`
+/// is a subset of); the styling-health `dead_surface` penalty normalizes the
+/// unused-token count by it (a per-population death ratio) without adding a wire
+/// field. It is captured from `CssTokenSets::theme_token_definers` before the
+/// walk accumulator is consumed by report assembly.
+struct CssAnalyticsComputation {
+    report: fallow_output::CssAnalyticsReport,
+    theme_tokens_defined: u32,
+}
+
 fn compute_css_analytics_report(
     files: &[fallow_types::discover::DiscoveredFile],
     ctx: HealthScanCtx<'_>,
-) -> Option<fallow_output::CssAnalyticsReport> {
+) -> Option<CssAnalyticsComputation> {
     let HealthScanCtx {
         config,
         ignore_set,
@@ -2567,7 +2584,18 @@ fn compute_css_analytics_report(
         ws_roots,
         summary: &mut walk.summary,
     });
-    assemble_css_report(walk, metrics, candidates)
+    // The full `@theme` token population (denominator for the per-population
+    // token-death ratio in styling-health `dead_surface`). Captured before
+    // `assemble_css_report` consumes `walk`. `summary.unused_theme_tokens` is the
+    // unused subset of exactly this set (see `classify_theme_token_candidates`,
+    // which only filters `theme_token_definers` down), so this is always
+    // `>= summary.unused_theme_tokens`.
+    let theme_tokens_defined = saturate_len(walk.tokens.theme_token_definers.len());
+    let report = assemble_css_report(walk, metrics, candidates)?;
+    Some(CssAnalyticsComputation {
+        report,
+        theme_tokens_defined,
+    })
 }
 
 /// Assemble the final CSS analytics report from the walk accumulator, finalized

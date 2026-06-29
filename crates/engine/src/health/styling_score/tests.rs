@@ -1,6 +1,19 @@
 use super::*;
 use fallow_output::{CssAnalyticsReport, CssAnalyticsSummary};
 
+/// A `@theme`-token population large enough that any incidental
+/// `unused_theme_tokens` set by a test for an UNRELATED category contributes a
+/// negligible token-death term, isolating that category. Tests that exercise the
+/// token-death term itself call [`compute_styling_health`] with an explicit
+/// population instead.
+const MANY_TOKENS: u32 = 10_000;
+
+/// Score a report with a token population large enough to neutralize the
+/// `dead_surface` token-death term, for tests that are not about that term.
+fn score(report: &CssAnalyticsReport) -> StylingHealth {
+    compute_styling_health(report, MANY_TOKENS)
+}
+
 /// Assert two scores / penalties match within rounding tolerance. The scoring
 /// pipeline rounds to one decimal, so an exact float compare is both lint-noisy
 /// (`clippy::float_cmp`) and brittle; a 0.05 window is well under one rounding
@@ -38,7 +51,7 @@ fn clean_report() -> CssAnalyticsReport {
 
 #[test]
 fn clean_report_scores_100_grade_a() {
-    let styling = compute_styling_health(&clean_report());
+    let styling = score(&clean_report());
     assert_eq!(styling.formula_version, STYLING_HEALTH_FORMULA_VERSION);
     approx(styling.score, 100.0);
     assert_eq!(styling.grade, "A");
@@ -56,34 +69,108 @@ fn duplication_penalty_scales_and_caps() {
     let mut report = clean_report();
     report.summary.total_declarations = 100;
     report.summary.duplicate_declarations_total = 5;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.duplication, 10.0);
 
     // 20 removable out of 100 = 20% -> 40pt uncapped, capped at 20pt.
     report.summary.duplicate_declarations_total = 20;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.duplication, DUPLICATION_CAP);
 }
 
 #[test]
-fn dead_surface_penalty_normalizes_per_stylesheet_and_caps() {
-    // 2 dead entities over 2 stylesheets = 1 per sheet -> 10pt.
-    let mut report = clean_report();
-    report.summary.files_analyzed = 2;
-    report.summary.unreferenced_css_classes = 1;
-    report.summary.unused_theme_tokens = 1;
-    let styling = compute_styling_health(&report);
-    approx(styling.penalties.dead_surface, 10.0);
+fn dead_surface_token_death_term_is_per_population() {
+    // v2 token term = min(unused_theme_tokens / max(theme_tokens_defined, 1) * 15, 15).
+    // The denominator is the @theme-token POPULATION, not total_declarations, so a
+    // few unused tokens in a declaration-sparse Tailwind project no longer explode.
 
-    // 10 dead entities over 1 stylesheet -> 100pt uncapped, capped at 20pt.
+    // HIGH death-ratio with FEW tokens defined -> high token term.
+    // 8 unused out of 10 defined = 0.8 ratio -> 0.8 * 15 = 12pt (capped at 15).
+    let mut report = clean_report();
+    report.summary.total_declarations = 24; // a sparse Tailwind project
+    report.summary.unused_theme_tokens = 8;
+    let styling = compute_styling_health(&report, 10);
+    approx(styling.penalties.dead_surface, 12.0);
+
+    // LOW death-ratio with MANY tokens defined -> low token term, EVEN with a
+    // declaration-sparse project. 8 unused out of 400 defined = 0.02 -> 0.3pt.
+    // (Under the old `total_declarations` denominator this same input would have
+    // been 8/24*150 = 50pt, capped at 20: the explosion this fix removes.)
+    let styling = compute_styling_health(&report, 400);
+    approx(styling.penalties.dead_surface, 0.3);
+
+    // The fallow-tools regression: 4 unused tokens over 24 declarations. Under v1
+    // (declaration-share) this capped dead_surface at 20; with the population
+    // denominator it is a 4/N ratio. With 32 defined tokens: 4/32*15 = 1.875 -> 1.9pt.
+    report.summary.unused_theme_tokens = 4;
+    let styling = compute_styling_health(&report, 32);
+    approx(styling.penalties.dead_surface, 1.9);
+
+    // A saturated token term caps at 15pt. This deliberately VIOLATES the
+    // population invariant (50 unused > 20 defined) to prove the
+    // `.min(TOKEN_DEATH_TERM_CAP)` bounds the term even when a caller passes a
+    // population smaller than the unused count and the ratio exceeds 1.0;
+    // production cannot reach that state (both counts derive from the same
+    // `theme_token_definers` map), but `compute_styling_health` is `pub`.
+    report.summary.unused_theme_tokens = 50;
+    let styling = compute_styling_health(&report, 20);
+    approx(styling.penalties.dead_surface, TOKEN_DEATH_TERM_CAP);
+}
+
+#[test]
+fn dead_surface_other_term_scales_by_declaration_share_and_is_size_stable() {
+    // The non-token dead entities (unreferenced classes, unused at-rules, dead
+    // @font-face) still divide by total_declarations: a size-stable declaration
+    // share, NOT a per-file count. token population is huge here so the token term
+    // is ~0 and we isolate the other-dead term.
+    // 2 dead over 50 declarations = 2/50*150 = 6pt.
+    let mut report = clean_report();
+    report.summary.total_declarations = 50;
+    report.summary.unreferenced_css_classes = 2;
+    let styling = compute_styling_health(&report, MANY_TOKENS);
+    approx(styling.penalties.dead_surface, 6.0);
+
+    // Stylesheet count is irrelevant: 32 files, same ratio -> same penalty.
+    report.summary.files_analyzed = 32;
+    let styling = compute_styling_health(&report, MANY_TOKENS);
+    approx(styling.penalties.dead_surface, 6.0);
+
+    // The other-dead term is capped at 8pt on its own: 10 dead over 50 = 30pt
+    // uncapped -> capped at 8.
     report.summary.files_analyzed = 1;
     report.summary.unreferenced_css_classes = 4;
-    report.summary.unused_theme_tokens = 3;
-    report.summary.unused_property_registrations = 1;
-    report.summary.unused_layers = 1;
+    report.summary.unused_property_registrations = 3;
+    report.summary.unused_layers = 2;
     report.summary.unused_font_faces = 1;
-    let styling = compute_styling_health(&report);
+    let styling = compute_styling_health(&report, MANY_TOKENS);
+    approx(styling.penalties.dead_surface, OTHER_DEAD_TERM_CAP);
+}
+
+#[test]
+fn dead_surface_combines_terms_and_caps_at_category_ceiling() {
+    // Both terms maxed: token term 15 (100% dead population) + other term 8
+    // (saturated) = 23 uncapped, capped at the 20pt category ceiling.
+    let mut report = clean_report();
+    report.summary.total_declarations = 50;
+    report.summary.unused_theme_tokens = 30;
+    report.summary.unreferenced_css_classes = 20; // 20/50*150 = 60 -> capped 8
+    let styling = compute_styling_health(&report, 30);
     approx(styling.penalties.dead_surface, DEAD_SURFACE_CAP);
+
+    // Declaration count independence for the token term: doubling declarations
+    // (which would shrink a declaration-share denominator) leaves the token term
+    // unchanged because it is normalized by the token population, not declarations.
+    let mut a = clean_report();
+    a.summary.total_declarations = 24;
+    a.summary.unused_theme_tokens = 6;
+    let mut b = clean_report();
+    b.summary.total_declarations = 480; // 20x the declarations
+    b.summary.unused_theme_tokens = 6;
+    let styling_a = compute_styling_health(&a, 40);
+    let styling_b = compute_styling_health(&b, 40);
+    // 6/40*15 = 2.25 -> 2.3pt in BOTH, independent of declaration count.
+    approx(styling_a.penalties.dead_surface, 2.3);
+    approx(styling_b.penalties.dead_surface, 2.3);
 }
 
 #[test]
@@ -92,34 +179,51 @@ fn broken_references_penalty_scales_and_caps() {
     let mut report = clean_report();
     report.summary.unresolved_class_references = 1;
     report.summary.keyframes_undefined = 1;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.broken_references, 6.0);
 
     // 10 broken refs -> 30pt uncapped, capped at 15pt.
     report.summary.unresolved_class_references = 10;
     report.summary.keyframes_undefined = 0;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.broken_references, BROKEN_REFERENCES_CAP);
 }
 
 #[test]
-fn token_erosion_penalty_scales_and_caps() {
-    // 3 font-size units (1 over the baseline of 2) -> 3pt; +1 arbitrary token = 4pt.
+fn token_erosion_penalty_saturates_gently() {
+    // v2: unit term = min(extra_units * 2, 4); arbitrary term = min(arb / 18, 8).
+    // 3 font-size units (1 over the baseline of 2) -> unit_term 2.0; +1 arbitrary
+    // value -> 1/18 ~= 0.06 -> total ~2.1pt.
     let mut report = clean_report();
     report.summary.font_size_units_used = 3;
     report.summary.tailwind_arbitrary_values = 1;
-    let styling = compute_styling_health(&report);
-    approx(styling.penalties.token_erosion, 4.0);
+    let styling = score(&report);
+    approx(styling.penalties.token_erosion, 2.1);
 
     // Below/at baseline units alone contribute nothing.
     report.summary.font_size_units_used = 2;
     report.summary.tailwind_arbitrary_values = 0;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.token_erosion, 0.0);
 
-    // Many arbitrary tokens cap the category at 10pt.
+    // A moderate number of arbitrary values yields a MODERATE penalty, not the
+    // ceiling: 50 / 18 ~= 2.8pt (v1 instant-capped here at 10pt).
     report.summary.tailwind_arbitrary_values = 50;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
+    approx(styling.penalties.token_erosion, 2.8);
+
+    // The font-size-unit term alone is capped (so units cannot dominate): 10
+    // units = 8 over the baseline -> 8 * 2 = 16 uncapped, capped at 4pt.
+    report.summary.font_size_units_used = 10;
+    report.summary.tailwind_arbitrary_values = 0;
+    let styling = score(&report);
+    approx(styling.penalties.token_erosion, 4.0);
+
+    // Only a very high arbitrary-value count plus mixed units reaches the 10pt
+    // category cap: unit_term 4 (10 units) + arbitrary_term 8 (>=144 values) = 12,
+    // capped at 10pt.
+    report.summary.tailwind_arbitrary_values = 200;
+    let styling = score(&report);
     approx(styling.penalties.token_erosion, TOKEN_EROSION_CAP);
 }
 
@@ -130,13 +234,13 @@ fn structural_penalty_uses_important_density_and_nesting() {
     report.summary.total_declarations = 100;
     report.summary.important_declarations = 15;
     report.summary.max_nesting_depth = 4;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.structural, 10.0);
 
     // Deep nesting alone: depth 7 is 3 over the floor of 4 -> 3pt.
     report.summary.important_declarations = 5; // exactly at the floor -> 0
     report.summary.max_nesting_depth = 7;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     approx(styling.penalties.structural, 3.0);
 }
 
@@ -148,21 +252,23 @@ fn penalties_compound_into_the_score() {
     report.summary.total_declarations = 100;
     report.summary.duplicate_declarations_total = 5; // 10pt duplication
     report.summary.files_analyzed = 1;
-    report.summary.unreferenced_css_classes = 1; // 10pt dead_surface (1/1*10)
+    report.summary.unreferenced_css_classes = 1; // 1.5pt dead_surface (1/100*150)
     report.summary.unresolved_class_references = 1; // 3pt broken_references
-    report.summary.font_size_units_used = 3; // 3pt token_erosion
+    report.summary.font_size_units_used = 3; // 2pt token_erosion (unit term, capped at 4)
     report.summary.important_declarations = 15; // 10pt structural
     report.summary.max_nesting_depth = 4;
-    let styling = compute_styling_health(&report);
+    let styling = score(&report);
     let p = &styling.penalties;
     approx(p.duplication, 10.0);
-    approx(p.dead_surface, 10.0);
+    // dead_surface = token term 0 (no unused theme tokens) + other term
+    // 1/100*150 = 1.5pt.
+    approx(p.dead_surface, 1.5);
     approx(p.broken_references, 3.0);
-    approx(p.token_erosion, 3.0);
+    approx(p.token_erosion, 2.0);
     approx(p.structural, 10.0);
-    // 100 - (10 + 10 + 3 + 3 + 10) = 64.
-    approx(styling.score, 64.0);
-    assert_eq!(styling.grade, "C");
+    // 100 - (10 + 1.5 + 3 + 2 + 10) = 73.5.
+    approx(styling.score, 73.5);
+    assert_eq!(styling.grade, "B");
 }
 
 #[test]
@@ -171,12 +277,15 @@ fn score_floors_at_rubric_minimum_for_pathological_report() {
     report.summary.total_declarations = 100;
     report.summary.duplicate_declarations_total = 100; // capped 20
     report.summary.files_analyzed = 1;
-    report.summary.unreferenced_css_classes = 100; // capped 20
+    report.summary.unused_theme_tokens = 100; // token term: 100/100*15 -> capped 15
+    report.summary.unreferenced_css_classes = 100; // other term: 100/100*150 -> capped 8; sum capped 20
     report.summary.unresolved_class_references = 100; // capped 15
-    report.summary.tailwind_arbitrary_values = 100; // capped 10
+    report.summary.font_size_units_used = 20; // unit term -> capped 4
+    report.summary.tailwind_arbitrary_values = 200; // arbitrary term -> capped 8; sum capped 10
     report.summary.important_declarations = 100; // capped 10
     report.summary.max_nesting_depth = 20;
-    let styling = compute_styling_health(&report);
+    // 100 defined tokens, all 100 unused -> token term saturated.
+    let styling = compute_styling_health(&report, 100);
     // Rubric floor is 25.0 (100 minus the sum of all per-category caps); the
     // `.clamp(0.0, 100.0)` is a defensive guard for any future uncapped category
     // and cannot fire under the current rubric.
