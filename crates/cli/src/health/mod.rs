@@ -293,6 +293,7 @@ pub fn run_health(opts: &HealthOptions<'_>) -> ExitCode {
             summary_heading: true,
             show_explain_tip: true,
             skip_score_and_trend: false,
+            css_requested: opts.css,
         },
     )
 }
@@ -329,6 +330,10 @@ pub struct HealthPrintOptions {
     pub summary_heading: bool,
     pub show_explain_tip: bool,
     pub skip_score_and_trend: bool,
+    /// Whether `--css` was requested. Forwarded to the human renderer so an empty
+    /// CSS result (no import-reachable stylesheet) is explained rather than
+    /// silently omitted. Defaults `false` for callers that do not request CSS.
+    pub css_requested: bool,
 }
 
 pub fn print_health_result(result: &HealthResult, options: HealthPrintOptions) -> ExitCode {
@@ -377,6 +382,7 @@ fn health_report_context(
         baseline_matched: None,
         config_fixable: false,
         skip_score_and_trend: options.skip_score_and_trend,
+        css_requested: options.css_requested,
     }
 }
 
@@ -629,6 +635,7 @@ mod tests {
                 summary_heading: true,
                 show_explain_tip: true,
                 skip_score_and_trend: false,
+                css_requested: false,
             },
         )
     }
@@ -797,6 +804,7 @@ mod tests {
                     summary_heading: true,
                     show_explain_tip: true,
                     skip_score_and_trend: false,
+                    css_requested: false,
                 },
             ),
             ExitCode::from(1),

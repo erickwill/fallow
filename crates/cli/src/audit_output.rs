@@ -163,6 +163,7 @@ pub fn print_audit_findings(result: &AuditResult, quiet: bool, explain: bool, sh
                 summary_heading: true,
                 show_explain_tip: false,
                 skip_score_and_trend: false,
+                css_requested: false,
             },
         );
     }

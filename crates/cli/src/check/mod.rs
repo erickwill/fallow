@@ -777,6 +777,7 @@ fn prepare_print_check(result: &CheckResult, opts: PrintCheckOptions) -> Prepare
             baseline_matched: result.baseline_matched,
             config_fixable: result.config_fixable,
             skip_score_and_trend: false,
+            css_requested: false,
         },
         regression_json: opts.regression_json,
         quiet: opts.quiet,

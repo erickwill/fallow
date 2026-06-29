@@ -103,6 +103,10 @@ pub struct ReportContext<'a> {
     /// (combined-mode orientation header). Standalone `fallow health` keeps
     /// the default `false` and renders both sections inline.
     pub skip_score_and_trend: bool,
+    /// Human-only: whether `--css` was requested. When `true` but no stylesheet
+    /// was import-reachable, the CSS-health section renders an explanatory note
+    /// instead of being silently omitted. Defaults `false` for non-css callers.
+    pub css_requested: bool,
 }
 
 /// Strip the project root prefix from a path for display, falling back to the full path.
@@ -579,6 +583,7 @@ fn print_health_human_report(
         show_explain_tip: ctx.show_explain_tip,
         explain: ctx.explain,
         skip_score_and_trend: ctx.skip_score_and_trend,
+        css_requested: ctx.css_requested,
     });
     if let Some(grouping) = grouping {
         human::print_health_grouping(grouping, ctx.root, ctx.quiet);
@@ -786,6 +791,7 @@ mod tests {
             baseline_matched: None,
             config_fixable: false,
             skip_score_and_trend: false,
+            css_requested: false,
         }
     }
 

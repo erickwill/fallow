@@ -610,6 +610,7 @@ pub fn print_dupes_result(
         baseline_matched: None,
         config_fixable: false,
         skip_score_and_trend: false,
+        css_requested: false,
     };
     print_default_ignore_note(result, quiet);
     print_min_occurrences_note(result, quiet);
@@ -740,6 +741,7 @@ fn print_dupes_result_with_grouping(input: DupesResultGroupingInput<'_>) -> Exit
         baseline_matched: None,
         config_fixable: false,
         skip_score_and_trend: false,
+        css_requested: false,
     };
     print_default_ignore_note(result, input.quiet);
     print_min_occurrences_note(result, input.quiet);

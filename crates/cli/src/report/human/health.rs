@@ -26,6 +26,9 @@ pub(in crate::report) struct PrintHealthHumanInput<'a> {
     pub(in crate::report) show_explain_tip: bool,
     pub(in crate::report) explain: bool,
     pub(in crate::report) skip_score_and_trend: bool,
+    /// Whether `--css` was requested. Drives the empty-CSS explanatory note when
+    /// no stylesheet was import-reachable; defaults `false` for non-css callers.
+    pub(in crate::report) css_requested: bool,
 }
 
 pub(in crate::report) fn print_health_human(input: &PrintHealthHumanInput<'_>) {
@@ -36,6 +39,7 @@ pub(in crate::report) fn print_health_human(input: &PrintHealthHumanInput<'_>) {
     let show_explain_tip = input.show_explain_tip;
     let explain = input.explain;
     let skip_score_and_trend = input.skip_score_and_trend;
+    let css_requested = input.css_requested;
     if !quiet {
         eprintln!();
     }
@@ -50,6 +54,7 @@ pub(in crate::report) fn print_health_human(input: &PrintHealthHumanInput<'_>) {
         && report.coverage_intelligence.is_none()
         && report.threshold_overrides.is_empty()
         && report.css_analytics.is_none()
+        && !css_requested
         && !has_score
     {
         print_health_empty_state(report, elapsed, quiet);
@@ -66,7 +71,13 @@ pub(in crate::report) fn print_health_human(input: &PrintHealthHumanInput<'_>) {
             .is_some_and(|coverage| !coverage.findings.is_empty());
     print_explain_tip_if_tty(show_explain_tip && has_findings, quiet);
 
-    let lines = build_health_human_lines_with_explain(report, root, explain, skip_score_and_trend);
+    let lines = build_health_human_lines_with_explain(
+        report,
+        root,
+        explain,
+        skip_score_and_trend,
+        css_requested,
+    );
     for line in lines {
         outln!("{line}");
     }
@@ -147,7 +158,7 @@ fn print_health_final_status(report: &fallow_output::HealthReport, elapsed: Dura
 ///
 #[cfg(test)]
 fn build_health_human_lines(report: &fallow_output::HealthReport, root: &Path) -> Vec<String> {
-    build_health_human_lines_with_explain(report, root, false, false)
+    build_health_human_lines_with_explain(report, root, false, false, false)
 }
 
 fn build_health_human_lines_with_explain(
@@ -155,6 +166,7 @@ fn build_health_human_lines_with_explain(
     root: &Path,
     explain: bool,
     skip_score_and_trend: bool,
+    css_requested: bool,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     if !skip_score_and_trend {
@@ -173,7 +185,7 @@ fn build_health_human_lines_with_explain(
     render_file_scores(&mut lines, report, root);
     render_hotspots(&mut lines, report, root);
     render_refactoring_targets(&mut lines, report, root);
-    render_css_analytics(&mut lines, report);
+    render_css_analytics(&mut lines, report, css_requested);
     if explain {
         inject_explain_blocks(lines)
     } else {
@@ -184,8 +196,26 @@ fn build_health_human_lines_with_explain(
 /// Render the opt-in `--css` structural CSS analytics section: a one-line
 /// stylesheet summary plus the most structurally notable rules (highest
 /// specificity, then complexity, then `!important`).
-fn render_css_analytics(lines: &mut Vec<String>, report: &fallow_output::HealthReport) {
+fn render_css_analytics(
+    lines: &mut Vec<String>,
+    report: &fallow_output::HealthReport,
+    css_requested: bool,
+) {
     let Some(ref css) = report.css_analytics else {
+        // `--css` was requested but no stylesheet was import-reachable (so neither
+        // `css_analytics` nor `styling_health` was produced). Render the header
+        // plus a one-line reason instead of silently dropping the section, so the
+        // empty result is explained. A plain `fallow health` run (css not
+        // requested) renders nothing, leaving non-css output byte-unchanged.
+        if css_requested && report.styling_health.is_none() {
+            lines.push(String::new());
+            lines.push("CSS health".bold().to_string());
+            lines.push(format!(
+                "  {}",
+                "No stylesheets analyzed (none reachable from entry points; install dependencies for full resolution)."
+                    .dimmed()
+            ));
+        }
         return;
     };
 
@@ -214,10 +244,37 @@ fn render_styling_health(lines: &mut Vec<String>, report: &fallow_output::Health
         return;
     };
     lines.push(format!(
-        "  {} {}",
+        "  {} {} {}",
         "Styling health:".cyan().bold(),
         styling_health_colored(styling),
+        "(CSS quality, scored separately from the code health score)".dimmed(),
     ));
+
+    let penalties = styling_health_penalties(&styling.penalties);
+    if !penalties.is_empty() {
+        lines.push(format!(
+            "  {} {}",
+            "Deductions:".dimmed(),
+            render_health_score_penalties(&penalties)
+        ));
+    }
+}
+
+/// Build the styling-health deduction list (non-zero penalties, sorted by
+/// magnitude descending) mirroring `health_score_penalties` for the code score.
+/// Unlike the code penalties these fields are plain `f64` (never `Option`), so a
+/// zero means "evaluated and clean" rather than "not evaluated".
+fn styling_health_penalties(p: &fallow_output::StylingHealthPenalties) -> Vec<(&'static str, f64)> {
+    let mut penalties = vec![
+        ("duplication", p.duplication),
+        ("dead surface", p.dead_surface),
+        ("broken refs", p.broken_references),
+        ("token erosion", p.token_erosion),
+        ("structural", p.structural),
+    ];
+    penalties.retain(|&(_, v)| v > 0.0);
+    penalties.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    penalties
 }
 
 fn styling_health_colored(styling: &fallow_output::StylingHealth) -> String {

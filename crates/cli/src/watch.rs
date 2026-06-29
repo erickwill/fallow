@@ -321,6 +321,7 @@ fn analyze_and_report(config: &fallow_config::ResolvedConfig, opts: &WatchOption
         baseline_matched: None,
         config_fixable: crate::fix::is_config_fixable(&config.root, opts.config_path.as_ref()),
         skip_score_and_trend: false,
+        css_requested: false,
     };
     let report_code = report::print_results(&results, &ctx, config.output, None);
     if report_code != ExitCode::SUCCESS {

@@ -302,6 +302,7 @@ fn print_health_section(
             summary_heading: !show_headers,
             show_explain_tip: false,
             skip_score_and_trend: true,
+            css_requested: false,
         },
     );
     exit_code_to_u8(code)
