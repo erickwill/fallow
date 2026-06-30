@@ -25,8 +25,12 @@ pub const HEALTH_SCORE_FORMULA_VERSION: u32 = 2;
 /// caused by a weight change from one caused by an actual codebase change. v2
 /// recalibrated `dead_surface` (size-stable declaration-share denominator) and
 /// `token_erosion` (gently saturating arbitrary-value term) from real-project
-/// evidence; see `engine::health::styling_score` for the full rubric.
-pub const STYLING_HEALTH_FORMULA_VERSION: u32 = 2;
+/// evidence. v3 re-weighted the duplication family toward value DRIFT: it
+/// down-weighted the exact-block `duplication` scale (exact CSS duplication is the
+/// least-harmful pattern) and added a hardcoded-value-sprawl drift sub-term to
+/// `token_erosion` (distinct un-tokenized `box-shadow`/`border-radius`/`line-height`
+/// values). See `engine::health::styling_score` for the full rubric + calibration.
+pub const STYLING_HEALTH_FORMULA_VERSION: u32 = 3;
 
 /// `skip_serializing_if` predicate: drop a `u16` field from JSON when zero, so
 /// the React descriptive counts never bloat non-React complexity findings.
@@ -160,9 +164,11 @@ pub struct StylingHealthPenalties {
     /// (`unresolved_class_references`) and animations referencing a `@keyframes`
     /// defined nowhere (`undefined_keyframes`). Capped at 15pt.
     pub broken_references: f64,
-    /// Design-token erosion: mixed `font-size` units (`font_size_unit_mix`) and
-    /// Tailwind arbitrary-value bypasses (`tailwind_arbitrary_values`). Capped at
-    /// 10pt.
+    /// Design-token erosion: mixed `font-size` units (`font_size_unit_mix`),
+    /// Tailwind arbitrary-value bypasses (`tailwind_arbitrary_values`), and
+    /// distinct HARDCODED `box-shadow`/`border-radius`/`line-height` values above
+    /// per-axis baselines (the v3 value-sprawl drift sub-term; `var(--*)`-
+    /// referenced values are not counted). Capped at 10pt.
     pub token_erosion: f64,
     /// Structural smells from the summary aggregates: `!important` density and
     /// deep style-rule nesting. Capped at 10pt.
