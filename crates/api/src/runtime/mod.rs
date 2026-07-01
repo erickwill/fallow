@@ -6,21 +6,27 @@ use fallow_output::{HealthGrouping, HealthReport, RootEnvelopeMode};
 use fallow_types::output_format::OutputFormat;
 use fallow_types::workspace::WorkspaceDiagnostic;
 
+mod audit;
 mod dead_code;
+mod decision_surface;
 mod duplication;
 mod feature_flags;
 mod trace;
 
 pub use crate::runtime_output::{
-    BoundaryViolationsOutput, BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
+    AuditProgrammaticKeySnapshot, AuditProgrammaticOutput, BoundaryViolationsOutput,
+    BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
     CircularDependenciesProgrammaticOutput, DeadCodeOutput, DeadCodeProgrammaticOutput,
-    DuplicationOutput, DuplicationProgrammaticOutput, FeatureFlagsOutput,
-    FeatureFlagsProgrammaticOutput, HealthJsonReportInput, HealthProgrammaticOutput,
-    TraceCloneOutput, TraceCloneProgrammaticOutput, TraceDependencyOutput,
-    TraceDependencyProgrammaticOutput, TraceExportOutput, TraceExportProgrammaticOutput,
-    TraceFileOutput, TraceFileProgrammaticOutput, serialize_health_report_json,
+    DecisionSurfaceProgrammaticOutput, DuplicationOutput, DuplicationProgrammaticOutput,
+    FeatureFlagsOutput, FeatureFlagsProgrammaticOutput, HealthJsonReportInput,
+    HealthProgrammaticOutput, TraceCloneOutput, TraceCloneProgrammaticOutput,
+    TraceDependencyOutput, TraceDependencyProgrammaticOutput, TraceExportOutput,
+    TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
+    serialize_health_report_json,
 };
+pub use audit::run_audit;
 pub use dead_code::{run_boundary_violations, run_circular_dependencies, run_dead_code};
+pub use decision_surface::run_decision_surface;
 pub use duplication::run_duplication;
 pub use feature_flags::run_feature_flags;
 pub use trace::{run_trace_clone, run_trace_dependency, run_trace_export, run_trace_file};
@@ -261,7 +267,7 @@ pub fn run_complexity_with_runner(
         explain: options.analysis.explain,
         workspace_diagnostics,
         next_steps,
-        envelope_mode: root_envelope_mode(options.analysis.legacy_envelope),
+        envelope_mode: root_envelope_mode(),
         telemetry_analysis_run_id,
     })
 }
@@ -278,8 +284,8 @@ pub fn run_health_with_runner(
     run_complexity_with_runner(options, runner)
 }
 
-const fn root_envelope_mode(legacy_envelope: bool) -> RootEnvelopeMode {
-    RootEnvelopeMode::from_legacy(legacy_envelope)
+const fn root_envelope_mode() -> RootEnvelopeMode {
+    RootEnvelopeMode::Tagged
 }
 
 #[cfg(test)]

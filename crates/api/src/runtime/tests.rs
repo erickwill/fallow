@@ -61,6 +61,10 @@ fn analysis_at(root: &Path) -> AnalysisOptions {
     }
 }
 
+fn canonical_root(root: &Path) -> PathBuf {
+    dunce::canonicalize(root).expect("canonical root")
+}
+
 fn health_json_with_runner(
     options: &ComplexityOptions,
     runner: &impl ProgrammaticHealthRunner,
@@ -154,7 +158,7 @@ fn derives_programmatic_health_execution_options_from_api_contracts() {
 
     let execution = derive_programmatic_health_execution_options(&resolved, &options);
 
-    assert_eq!(execution.root, root);
+    assert_eq!(execution.root, canonical_root(root));
     assert!(matches!(execution.output, OutputFormat::Human));
     assert!(execution.no_cache);
     assert_eq!(execution.threads, 2);
@@ -210,25 +214,6 @@ fn serialize_health_report_json_tags_meta_and_strips_paths() {
     );
     assert_eq!(json["workspace_diagnostics"][0]["path"], "package.json");
     assert_eq!(json["next_steps"][0]["id"], "inspect-health");
-}
-
-#[test]
-fn serialize_health_report_json_respects_legacy_envelope() {
-    let json = serialize_health_report_json(HealthJsonReportInput {
-        report: HealthReport::default(),
-        root: Path::new("/repo"),
-        elapsed: std::time::Duration::ZERO,
-        explain: false,
-        grouped_by: None,
-        groups: None,
-        workspace_diagnostics: Vec::new(),
-        next_steps: Vec::new(),
-        envelope_mode: RootEnvelopeMode::Legacy,
-        telemetry_analysis_run_id: None,
-    })
-    .expect("health JSON serializes");
-
-    assert!(json.get("kind").is_none());
 }
 
 #[test]
@@ -423,7 +408,7 @@ fn run_duplication_returns_typed_output_before_json() {
     assert!(run.clone_families().is_empty());
     assert!(run.groups().is_none());
     assert_eq!(run.report().stats.clone_groups, 0);
-    assert_eq!(run.root, root);
+    assert_eq!(run.root, canonical_root(root));
     assert_eq!(run.envelope_mode, RootEnvelopeMode::Tagged);
 
     let json =
@@ -492,25 +477,6 @@ fn serialized_feature_flags_returns_json_adapter_output() {
 }
 
 #[test]
-fn serialized_duplication_legacy_envelope_removes_root_kind() {
-    let project = tempfile::tempdir().expect("temp dir");
-    let root = project.path();
-    std::fs::create_dir(root.join("src")).expect("src dir");
-    std::fs::write(root.join("src/a.ts"), "export const a = 1;\n").expect("file");
-
-    let json = duplication_json(&DuplicationOptions {
-        analysis: AnalysisOptions {
-            legacy_envelope: true,
-            ..analysis_at(root)
-        },
-        ..DuplicationOptions::default()
-    })
-    .expect("duplication succeeds");
-
-    assert!(json.get("kind").is_none());
-}
-
-#[test]
 fn serialized_dead_code_returns_dead_code_envelope() {
     let project = dead_code_project();
     let root = project.path();
@@ -548,7 +514,7 @@ fn run_dead_code_returns_typed_output_before_json() {
     let _: &crate::DeadCodeOutput = &run.output;
     assert_eq!(run.output.schema_version.0, CHECK_SCHEMA_VERSION);
     assert_eq!(run.results().unused_exports.len(), 2);
-    assert_eq!(run.root(), root);
+    assert_eq!(run.root(), canonical_root(root));
     assert_eq!(run.envelope_mode, RootEnvelopeMode::Tagged);
 
     let json =
@@ -578,27 +544,6 @@ fn run_dead_code_family_helpers_return_typed_filtered_output() {
     assert!(boundary.boundary_call_violations().is_empty());
     assert_eq!(circular.output.total_issues, 0);
     assert_eq!(boundary.output.total_issues, 0);
-}
-
-#[test]
-fn serialized_dead_code_legacy_envelope_removes_root_kind() {
-    let project = dead_code_project();
-    let root = project.path();
-
-    let json = dead_code_json(&DeadCodeOptions {
-        analysis: AnalysisOptions {
-            legacy_envelope: true,
-            ..analysis_at(root)
-        },
-        filters: DeadCodeFilters {
-            unused_exports: true,
-            ..DeadCodeFilters::default()
-        },
-        ..DeadCodeOptions::default()
-    })
-    .expect("dead-code succeeds");
-
-    assert!(json.get("kind").is_none());
 }
 
 #[test]

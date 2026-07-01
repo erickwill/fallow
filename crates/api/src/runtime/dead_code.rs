@@ -13,8 +13,8 @@ use fallow_types::results::{AnalysisResults, TraceHopRole};
 use rustc_hash::FxHashSet;
 
 use crate::{
-    BoundaryViolationsProgrammaticOutput, CircularDependenciesProgrammaticOutput, DeadCodeFilters,
-    DeadCodeOptions, DeadCodeProgrammaticOutput, ProgrammaticError,
+    AnalysisOptions, BoundaryViolationsProgrammaticOutput, CircularDependenciesProgrammaticOutput,
+    DeadCodeFilters, DeadCodeOptions, DeadCodeProgrammaticOutput, ProgrammaticError,
     analysis_context::{
         ProgrammaticAnalysisContext, changed_files_for_run, resolve_programmatic_analysis_context,
     },
@@ -70,6 +70,17 @@ fn run_dead_code_inner(
 ) -> ProgrammaticResult<DeadCodeProgrammaticOutput> {
     let start = Instant::now();
     let session = load_dead_code_session(options, resolved)?;
+    run_dead_code_with_session(options, resolved, &session, None, post_filter, start)
+}
+
+pub(super) fn run_dead_code_with_session(
+    options: &DeadCodeOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<std::path::PathBuf>>,
+    post_filter: impl FnOnce(&mut AnalysisResults),
+    start: Instant,
+) -> ProgrammaticResult<DeadCodeProgrammaticOutput> {
     let analysis = session.analyze_dead_code().map_err(|err| {
         ProgrammaticError::new(format!("dead-code analysis failed: {err}"), 2)
             .with_code("FALLOW_DEAD_CODE_FAILED")
@@ -77,7 +88,7 @@ fn run_dead_code_inner(
     })?;
     let mut results = analysis.results;
 
-    apply_dead_code_scope(options, resolved, &session, &mut results)?;
+    apply_dead_code_scope(options, resolved, session, changed_files, &mut results)?;
     apply_dead_code_filters(&options.filters, &mut results);
     post_filter(&mut results);
 
@@ -107,7 +118,7 @@ fn run_dead_code_inner(
     Ok(DeadCodeProgrammaticOutput {
         output,
         root: session.root().to_path_buf(),
-        envelope_mode: root_envelope_mode(resolved.legacy_envelope),
+        envelope_mode: root_envelope_mode(),
         telemetry_analysis_run_id: None,
     })
 }
@@ -132,7 +143,7 @@ fn keep_boundary_violations(results: &mut AnalysisResults) {
     results.boundary_call_violations = boundary_call_violations;
 }
 
-fn load_dead_code_session(
+pub(super) fn load_dead_code_session(
     options: &DeadCodeOptions,
     resolved: &ProgrammaticAnalysisContext,
 ) -> ProgrammaticResult<AnalysisSession> {
@@ -155,6 +166,28 @@ fn load_dead_code_session(
     })?;
     let project_config = configure_project_for_dead_code(project_config, options);
     Ok(AnalysisSession::from_config(project_config))
+}
+
+pub(super) fn default_dead_code_options_for_context(
+    resolved: &ProgrammaticAnalysisContext,
+) -> DeadCodeOptions {
+    DeadCodeOptions {
+        analysis: AnalysisOptions {
+            root: Some(resolved.root().to_path_buf()),
+            config_path: resolved.config_path().clone(),
+            no_cache: resolved.no_cache(),
+            threads: Some(resolved.threads()),
+            production_override: resolved.production_override(),
+            changed_since: resolved.changed_since().map(str::to_owned),
+            workspace: resolved.workspace().map(<[String]>::to_vec),
+            changed_workspaces: resolved.changed_workspaces().map(str::to_owned),
+            explain: resolved.explain_enabled(),
+            ..AnalysisOptions::default()
+        },
+        filters: DeadCodeFilters::default(),
+        files: Vec::new(),
+        include_entry_exports: false,
+    }
 }
 
 fn configure_project_for_dead_code(
@@ -181,13 +214,19 @@ fn apply_dead_code_scope(
     options: &DeadCodeOptions,
     resolved: &ProgrammaticAnalysisContext,
     session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<std::path::PathBuf>>,
     results: &mut AnalysisResults,
 ) -> ProgrammaticResult<()> {
     if let Some(workspace_roots) = resolved.workspace_roots.as_ref() {
         fallow_engine::filter_to_workspaces(results, workspace_roots);
     }
-    if let Some(changed_files) = changed_files_for_run(resolved)? {
-        fallow_engine::filter_by_changed_files(results, &changed_files);
+    let resolved_changed_files = if changed_files.is_some() {
+        None
+    } else {
+        changed_files_for_run(resolved)?
+    };
+    if let Some(changed_files) = changed_files.or(resolved_changed_files.as_ref()) {
+        fallow_engine::filter_by_changed_files(results, changed_files);
     }
     if let Some(diff) = resolved.diff.as_ref() {
         filter_dead_code_by_diff(results, diff, session.root());

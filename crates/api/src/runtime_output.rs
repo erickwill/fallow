@@ -14,7 +14,9 @@ use fallow_types::output_dead_code::{
 };
 use fallow_types::results::AnalysisResults;
 use fallow_types::workspace::WorkspaceDiagnostic;
+use rustc_hash::FxHashSet;
 
+use crate::{AuditAttribution, AuditSummary, AuditVerdict};
 use crate::{CloneFamilyFinding, CloneGroupFinding, DupesReportPayload, DuplicationGroup};
 
 pub const HEALTH_SCHEMA_VERSION: u32 = 7;
@@ -179,6 +181,7 @@ impl From<DeadCodeProgrammaticOutput> for BoundaryViolationsProgrammaticOutput {
 pub struct DuplicationProgrammaticOutput {
     pub output: DuplicationOutput,
     pub root: PathBuf,
+    pub threshold: f64,
     pub envelope_mode: RootEnvelopeMode,
     pub telemetry_analysis_run_id: Option<String>,
 }
@@ -297,6 +300,44 @@ pub struct HealthProgrammaticOutput {
     pub explain: bool,
     pub workspace_diagnostics: Vec<WorkspaceDiagnostic>,
     pub next_steps: Vec<NextStep>,
+    pub envelope_mode: RootEnvelopeMode,
+    pub telemetry_analysis_run_id: Option<String>,
+}
+
+/// Typed programmatic audit output before JSON serialization.
+#[derive(Debug, Clone)]
+pub struct AuditProgrammaticOutput {
+    pub verdict: AuditVerdict,
+    pub summary: AuditSummary,
+    pub attribution: AuditAttribution,
+    pub changed_files_count: usize,
+    pub base_ref: String,
+    pub base_description: Option<String>,
+    pub head_sha: Option<String>,
+    pub elapsed: std::time::Duration,
+    pub base_snapshot_skipped: Option<bool>,
+    pub base_snapshot: Option<AuditProgrammaticKeySnapshot>,
+    pub dead_code: Option<DeadCodeProgrammaticOutput>,
+    pub duplication: Option<DuplicationProgrammaticOutput>,
+    pub complexity: Option<HealthProgrammaticOutput>,
+    pub next_steps: Vec<NextStep>,
+    pub envelope_mode: RootEnvelopeMode,
+    pub telemetry_analysis_run_id: Option<String>,
+}
+
+/// Stable audit key snapshot used to classify introduced vs inherited findings.
+#[derive(Debug, Clone, Default)]
+pub struct AuditProgrammaticKeySnapshot {
+    pub dead_code: FxHashSet<String>,
+    pub health: FxHashSet<String>,
+    pub dupes: FxHashSet<String>,
+}
+
+/// Typed programmatic decision-surface output before JSON serialization.
+#[derive(Debug, Clone)]
+pub struct DecisionSurfaceProgrammaticOutput {
+    pub surface: fallow_output::DecisionSurface,
+    pub elapsed: std::time::Duration,
     pub envelope_mode: RootEnvelopeMode,
     pub telemetry_analysis_run_id: Option<String>,
 }

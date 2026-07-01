@@ -7,21 +7,199 @@
 use crate::{
     ProgrammaticError,
     runtime::{
-        BoundaryViolationsProgrammaticOutput, CircularDependenciesProgrammaticOutput,
-        DeadCodeProgrammaticOutput, DuplicationProgrammaticOutput, FeatureFlagsProgrammaticOutput,
-        HealthJsonReportInput, HealthProgrammaticOutput, TraceCloneProgrammaticOutput,
-        TraceDependencyProgrammaticOutput, TraceExportProgrammaticOutput,
-        TraceFileProgrammaticOutput, serialize_health_report_json,
+        AuditProgrammaticOutput, BoundaryViolationsProgrammaticOutput,
+        CircularDependenciesProgrammaticOutput, DeadCodeProgrammaticOutput,
+        DecisionSurfaceProgrammaticOutput, DuplicationProgrammaticOutput,
+        FeatureFlagsProgrammaticOutput, HealthJsonReportInput, HealthProgrammaticOutput,
+        TraceCloneProgrammaticOutput, TraceDependencyProgrammaticOutput,
+        TraceExportProgrammaticOutput, TraceFileProgrammaticOutput, serialize_health_report_json,
     },
 };
 use fallow_output::{
-    CheckOutput, GroupByMode, RootEnvelopeMode, serialize_check_json_output,
-    serialize_dupes_json_output, serialize_feature_flags_json_output, strip_root_prefix,
+    CHECK_SCHEMA_VERSION, CheckOutput, GroupByMode, RootEnvelopeMode,
+    build_decision_surface_output, serialize_check_json_output,
+    serialize_decision_surface_json_output, serialize_dupes_json_output,
+    serialize_feature_flags_json_output, strip_root_prefix,
 };
+use fallow_types::envelope::{ElapsedMs, SchemaVersion, ToolVersion};
 use serde::Serialize;
 use std::path::Path;
+use std::time::Duration;
 
 type ProgrammaticResult<T> = Result<T, ProgrammaticError>;
+
+/// Serialize typed decision-surface output into the stable JSON contract.
+///
+/// # Errors
+///
+/// Returns a structured error if the decision-surface payload cannot serialize.
+pub fn serialize_decision_surface_programmatic_json(
+    output: DecisionSurfaceProgrammaticOutput,
+) -> ProgrammaticResult<serde_json::Value> {
+    let DecisionSurfaceProgrammaticOutput {
+        surface,
+        elapsed: _,
+        envelope_mode,
+        telemetry_analysis_run_id,
+    } = output;
+    let payload = build_decision_surface_output(&surface);
+    serialize_decision_surface_json_output(
+        payload,
+        envelope_mode,
+        telemetry_analysis_run_id.as_deref(),
+    )
+    .map_err(|err| {
+        ProgrammaticError::new(format!("failed to serialize decision surface: {err}"), 2)
+            .with_code("FALLOW_SERIALIZE_DECISION_SURFACE")
+            .with_context("decision-surface")
+    })
+}
+
+/// Serialize typed audit output into the stable JSON compatibility contract.
+///
+/// # Errors
+///
+/// Returns a structured error if one of the audit sections cannot serialize.
+pub fn serialize_audit_programmatic_json(
+    output: AuditProgrammaticOutput,
+) -> ProgrammaticResult<serde_json::Value> {
+    let base_snapshot = output.base_snapshot.as_ref();
+    let dead_code = output
+        .dead_code
+        .as_ref()
+        .map(|dead_code| serialize_audit_dead_code(dead_code, base_snapshot))
+        .transpose()?;
+    let duplication = output
+        .duplication
+        .as_ref()
+        .map(|duplication| serialize_audit_duplication(duplication, base_snapshot))
+        .transpose()?;
+    let complexity = output
+        .complexity
+        .as_ref()
+        .map(|complexity| serialize_audit_complexity(complexity, base_snapshot))
+        .transpose()?;
+
+    crate::serialize_audit_json(
+        crate::AuditJsonOutputInput {
+            header: crate::AuditJsonHeaderInput {
+                schema_version: SchemaVersion(CHECK_SCHEMA_VERSION),
+                version: ToolVersion(env!("CARGO_PKG_VERSION").to_string()),
+                verdict: output.verdict,
+                changed_files_count: u32::try_from(output.changed_files_count).unwrap_or(u32::MAX),
+                base_ref: output.base_ref,
+                base_description: output.base_description,
+                head_sha: output.head_sha,
+                elapsed_ms: ElapsedMs(
+                    u64::try_from(output.elapsed.as_millis()).unwrap_or(u64::MAX),
+                ),
+                base_snapshot_skipped: output.base_snapshot_skipped,
+                summary: output.summary,
+                attribution: output.attribution,
+            },
+            dead_code,
+            duplication,
+            complexity,
+            next_steps: output.next_steps,
+        },
+        output.envelope_mode,
+        output.telemetry_analysis_run_id.as_deref(),
+    )
+    .map_err(|err| {
+        ProgrammaticError::new(format!("failed to serialize audit report: {err}"), 2)
+            .with_code("FALLOW_SERIALIZE_AUDIT_REPORT")
+            .with_context("audit")
+    })
+}
+
+fn serialize_audit_dead_code(
+    output: &DeadCodeProgrammaticOutput,
+    base_snapshot: Option<&crate::AuditProgrammaticKeySnapshot>,
+) -> ProgrammaticResult<serde_json::Value> {
+    let mut json = crate::serialize_check_json_payload(crate::CheckJsonPayloadInput {
+        results: &output.output.results,
+        root: &output.root,
+        elapsed: Duration::from_millis(output.output.elapsed_ms.0),
+        config_fixable: false,
+        extras: crate::CheckJsonExtraOutputs::default(),
+        workspace_diagnostics: Vec::new(),
+    })
+    .map_err(|err| {
+        ProgrammaticError::new(format!("failed to serialize audit dead-code: {err}"), 2)
+            .with_code("FALLOW_SERIALIZE_AUDIT_DEAD_CODE")
+            .with_context("audit.deadCode")
+    })?;
+    if let Some(base) = base_snapshot {
+        crate::audit_keys::annotate_dead_code_json(
+            &mut json,
+            &output.output.results,
+            &output.root,
+            &base.dead_code,
+        );
+    }
+    Ok(json)
+}
+
+fn serialize_audit_duplication(
+    output: &DuplicationProgrammaticOutput,
+    base_snapshot: Option<&crate::AuditProgrammaticKeySnapshot>,
+) -> ProgrammaticResult<serde_json::Value> {
+    let mut json = serde_json::to_value(&output.output.report).map_err(|err| {
+        ProgrammaticError::new(format!("failed to serialize audit duplication: {err}"), 2)
+            .with_code("FALLOW_SERIALIZE_AUDIT_DUPLICATION")
+            .with_context("audit.duplication")
+    })?;
+    let root_prefix = format!("{}/", output.root.display());
+    strip_root_prefix(&mut json, &root_prefix);
+    if let Some(base) = base_snapshot {
+        annotate_audit_duplication_json(&mut json, output, &base.dupes);
+    }
+    Ok(json)
+}
+
+fn serialize_audit_complexity(
+    output: &HealthProgrammaticOutput,
+    base_snapshot: Option<&crate::AuditProgrammaticKeySnapshot>,
+) -> ProgrammaticResult<serde_json::Value> {
+    let mut json = serde_json::to_value(&output.report).map_err(|err| {
+        ProgrammaticError::new(format!("failed to serialize audit complexity: {err}"), 2)
+            .with_code("FALLOW_SERIALIZE_AUDIT_COMPLEXITY")
+            .with_context("audit.complexity")
+    })?;
+    let root_prefix = format!("{}/", output.root.display());
+    strip_root_prefix(&mut json, &root_prefix);
+    if let Some(base) = base_snapshot {
+        crate::audit_keys::annotate_health_json(
+            &mut json,
+            &output.report,
+            &output.root,
+            &base.health,
+        );
+    }
+    Ok(json)
+}
+
+fn annotate_audit_duplication_json(
+    json: &mut serde_json::Value,
+    output: &DuplicationProgrammaticOutput,
+    base: &rustc_hash::FxHashSet<String>,
+) {
+    let Some(items) = json
+        .get_mut("clone_groups")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for (item, group) in items.iter_mut().zip(&output.output.report.clone_groups) {
+        if let serde_json::Value::Object(map) = item {
+            let key = crate::audit_keys::dupe_group_key(&group.group, &output.root);
+            map.insert(
+                "introduced".to_string(),
+                serde_json::json!(!base.contains(&key)),
+            );
+        }
+    }
+}
 
 /// Serialize typed dead-code output into the stable JSON compatibility contract.
 ///
@@ -125,6 +303,7 @@ pub fn serialize_duplication_programmatic_json(
     let DuplicationProgrammaticOutput {
         output,
         root,
+        threshold: _,
         envelope_mode,
         telemetry_analysis_run_id,
     } = output;

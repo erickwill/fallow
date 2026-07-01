@@ -55,15 +55,14 @@ pub mod validate;
 pub mod vital_signs;
 
 pub use changed_files_impl::{
-    ChangedFilesError, ChangedFilesSpawnHook, changed_files, filter_duplication_by_changed_files,
+    ChangedFilesError, changed_files, filter_duplication_by_changed_files,
     filter_results_by_changed_files, get_changed_files, resolve_git_common_dir,
     resolve_git_toplevel, set_spawn_hook, try_get_changed_diff, try_get_changed_files,
     try_get_changed_files_with_toplevel, validate_git_ref,
 };
 pub use churn_impl::{
-    AuthorContribution, ChurnResult, ChurnSpawnHook, ChurnTrend, FileChurn, SinceDuration,
-    analyze_churn, analyze_churn_cached, analyze_churn_from_file, is_git_repo, parse_since,
-    set_spawn_hook as set_churn_spawn_hook,
+    AuthorContribution, ChurnResult, ChurnTrend, FileChurn, SinceDuration, analyze_churn,
+    analyze_churn_cached, is_git_repo, parse_since, set_spawn_hook as set_churn_spawn_hook,
 };
 pub use cross_reference::{CombinedFinding, CrossReferenceResult, DeadCodeKind, cross_reference};
 pub use dead_code::{
@@ -74,12 +73,9 @@ pub use dead_code::{
 pub use discover::{
     AnalysisDiscovery, CategorizedEntryPoints, DiscoveredFile, EntryPoint, EntryPointSource,
     FileId, HiddenDirScope, PRODUCTION_EXCLUDE_PATTERNS, SOURCE_EXTENSIONS,
-    collect_hidden_dir_scopes, collect_plugin_hidden_dir_scopes, compile_glob_set,
-    discover_dynamically_loaded_entry_points, discover_entry_points, discover_files,
-    discover_files_and_config_candidates, discover_files_with_additional_hidden_dirs,
-    discover_files_with_plugin_scopes, discover_infrastructure_entry_points,
-    discover_plugin_entry_point_sets, discover_plugin_entry_points,
-    discover_workspace_entry_points, is_allowed_hidden_dir,
+    collect_plugin_hidden_dir_scopes, discover_entry_points, discover_files,
+    discover_files_with_additional_hidden_dirs, discover_files_with_plugin_scopes,
+    discover_plugin_entry_points, discover_workspace_entry_points, is_allowed_hidden_dir,
 };
 pub use duplicates::{
     CloneFingerprintSet, FINGERPRINT_PREFIX, clone_fingerprint, dominant_identifier,
@@ -126,7 +122,7 @@ pub use results::{
     DeadCodeAnalysisWithHashes, DuplicationAnalysis, HealthAnalysisResult, ProjectAnalysisOutput,
 };
 pub use security::{derive_security_severity, security_catalogue_title};
-pub use session::{AnalysisSession, AnalysisSessionParts};
+pub use session::{AnalysisSession, AnalysisSessionArtifacts};
 pub use source::inventory::{
     InventoryComplexity, InventoryEntry, walk_source, walk_source_with_complexity,
 };
@@ -396,6 +392,36 @@ mod tests {
         assert!(artifacts.graph.is_some());
         assert!(artifacts.modules.is_some_and(|modules| !modules.is_empty()));
         assert!(artifacts.files.is_some_and(|files| !files.is_empty()));
+    }
+
+    #[test]
+    fn analysis_session_returns_reuse_artifacts_with_fingerprints_and_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir(&src).expect("src dir");
+        let source = src.join("index.ts");
+        std::fs::write(&source, "export const value = 1;\n").expect("source file");
+
+        let session = AnalysisSession::load(temp.path(), None).expect("session loads");
+        let mut changed_files = rustc_hash::FxHashSet::default();
+        changed_files.insert(source.clone());
+        let artifacts = session
+            .analyze_dead_code_with_session_artifacts(false, true, Some(changed_files))
+            .expect("analysis succeeds");
+
+        assert!(artifacts.analysis.graph.is_some());
+        assert!(
+            artifacts
+                .changed_files
+                .as_ref()
+                .is_some_and(|changed| changed.contains(&source))
+        );
+        assert!(
+            artifacts
+                .source_fingerprints
+                .get(&source)
+                .is_some_and(|fingerprint| fingerprint.file_size > 0)
+        );
     }
 
     #[test]

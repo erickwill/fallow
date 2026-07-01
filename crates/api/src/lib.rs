@@ -21,11 +21,13 @@ use fallow_output::EffortEstimate;
 use serde::Serialize;
 
 mod analysis_context;
+pub mod audit_keys;
 pub mod audit_output;
 pub mod combined_output;
 pub mod compact_output;
 pub mod dead_code_codeclimate;
 pub mod dead_code_sarif;
+pub mod decision_surface;
 pub mod dupes_output;
 mod duplication_filters;
 pub mod editor;
@@ -38,6 +40,8 @@ mod list_runtime;
 pub mod markdown_output;
 mod next_steps;
 pub mod output_contracts;
+pub mod review_deltas;
+pub mod routing;
 pub mod runtime;
 mod runtime_json;
 mod runtime_output;
@@ -106,6 +110,7 @@ pub use explain::{
     rule_docs_url, rule_guide, security_meta, serialize_explain_programmatic_json,
     unknown_explain_error,
 };
+pub use fallow_config::AuditGate;
 pub use fallow_output::RootEnvelopeMode;
 pub use fallow_types::trace::{
     CloneTrace, DependencyTrace, ExportReference, ExportTrace, FileTrace, ReExportChain,
@@ -142,25 +147,27 @@ pub use output_contracts::{
     SecuritySummaryOutput, WorkspacesOutput,
 };
 pub use runtime::{
-    BoundaryViolationsOutput, BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
+    AuditProgrammaticKeySnapshot, AuditProgrammaticOutput, BoundaryViolationsOutput,
+    BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
     CircularDependenciesProgrammaticOutput, DeadCodeOutput, DeadCodeProgrammaticOutput,
-    DuplicationOutput, DuplicationProgrammaticOutput, EngineHealthRunner, FeatureFlagsOutput,
-    FeatureFlagsProgrammaticOutput, HealthJsonReportInput, HealthProgrammaticOutput,
-    ProgrammaticHealthAnalysis, ProgrammaticHealthNextStepFacts, ProgrammaticHealthRun,
-    ProgrammaticHealthRunner, TraceCloneOutput, TraceCloneProgrammaticOutput,
-    TraceDependencyOutput, TraceDependencyProgrammaticOutput, TraceExportOutput,
-    TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
-    run_boundary_violations, run_circular_dependencies, run_complexity_with_runner, run_dead_code,
-    run_duplication, run_feature_flags, run_health, run_health_with_runner, run_trace_clone,
-    run_trace_dependency, run_trace_export, run_trace_file, serialize_health_report_json,
+    DecisionSurfaceProgrammaticOutput, DuplicationOutput, DuplicationProgrammaticOutput,
+    EngineHealthRunner, FeatureFlagsOutput, FeatureFlagsProgrammaticOutput, HealthJsonReportInput,
+    HealthProgrammaticOutput, ProgrammaticHealthAnalysis, ProgrammaticHealthNextStepFacts,
+    ProgrammaticHealthRun, ProgrammaticHealthRunner, TraceCloneOutput,
+    TraceCloneProgrammaticOutput, TraceDependencyOutput, TraceDependencyProgrammaticOutput,
+    TraceExportOutput, TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
+    run_audit, run_boundary_violations, run_circular_dependencies, run_complexity_with_runner,
+    run_dead_code, run_decision_surface, run_duplication, run_feature_flags, run_health,
+    run_health_with_runner, run_trace_clone, run_trace_dependency, run_trace_export,
+    run_trace_file, serialize_health_report_json,
 };
 pub use runtime_json::{
-    serialize_boundary_violations_programmatic_json,
+    serialize_audit_programmatic_json, serialize_boundary_violations_programmatic_json,
     serialize_circular_dependencies_programmatic_json, serialize_dead_code_programmatic_json,
-    serialize_duplication_programmatic_json, serialize_feature_flags_programmatic_json,
-    serialize_health_programmatic_json, serialize_trace_clone_programmatic_json,
-    serialize_trace_dependency_programmatic_json, serialize_trace_export_programmatic_json,
-    serialize_trace_file_programmatic_json,
+    serialize_decision_surface_programmatic_json, serialize_duplication_programmatic_json,
+    serialize_feature_flags_programmatic_json, serialize_health_programmatic_json,
+    serialize_trace_clone_programmatic_json, serialize_trace_dependency_programmatic_json,
+    serialize_trace_export_programmatic_json, serialize_trace_file_programmatic_json,
 };
 pub use sarif_output::{
     annotate_sarif_results, build_duplication_sarif, build_grouped_duplication_sarif,
@@ -179,7 +186,6 @@ pub const COMMON_ANALYSIS_OPTION_FLAGS: &[&str] = &[
     "workspace",
     "changed-workspaces",
     "explain",
-    "legacy-envelope",
 ];
 
 /// Structured error surface for the programmatic API.
@@ -249,11 +255,6 @@ pub struct AnalysisOptions {
     pub workspace: Option<Vec<String>>,
     pub changed_workspaces: Option<String>,
     pub explain: bool,
-    /// Return the legacy root envelope without top-level `kind`.
-    ///
-    /// This is a migration-only compatibility flag. New consumers should branch
-    /// on `kind`; see `fallow_output::LEGACY_ENVELOPE_REMOVAL_TARGET`.
-    pub legacy_envelope: bool,
 }
 
 /// Issue-type filters for the dead-code analysis.
@@ -298,6 +299,32 @@ pub struct DeadCodeOptions {
     pub filters: DeadCodeFilters,
     pub files: Vec<PathBuf>,
     pub include_entry_exports: bool,
+}
+
+/// Options for changed-code audit analysis.
+#[derive(Debug, Clone, Default)]
+pub struct AuditOptions {
+    pub analysis: AnalysisOptions,
+    pub base: Option<String>,
+    pub production: bool,
+    pub production_dead_code: Option<bool>,
+    pub production_health: Option<bool>,
+    pub production_dupes: Option<bool>,
+    pub gate: fallow_config::AuditGate,
+    pub max_crap: Option<f64>,
+    pub coverage: Option<PathBuf>,
+    pub coverage_root: Option<PathBuf>,
+    pub include_entry_exports: bool,
+    pub runtime_coverage: Option<PathBuf>,
+    pub min_invocations_hot: u64,
+}
+
+/// Options for changed-code decision-surface analysis.
+#[derive(Debug, Clone, Default)]
+pub struct DecisionSurfaceOptions {
+    pub analysis: AnalysisOptions,
+    pub base: Option<String>,
+    pub max_decisions: Option<usize>,
 }
 
 /// Options for feature-flag analysis.

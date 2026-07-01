@@ -973,6 +973,7 @@ dependencies = [
 name = "fallow-api"
 version = "2.103.0"
 dependencies = [
+ "dunce",
  "fallow-config",
  "fallow-engine",
  "fallow-output",
@@ -984,6 +985,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -1009,7 +1011,6 @@ dependencies = [
  "ed25519-dalek",
  "fallow-api",
  "fallow-config",
- "fallow-core",
  "fallow-cov-protocol",
  "fallow-engine",
  "fallow-license",
