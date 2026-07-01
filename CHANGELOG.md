@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design-token sprawl) instead of `null`. Dep-gated on a declared CSS-in-JS library
   (`styled-components` / `@emotion/styled` / `@emotion/react` / `@emotion/css` /
   `@linaria/core` / `@linaria/react`), so a non-CSS-in-JS project is byte-unchanged.
-  Template-literal form only (the object form `css({...})` is a deferred follow-up);
+  Template-literal form only (the object form `css({...})` ships in Phase 3c);
   descriptive-only, no `CACHE_VERSION` bump, no new wire field. (PR #1668)
 
 - **Object-notation CSS-in-JS in `fallow health --css` (CSS program Phase 3c).**
@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (adds `@vanilla-extract/css`, `@pandacss/dev`, `@stylexjs/stylex`), so a project
   with none of the object deps is byte-identical; descriptive-only, no
   `CACHE_VERSION` bump, no new wire field. The CSS-in-JS design-token graph
-  (StyleX `defineVars`, vanilla-extract `createTheme`) is a deferred follow-up.
+  (StyleX `defineVars`, vanilla-extract `createTheme`) ships in Phase 3d.
 
 - **`get_token_blast_radius` MCP tool: query a design token's blast radius
   directly.** A focused, read-only MCP tool that runs `fallow health --css
