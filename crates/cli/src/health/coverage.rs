@@ -29,7 +29,7 @@ use url::Url;
 use crate::error::emit_error;
 use crate::health::scoring::IstanbulCoverage;
 use crate::license::verifying_key;
-use fallow_engine::RuntimeCoverageOptions;
+use fallow_engine::health::RuntimeCoverageOptions;
 use fallow_output::{
     RUNTIME_STALE_AFTER_DAYS, RuntimeCoverageAction, RuntimeCoverageConfidence,
     RuntimeCoverageDataSource, RuntimeCoverageDiscriminators, RuntimeCoverageEvidence,
@@ -245,7 +245,7 @@ pub fn prepare_options(
 pub(super) struct RuntimeCoverageAnalysisInput<'a> {
     pub root: &'a Path,
     pub modules: &'a [fallow_types::extract::ModuleInfo],
-    pub analysis_output: &'a fallow_engine::DeadCodeAnalysisArtifacts,
+    pub analysis_output: &'a fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
     pub istanbul_coverage: Option<&'a IstanbulCoverage>,
     pub file_paths: &'a FxHashMap<fallow_types::discover::FileId, &'a PathBuf>,
     pub ignore_set: &'a GlobSet,
@@ -942,7 +942,7 @@ fn assemble_request(
 
 fn build_static_signal_index(
     modules: &[fallow_types::extract::ModuleInfo],
-    analysis_output: &fallow_engine::DeadCodeAnalysisArtifacts,
+    analysis_output: &fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
     file_paths: &FxHashMap<fallow_types::discover::FileId, &PathBuf>,
 ) -> Result<StaticSignalIndex, String> {
     let graph = analysis_output
@@ -956,7 +956,7 @@ fn build_static_signal_index(
         .iter()
         .map(|module| (module.file_id, module))
         .collect();
-    for export in fallow_engine::module_value_exports(graph) {
+    for export in fallow_engine::module_graph::module_value_exports(graph) {
         let Some(&path) = file_paths.get(&export.file_id) else {
             continue;
         };
@@ -974,7 +974,7 @@ fn build_static_signal_index(
 /// Seed the signal index with unused-file and unused-export dead-code signals.
 fn index_dead_code_signals(
     index: &mut StaticSignalIndex,
-    analysis_output: &fallow_engine::DeadCodeAnalysisArtifacts,
+    analysis_output: &fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
 ) {
     for file in &analysis_output.results.unused_files {
         index.unused_files.insert(file.file.path.clone());
@@ -996,7 +996,7 @@ fn index_dead_code_signals(
 /// Index one graph value export, including test-referenced state.
 fn index_graph_value_export(
     index: &mut StaticSignalIndex,
-    export: &fallow_engine::ModuleValueExport,
+    export: &fallow_engine::module_graph::ModuleValueExport,
     module: Option<&fallow_types::extract::ModuleInfo>,
     path: &Path,
 ) {
@@ -2230,7 +2230,7 @@ mod tests {
         HotPath, IdentityResolution, PROTOCOL_VERSION, ReportVerdict, Response, Summary, Verdict,
         function_identity_id,
     };
-    use fallow_engine::RuntimeCoverageOptions;
+    use fallow_engine::health::RuntimeCoverageOptions;
     use globset::{Glob, GlobSetBuilder};
     use oxc_coverage_instrument::{Location, Position};
     use rustc_hash::{FxHashMap, FxHashSet};
@@ -2240,8 +2240,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use url::Url;
 
-    fn empty_analysis_output() -> fallow_engine::DeadCodeAnalysisArtifacts {
-        fallow_engine::DeadCodeAnalysisArtifacts {
+    fn empty_analysis_output() -> fallow_engine::dead_code::DeadCodeAnalysisArtifacts {
+        fallow_engine::dead_code::DeadCodeAnalysisArtifacts {
             results: fallow_types::results::AnalysisResults::default(),
             timings: None,
             graph: None,
@@ -3296,7 +3296,7 @@ mod tests {
         )
         .unwrap_or_else(|err| panic!("failed to write app.test.ts: {err}"));
 
-        let parsed = fallow_engine::AnalysisSession::from_resolved_config(
+        let parsed = fallow_engine::session::AnalysisSession::from_resolved_config(
             FallowConfig::default().resolve(root.clone(), OutputFormat::Json, 1, true, true, None),
         )
         .into_parsed_parts(true);
@@ -3304,8 +3304,9 @@ mod tests {
         let files = parsed.files;
         let modules = parsed.modules;
         let file_paths: FxHashMap<_, _> = files.iter().map(|file| (file.id, &file.path)).collect();
-        let analysis_output = fallow_engine::analyze_with_parse_result(&config, &modules)
-            .unwrap_or_else(|err| panic!("failed to analyze temp project: {err}"));
+        let analysis_output =
+            fallow_engine::dead_code::analyze_with_parse_result(&config, &modules)
+                .unwrap_or_else(|err| panic!("failed to analyze temp project: {err}"));
         let static_signals = build_static_signal_index(&modules, &analysis_output, &file_paths)
             .unwrap_or_else(|err| panic!("failed to build static signal index: {err}"));
         let app_path = src_dir.join("app.ts");
@@ -3429,7 +3430,7 @@ mod tests {
         )
         .unwrap_or_else(|err| panic!("failed to write other.ts: {err}"));
 
-        let parsed = fallow_engine::AnalysisSession::from_resolved_config(
+        let parsed = fallow_engine::session::AnalysisSession::from_resolved_config(
             FallowConfig::default().resolve(root.clone(), OutputFormat::Json, 1, true, true, None),
         )
         .into_parsed_parts(true);

@@ -403,7 +403,7 @@ fn misconfigured_dependency_override_key(
 /// explicitly whether the new finding type needs an audit key (add a loop)
 /// or has no key representation today (bind with underscore and document why).
 ///
-/// Sibling exhaustive sites: `fallow_engine::filter_results_by_changed_files`,
+/// Sibling exhaustive sites: `fallow_engine::changed_files::filter_results_by_changed_files`,
 /// The six dependency-related finding slices, bundled so the dependency
 /// dispatcher takes one parameter instead of six.
 #[derive(Clone, Copy)]
@@ -439,7 +439,7 @@ struct FrameworkFindingSlices<'a> {
 /// finding type is added): `annotate_dead_code_json` (same key formats, this
 /// file) and the per-collection severity branches in
 /// `crates/cli/src/check/rules.rs` (`apply_rules`, `has_error_severity_issues`).
-/// TypeScript mirror: `editors/vscode/scripts/codegen-types.mjs` derives
+/// TypeScript mirror: `editors/vscode/scripts/codegen-contracts.mjs` derives
 /// backwards-compatible aliases from `fallow schema` `ts_alias` rows.
 pub fn dead_code_keys(
     results: &fallow_types::results::AnalysisResults,
@@ -1161,13 +1161,13 @@ impl<'a> DeadCodeKeyCollector<'a> {
 /// retain block) or has no key representation today (bind with underscore and
 /// document why).
 ///
-/// Sibling exhaustive sites: `fallow_engine::filter_results_by_changed_files`,
+/// Sibling exhaustive sites: `fallow_engine::changed_files::filter_results_by_changed_files`,
 /// `dead_code_keys`, `retain_introduced_dead_code`.
 /// Non-exhaustive siblings the compiler will NOT flag (wire manually when a
 /// finding type is added): `annotate_dead_code_json` (same key formats, this
 /// file) and the per-collection severity branches in
 /// `crates/cli/src/check/rules.rs` (`apply_rules`, `has_error_severity_issues`).
-/// TypeScript mirror: `editors/vscode/scripts/codegen-types.mjs` derives
+/// TypeScript mirror: `editors/vscode/scripts/codegen-contracts.mjs` derives
 /// backwards-compatible aliases from `fallow schema` `ts_alias` rows.
 #[expect(
     clippy::implicit_hasher,

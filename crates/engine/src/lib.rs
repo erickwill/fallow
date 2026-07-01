@@ -20,120 +20,36 @@ use std::fmt;
 #[cfg(test)]
 use std::path::Path;
 
-use rustc_hash::FxHashMap;
-
 pub mod baseline;
-#[path = "changed_files.rs"]
-mod changed_files_impl;
-#[path = "churn.rs"]
-mod churn_impl;
+pub mod changed_files;
+pub mod churn;
 pub mod codeowners;
 mod core_backend;
-mod cross_reference;
+pub mod cross_reference;
 mod css;
-mod dead_code;
-mod discover;
-mod duplicates;
+pub mod dead_code;
+pub mod discover;
+pub mod duplicates;
 mod error;
 mod feature_flags;
-mod flags;
+pub mod flags;
 #[path = "git_env.rs"]
-mod git_env_impl;
-mod health;
-mod module_graph;
-mod plugins;
-mod project_config;
+mod git_env;
+pub mod health;
+pub mod module_graph;
+pub mod plugins;
+pub mod project_analysis;
+pub mod project_config;
 mod public_api;
-pub mod results;
+mod results;
 mod security;
-mod session;
-mod source;
+pub mod session;
+pub mod source;
 mod suppress;
-mod trace;
-mod trace_chain;
+pub mod trace;
+pub mod trace_chain;
 pub mod validate;
 pub mod vital_signs;
-
-pub use changed_files_impl::{
-    ChangedFilesError, changed_files, filter_duplication_by_changed_files,
-    filter_results_by_changed_files, get_changed_files, resolve_git_common_dir,
-    resolve_git_toplevel, set_spawn_hook, try_get_changed_diff, try_get_changed_files,
-    try_get_changed_files_with_toplevel, validate_git_ref,
-};
-pub use churn_impl::{
-    AuthorContribution, ChurnResult, ChurnTrend, FileChurn, SinceDuration, analyze_churn,
-    analyze_churn_cached, is_git_repo, parse_since, set_spawn_hook as set_churn_spawn_hook,
-};
-pub use cross_reference::{CombinedFinding, CrossReferenceResult, DeadCodeKind, cross_reference};
-pub use dead_code::{
-    analyze, analyze_retaining_modules, analyze_with_file_hashes, analyze_with_parse_result,
-    analyze_with_trace, analyze_with_usages, analyze_with_usages_and_complexity,
-    filter_by_changed_files, filter_to_workspaces,
-};
-pub use discover::{
-    AnalysisDiscovery, CategorizedEntryPoints, DiscoveredFile, EntryPoint, EntryPointSource,
-    FileId, HiddenDirScope, PRODUCTION_EXCLUDE_PATTERNS, SOURCE_EXTENSIONS,
-    collect_plugin_hidden_dir_scopes, discover_entry_points, discover_files,
-    discover_files_with_additional_hidden_dirs, discover_files_with_plugin_scopes,
-    discover_plugin_entry_points, discover_workspace_entry_points, is_allowed_hidden_dir,
-};
-pub use duplicates::{
-    CloneFingerprintSet, FINGERPRINT_PREFIX, clone_fingerprint, dominant_identifier,
-    find_duplicates, find_duplicates_touching_files_with_defaults, find_duplicates_with_defaults,
-    fingerprint_for_fragment, recompute_stats, refresh_clone_families,
-    source_token_kinds_equivalent,
-};
-pub use error::emit_error;
-use fallow_types::extract::ModuleInfo;
-use fallow_types::results::AnalysisResults;
-pub use flags::{
-    FeatureFlagsAnalysis, analyze_feature_flags, builtin_env_prefixes, builtin_sdk_providers,
-};
-pub use git_env_impl::{AMBIENT_GIT_ENV_VARS, clear_ambient_git_env};
-pub use health::{
-    ComplexityRunOptions, ComplexitySectionOptions, DerivedComplexityOptions,
-    DerivedHealthSections, HealthCoverageInputs, HealthExecutionOptions, HealthGateOptions,
-    HealthGroupResolver, HealthPipelineInputs, HealthRunOptions, HealthRunOptionsInput,
-    HealthScopeInputs, HealthSeams, HealthSectionOptions, HealthSharedParseData, HealthSort,
-    HealthThresholdOverrides, RuntimeCoverageOptions, RuntimeCoverageSeamInput,
-    derive_complexity_sections, derive_health_run_options, derive_health_sections,
-    execute_health_inner, run_ungrouped_health, validate_coverage_root_absolute,
-    validate_health_churn_file,
-};
-pub use health::{ownership as health_ownership, scoring as health_scoring};
-pub use module_graph::{
-    CoordinationGapPaths, DirectImporterSummary, FocusFileFactsPaths, ImpactClosurePaths,
-    ImportedSymbolSummary, ModuleValueExport, PartitionOrderPaths, RetainedModuleGraph,
-    ReviewUnitPaths, export_lines_for_changed_paths, focus_facts_for_changed_paths,
-    impact_closure_for_changed_paths, internal_consumers_for_changed_paths, module_value_exports,
-    partition_order_for_changed_paths,
-};
-pub use plugins::registry::{
-    PluginRegexValidationError, builtin_plugin_names, format_plugin_regex_errors,
-};
-pub use plugins::{AggregatedPluginResult, PluginRegistry};
-pub use project_config::{
-    ProjectConfig, ProjectConfigOptions, config_for_project, config_for_project_analysis,
-    resolve_cache_max_size_bytes,
-};
-pub use public_api::public_api_package_entry_points;
-pub use results::{
-    DeadCodeAnalysis, DeadCodeAnalysisArtifacts, DeadCodeAnalysisOutput,
-    DeadCodeAnalysisWithHashes, DuplicationAnalysis, HealthAnalysisResult, ProjectAnalysisOutput,
-};
-pub use security::{derive_security_severity, security_catalogue_title};
-pub use session::{AnalysisSession, AnalysisSessionArtifacts};
-pub use source::inventory::{
-    InventoryComplexity, InventoryEntry, walk_source, walk_source_with_complexity,
-};
-pub use suppress::{IssueKind, Suppression, is_file_suppressed, is_suppressed};
-pub use trace::{
-    CloneTrace, DependencyTrace, ExportReference, ExportTrace, FileTrace, ImpactClosureGap,
-    ImpactClosureTrace, PipelineTimings, ReExportChain, TracedCloneGroup, TracedExport,
-    TracedReExport, trace_clone, trace_clone_by_fingerprint, trace_dependency, trace_export,
-    trace_file, trace_impact_closure,
-};
-pub use trace_chain::trace_symbol_chain;
 
 /// Result alias for typed engine operations.
 pub type EngineResult<T> = Result<T, EngineError>;
@@ -172,39 +88,17 @@ pub(crate) fn engine_error(err: impl fmt::Display) -> EngineError {
     EngineError::new(err.to_string())
 }
 
-/// Build health shared parse data from retained dead-code artifacts.
-#[must_use]
-pub fn health_shared_parse_data_from_artifacts(
-    results: &AnalysisResults,
-    graph: Option<RetainedModuleGraph>,
-    modules: Option<Vec<ModuleInfo>>,
-    files: Option<Vec<DiscoveredFile>>,
-    script_used_packages: impl IntoIterator<Item = String>,
-) -> Option<HealthSharedParseData> {
-    let (Some(modules), Some(files)) = (modules, files) else {
-        return None;
-    };
-    let analysis_output = graph.map(|graph| DeadCodeAnalysisArtifacts {
-        results: results.clone(),
-        timings: None,
-        graph: Some(graph),
-        modules: None,
-        files: None,
-        script_used_packages: script_used_packages.into_iter().collect(),
-        file_hashes: FxHashMap::default(),
-    });
-    Some(HealthSharedParseData {
-        files,
-        modules,
-        analysis_output,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        project_analysis::ProjectAnalysisArtifactOptions,
+        project_config::{ProjectConfigOptions, config_for_project, config_for_project_analysis},
+        session::AnalysisSession,
+    };
     use fallow_config::ProductionAnalysis;
     use fallow_types::output_format::OutputFormat;
+    use std::fs;
 
     #[test]
     fn engine_error_displays_message() {
@@ -212,6 +106,72 @@ mod tests {
 
         assert_eq!(err.message(), "config failed");
         assert_eq!(err.to_string(), "config failed");
+    }
+
+    #[test]
+    fn engine_root_does_not_reexport_broad_surface_modules() {
+        let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+            .expect("read engine lib");
+        let public_surface = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("engine lib has public surface before tests");
+        let forbidden_exports = [
+            "pub use error::",
+            "pub use flags::",
+            "pub use git_env::",
+            "pub use public_api::",
+            "pub use results::",
+            "pub use security::",
+            "pub use suppress::",
+            "health_shared_parse_data_from_artifacts",
+        ];
+
+        for forbidden in forbidden_exports {
+            assert!(
+                !public_surface.contains(forbidden),
+                "engine root must expose typed modules, not `{forbidden}`"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_session_owns_dead_code_pipeline_sequence() {
+        let session_source =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session.rs"))
+                .expect("read engine session");
+        assert!(
+            !session_source.contains("analyze_with_owned_parse_result_from_discovery"),
+            "engine session must not delegate dead-code orchestration to the old core monolith"
+        );
+        for required_phase in [
+            "prepare_dead_code_backend_prelude",
+            "discover_dead_code_entry_points",
+            "try_load_dead_code_graph_cache",
+            "resolve_dead_code_imports",
+            "build_dead_code_graph",
+            "run_dead_code_detectors",
+        ] {
+            assert!(
+                session_source.contains(required_phase),
+                "engine session must explicitly sequence `{required_phase}`"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_session_owns_analysis_discovery() {
+        let session_source =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session.rs"))
+                .expect("read engine session");
+        assert!(
+            session_source.contains("crate::discover::prepare_analysis_discovery"),
+            "engine session must build discovery through the engine discovery boundary"
+        );
+        assert!(
+            !session_source.contains("core_backend::prepare_analysis_discovery"),
+            "engine session must not delegate discovery orchestration to core_backend"
+        );
     }
 
     #[test]
@@ -325,6 +285,68 @@ mod tests {
     }
 
     #[test]
+    fn dead_code_reused_parse_path_uses_engine_pipeline() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir(&src).expect("src dir");
+        std::fs::write(src.join("index.ts"), "import './util';\n").expect("entry file");
+        std::fs::write(src.join("util.ts"), "export const value = 1;\n").expect("source file");
+
+        let session = AnalysisSession::load(temp.path(), None).expect("session loads");
+        let parts = session.into_parsed_parts(false);
+        let analysis = crate::dead_code::analyze_with_parse_result(&parts.config, &parts.modules)
+            .expect("reused parse analysis succeeds");
+
+        assert!(analysis.graph.is_some());
+        assert!(analysis.modules.is_none());
+        assert!(analysis.files.is_none());
+        assert!(
+            analysis
+                .file_hashes
+                .keys()
+                .any(|path| path.ends_with("util.ts"))
+        );
+    }
+
+    #[test]
+    fn analysis_session_reparses_when_cached_source_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir(&src).expect("src dir");
+        std::fs::write(
+            src.join("index.ts"),
+            "import { value } from './util';\nconsole.log(value);\n",
+        )
+        .expect("entry file");
+        let util_path = src.join("util.ts");
+        std::fs::write(&util_path, "export const value = 1;\n").expect("source file");
+
+        let session = AnalysisSession::load(temp.path(), None).expect("session loads");
+        let first = session
+            .analyze_project_with(&fallow_config::DuplicatesConfig::default(), true)
+            .expect("first analysis succeeds");
+        assert!(first.dead_code.results.unused_exports.is_empty());
+
+        std::fs::write(
+            &util_path,
+            "export const value = 1;\nexport const addedUnused = 2;\n",
+        )
+        .expect("updated source file");
+
+        let second = session
+            .analyze_project_with(&fallow_config::DuplicatesConfig::default(), true)
+            .expect("second analysis succeeds");
+        assert!(
+            second
+                .dead_code
+                .results
+                .unused_exports
+                .iter()
+                .any(|finding| finding.export.export_name == "addedUnused")
+        );
+    }
+
+    #[test]
     fn analysis_session_returns_combined_project_analysis() {
         let temp = tempfile::tempdir().expect("tempdir");
         let src = temp.path().join("src");
@@ -425,6 +447,60 @@ mod tests {
     }
 
     #[test]
+    fn analysis_session_returns_project_artifacts_with_reuse_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir(&src).expect("src dir");
+        let source = src.join("index.ts");
+        std::fs::write(&source, "export const value = 1;\n").expect("source file");
+
+        let session = AnalysisSession::load(temp.path(), None).expect("session loads");
+        let mut changed_files = rustc_hash::FxHashSet::default();
+        changed_files.insert(source.clone());
+        let artifacts = session
+            .analyze_project_with_artifacts(
+                &session.config().duplicates,
+                ProjectAnalysisArtifactOptions {
+                    retain_complexity_artifacts: true,
+                    retain_graph: true,
+                    changed_files: Some(changed_files),
+                    collect_source_fingerprints: true,
+                },
+            )
+            .expect("project analysis succeeds");
+
+        assert!(artifacts.dead_code.graph.is_some());
+        assert!(
+            artifacts
+                .changed_files
+                .as_ref()
+                .is_some_and(|changed| changed.contains(&source))
+        );
+        assert!(
+            artifacts
+                .source_fingerprints
+                .as_ref()
+                .and_then(|fingerprints| fingerprints.get(&source))
+                .is_some_and(|fingerprint| fingerprint.file_size > 0)
+        );
+
+        let lightweight = session
+            .analyze_project_with_artifacts(
+                &session.config().duplicates,
+                ProjectAnalysisArtifactOptions::default(),
+            )
+            .expect("project analysis succeeds");
+        assert!(
+            lightweight.source_fingerprints.is_none(),
+            "source fingerprints should be opt-in for lightweight editor analysis"
+        );
+
+        let output = artifacts.into_output();
+        assert!(output.dead_code.modules.is_some());
+        assert!(output.dead_code.files.is_some());
+    }
+
+    #[test]
     fn analysis_session_runs_duplication_with_default_skip_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
         let src = temp.path().join("src");
@@ -477,7 +553,7 @@ mod tests {
             },
         )
         .expect("project config loads");
-        let trace = crate::trace_symbol_chain(
+        let trace = crate::trace_chain::trace_symbol_chain(
             &project_config.config,
             fallow_types::trace_chain::SymbolChainQuery {
                 file: "src/util.ts",

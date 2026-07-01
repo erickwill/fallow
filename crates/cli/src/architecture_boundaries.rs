@@ -158,7 +158,7 @@ fn api_programmatic_health_runner_does_not_expose_engine_results() {
     let source_path = "crates/api/src/runtime/mod.rs";
     let source = std::fs::read_to_string(workspace_root().join(source_path)).expect("read source");
     for forbidden in [
-        "pub analysis: fallow_engine::HealthAnalysisResult",
+        "pub analysis: fallow_engine::results::HealthAnalysisResult",
         "pub type ProgrammaticHealthAnalysis = fallow_engine::",
         "pub type ProgrammaticHealthRun = fallow_engine::",
         "pub fn derive_programmatic_health_execution_options",
@@ -269,35 +269,49 @@ fn api_and_cli_use_trace_output_contracts_from_types() {
 }
 
 #[test]
-fn engine_git_helpers_are_private_root_api() {
+fn engine_adapter_modules_are_explicit_public_boundaries() {
     let engine_lib = std::fs::read_to_string(workspace_root().join("crates/engine/src/lib.rs"))
         .expect("read engine lib");
-    for forbidden in [
+    for required in [
         "pub mod changed_files;",
         "pub mod churn;",
         "pub mod cross_reference;",
         "pub mod dead_code;",
         "pub mod discover;",
         "pub mod duplicates;",
-        "pub mod error;",
-        "pub mod extract;",
-        "pub mod flags;",
-        "pub mod git_env;",
         "pub mod health;",
         "pub mod module_graph;",
         "pub mod plugins;",
-        "pub mod public_api;",
-        "pub mod security;",
+        "pub mod project_analysis;",
+        "pub mod project_config;",
+        "pub mod session;",
         "pub mod source;",
         "pub mod trace;",
         "pub mod trace_chain;",
     ] {
         assert!(
-            !engine_lib.contains(forbidden),
-            "engine git helpers must stay private adapters with explicit root reexports"
+            engine_lib.contains(required),
+            "engine module boundary must stay explicit: {required}"
         );
     }
 
+    for private in [
+        "pub mod core_backend;",
+        "pub mod error;",
+        "pub mod git_env;",
+        "pub mod public_api;",
+        "pub mod results;",
+        "pub mod security;",
+    ] {
+        assert!(
+            !engine_lib.contains(private),
+            "engine private adapter module must not become a public catch-all boundary: {private}"
+        );
+    }
+}
+
+#[test]
+fn api_and_cli_do_not_use_removed_engine_root_adapter_exports() {
     for source_path in rust_sources_under(["crates/api/src", "crates/cli/src"]) {
         if source_path == "crates/cli/src/architecture_boundaries.rs" {
             continue;
@@ -305,46 +319,48 @@ fn engine_git_helpers_are_private_root_api() {
         let source = read_source_without_line_comments(&source_path)
             .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
         for forbidden in [
-            "fallow_engine::changed_files::",
-            "use fallow_engine::changed_files::",
-            "fallow_engine::churn::",
-            "use fallow_engine::churn::",
-            "fallow_engine::cross_reference::",
-            "use fallow_engine::cross_reference::",
-            "fallow_engine::dead_code::",
-            "use fallow_engine::dead_code::",
-            "fallow_engine::discover::",
-            "use fallow_engine::discover::",
-            "fallow_engine::duplicates::",
-            "use fallow_engine::duplicates::",
-            "fallow_engine::error::",
-            "use fallow_engine::error::",
-            "fallow_engine::extract::",
-            "use fallow_engine::extract::",
-            "fallow_engine::flags::",
-            "use fallow_engine::flags::",
-            "fallow_engine::git_env::",
-            "use fallow_engine::git_env::",
-            "fallow_engine::health::",
-            "use fallow_engine::health::",
-            "fallow_engine::module_graph::",
-            "use fallow_engine::module_graph::",
-            "fallow_engine::plugins::",
-            "use fallow_engine::plugins::",
-            "fallow_engine::public_api::",
-            "use fallow_engine::public_api::",
-            "fallow_engine::security::",
-            "use fallow_engine::security::",
-            "fallow_engine::source::",
-            "use fallow_engine::source::",
-            "fallow_engine::trace::",
-            "use fallow_engine::trace::",
-            "fallow_engine::trace_chain::",
-            "use fallow_engine::trace_chain::",
+            "fallow_engine::AnalysisSession",
+            "fallow_engine::AnalysisSessionArtifacts",
+            "fallow_engine::ProjectAnalysisArtifactOptions",
+            "fallow_engine::ProjectAnalysisOutput",
+            "fallow_engine::ProjectAnalysisArtifacts",
+            "fallow_engine::ProjectConfig",
+            "fallow_engine::ProjectConfigOptions",
+            "fallow_engine::results::",
+            "fallow_engine::ChangedFilesError",
+            "fallow_engine::changed_files(",
+            "fallow_engine::config_for_project(",
+            "fallow_engine::config_for_project_analysis(",
+            "fallow_engine::discover_entry_points(",
+            "fallow_engine::discover_files",
+            "fallow_engine::filter_results_by_changed_files",
+            "fallow_engine::get_changed_files(",
+            "fallow_engine::resolve_cache_max_size_bytes(",
+            "fallow_engine::try_get_changed_files",
+            "fallow_engine::ChurnResult",
+            "fallow_engine::ChurnTrend",
+            "fallow_engine::FileChurn",
+            "fallow_engine::SinceDuration",
+            "fallow_engine::analyze_churn",
+            "fallow_engine::is_git_repo(",
+            "fallow_engine::parse_since(",
+            "fallow_engine::RetainedModuleGraph",
+            "fallow_engine::ImpactClosurePaths",
+            "fallow_engine::PartitionOrderPaths",
+            "fallow_engine::FocusFileFactsPaths",
+            "fallow_engine::CoordinationGapPaths",
+            "fallow_engine::module_value_exports(",
+            "fallow_engine::CrossReferenceResult",
+            "fallow_engine::cross_reference(",
+            "fallow_engine::trace_clone(",
+            "fallow_engine::trace_dependency(",
+            "fallow_engine::trace_export(",
+            "fallow_engine::trace_file(",
+            "fallow_engine::trace_symbol_chain(",
         ] {
             assert!(
                 !source.contains(forbidden),
-                "{source_path} must use explicit fallow-engine root git helper APIs"
+                "{source_path} must use the typed fallow-engine module path instead of removed root export {forbidden}"
             );
         }
     }
@@ -386,6 +402,33 @@ fn engine_session_and_dead_code_route_core_calls_through_backend_adapter() {
             "{source_path} must use engine::core_backend instead of direct fallow_core calls"
         );
     }
+
+    let session = read_source_without_line_comments("crates/engine/src/session.rs")
+        .expect("read engine session source");
+    for forbidden in [
+        "analyze_with_usages_from_discovery",
+        "analyze_with_usages_and_complexity_from_discovery",
+        "analyze_retaining_modules_from_discovery",
+    ] {
+        assert!(
+            !session.contains(forbidden),
+            "engine session must own dead-code parse orchestration instead of calling {forbidden}"
+        );
+    }
+
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    assert!(
+        !core_backend.contains("fallow_core::analyze_with_parse_result"),
+        "engine reused-parse analysis must use the engine-owned dead-code phase pipeline"
+    );
+
+    let dead_code =
+        read_source_without_line_comments("crates/engine/src/dead_code.rs").expect("read source");
+    assert!(
+        !dead_code.contains("core_backend::analyze_with_parse_result"),
+        "engine dead-code facade must not delegate reused-parse analysis to the old core monolith"
+    );
 }
 
 #[test]
@@ -425,6 +468,28 @@ fn engine_root_facade_does_not_reexport_private_adapter_helpers() {
         "discover_infrastructure_entry_points",
         "discover_plugin_entry_point_sets",
         "AnalysisSessionParts",
+        "pub use health::",
+        "health_scoring",
+        "health_ownership",
+        "pub use dead_code::",
+        "analyze_retaining_modules",
+        "analyze_with_file_hashes",
+        "filter_to_workspaces",
+        "pub use duplicates::",
+        "pub use changed_files::",
+        "pub use churn::",
+        "pub use cross_reference::",
+        "pub use discover::",
+        "pub use module_graph::",
+        "pub use plugins::",
+        "pub use project_config::",
+        "pub use session::",
+        "pub use source::inventory",
+        "pub use trace::",
+        "pub use trace_chain::",
+        "InventoryComplexity",
+        "InventoryEntry",
+        "walk_source_with_complexity",
     ] {
         assert!(
             !source.contains(forbidden),
@@ -435,26 +500,14 @@ fn engine_root_facade_does_not_reexport_private_adapter_helpers() {
 
 #[test]
 fn engine_core_references_stay_inside_adapter_modules() {
-    let allowed = [
-        "crates/engine/src/changed_files.rs",
-        "crates/engine/src/churn.rs",
-        "crates/engine/src/core_backend.rs",
-        "crates/engine/src/cross_reference.rs",
-        "crates/engine/src/discover.rs",
-        "crates/engine/src/duplicates.rs",
-        "crates/engine/src/git_env.rs",
-        "crates/engine/src/plugins.rs",
-        "crates/engine/src/project_config.rs",
-        "crates/engine/src/public_api.rs",
-        "crates/engine/src/security.rs",
-    ];
+    let allowed = ["crates/engine/src/core_backend.rs"];
     for source_path in rust_sources_under(["crates/engine/src"]) {
         let source = read_source_without_line_comments(&source_path)
             .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
         if source.contains("fallow_core::") || source.contains("use fallow_core") {
             assert!(
                 allowed.contains(&source_path.as_str()),
-                "{source_path} must route fallow_core access through an explicit engine adapter"
+                "{source_path} must route fallow_core access through core_backend or an approved typed adapter still awaiting containment"
             );
         }
     }

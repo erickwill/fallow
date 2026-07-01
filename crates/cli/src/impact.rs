@@ -279,8 +279,14 @@ fn project_identity(root: &Path) -> ProjectIdentity {
     {
         return found.clone();
     }
-    let common = resolve_or_root(fallow_engine::resolve_git_common_dir(root).ok(), root);
-    let toplevel = resolve_or_root(fallow_engine::resolve_git_toplevel(root).ok(), root);
+    let common = resolve_or_root(
+        fallow_engine::changed_files::resolve_git_common_dir(root).ok(),
+        root,
+    );
+    let toplevel = resolve_or_root(
+        fallow_engine::changed_files::resolve_git_toplevel(root).ok(),
+        root,
+    );
     let identity = (
         hash_path_identity(&common),
         hash_path_identity(&toplevel),
@@ -1628,7 +1634,7 @@ pub fn collect_clone_findings(
         .clone_groups
         .iter()
         .map(|g| CloneInput {
-            fingerprint: fallow_engine::clone_fingerprint(&g.instances),
+            fingerprint: fallow_engine::duplicates::clone_fingerprint(&g.instances),
             instance_paths: g.instances.iter().map(|i| i.file.clone()).collect(),
         })
         .collect()

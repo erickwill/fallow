@@ -11,7 +11,9 @@
 
 use std::path::Path;
 
+use fallow_config::{FallowConfig, OutputFormat};
 use fallow_core::graph_cache::{GraphCacheManifest, GraphCacheMode};
+use fallow_types::discover::FileId;
 use fallow_types::source_fingerprint::SourceFingerprint;
 
 use super::common::{create_config_with_cache, fixture_path};
@@ -71,6 +73,30 @@ fn assert_cold_warm_identical(fixture: &str) {
     );
 }
 
+fn create_custom_config_with_cache(
+    root: std::path::PathBuf,
+    cache_dir: std::path::PathBuf,
+    customize: impl FnOnce(&mut FallowConfig),
+) -> fallow_config::ResolvedConfig {
+    let mut raw = FallowConfig::default();
+    customize(&mut raw);
+    let mut config = raw.resolve(root, OutputFormat::Human, 4, false, true, None);
+    config.cache_dir = cache_dir;
+    config
+}
+
+fn current_manifest_with_cached_mode(
+    config: &fallow_config::ResolvedConfig,
+    store: &fallow_core::graph_cache::GraphCacheStore,
+) -> GraphCacheManifest {
+    let files = fallow_core::discover::discover_files(config);
+    GraphCacheManifest::from_discovered_files(&config.root, &files, store.manifest.mode, |path| {
+        std::fs::metadata(path).map_or(SourceFingerprint::new(0, 0), |m| {
+            SourceFingerprint::from_metadata(&m)
+        })
+    })
+}
+
 #[test]
 fn namespace_imports_cold_vs_warm_identical() {
     // Exercises `import * as ns` so the `namespace_imported` reconstruction on
@@ -128,19 +154,9 @@ fn source_change_misses_cache_and_reflects_change() {
 
     // Re-discover the now-mutated file set and confirm the persisted manifest
     // no longer matches the current inputs (the cache will MISS, not stale-serve).
-    let files = fallow_core::discover::discover_files(&config);
-    let current = GraphCacheManifest::from_discovered_files(
-        &config.root,
-        &files,
-        GraphCacheMode::new(0, 0, 0),
-        |path| {
-            std::fs::metadata(path).map_or(SourceFingerprint::new(0, 0), |m| {
-                SourceFingerprint::from_metadata(&m)
-            })
-        },
-    );
     let store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
         .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&config, &store);
     assert!(
         !store.manifest.matches_inputs(&current),
         "a mutated source file must invalidate the persisted graph-cache manifest"
@@ -179,19 +195,9 @@ fn file_deletion_misses_cache_and_reflects_change() {
     let target = root.join("src/orphan.ts");
     std::fs::remove_file(&target).expect("delete unused fixture file");
 
-    let files = fallow_core::discover::discover_files(&config);
-    let current = GraphCacheManifest::from_discovered_files(
-        &config.root,
-        &files,
-        GraphCacheMode::new(0, 0, 0),
-        |path| {
-            std::fs::metadata(path).map_or(SourceFingerprint::new(0, 0), |m| {
-                SourceFingerprint::from_metadata(&m)
-            })
-        },
-    );
     let store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
         .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&config, &store);
     assert!(
         !store.manifest.matches_inputs(&current),
         "a deleted source file must invalidate the persisted graph-cache manifest"
@@ -204,6 +210,291 @@ fn file_deletion_misses_cache_and_reflects_change() {
             .iter()
             .all(|issue| !issue.file.path.ends_with("src/orphan.ts")),
         "deleted source file must not survive through a graph-cache hit"
+    );
+}
+
+/// A rename must MISS the cache and the next result must use the new path,
+/// even when the file contents are byte-identical.
+#[test]
+fn file_rename_misses_cache_and_reflects_new_path() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("basic-project"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let config = create_config_with_cache(root.clone(), cache_dir.clone());
+
+    let before = fallow_core::analyze(&config).expect("cold analysis");
+    assert!(
+        before
+            .unused_files
+            .iter()
+            .any(|issue| issue.file.path.ends_with("src/orphan.ts")),
+        "fixture should expose the file that will be renamed"
+    );
+
+    std::fs::rename(
+        root.join("src/orphan.ts"),
+        root.join("src/renamed-orphan.ts"),
+    )
+    .expect("rename unused fixture file");
+
+    let store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
+        .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&config, &store);
+    assert!(
+        !store.manifest.matches_inputs(&current),
+        "a renamed source file must invalidate the persisted graph-cache manifest"
+    );
+
+    let after = fallow_core::analyze(&config).expect("analysis after rename");
+    assert!(
+        after
+            .unused_files
+            .iter()
+            .all(|issue| !issue.file.path.ends_with("src/orphan.ts")),
+        "old source path must not survive through a graph-cache hit"
+    );
+    assert!(
+        after
+            .unused_files
+            .iter()
+            .any(|issue| issue.file.path.ends_with("src/renamed-orphan.ts")),
+        "renamed source path must be analyzed after cache invalidation"
+    );
+}
+
+/// Production mode intentionally stays out of `resolver_options_hash`; it must
+/// invalidate through the discovered file set. A stale non-production graph
+/// would keep test-only imports alive and hide `testHelper`.
+#[test]
+#[expect(
+    deprecated,
+    reason = "trace timings are still the internal contract for this cache invalidation gate"
+)]
+fn production_mode_change_misses_cache_and_reflects_file_set() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("production-mode"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let non_production = create_config_with_cache(root.clone(), cache_dir.clone());
+    fallow_core::analyze(&non_production).expect("cold non-production analysis");
+
+    let production = create_custom_config_with_cache(root, cache_dir.clone(), |config| {
+        config.production = true.into();
+    });
+    let store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
+        .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&production, &store);
+    assert!(
+        !store.manifest.matches_inputs(&current),
+        "production mode must invalidate via the discovered file set"
+    );
+
+    let after = fallow_core::analyze_with_trace(&production).expect("production analysis");
+    let timings = after.timings.expect("trace timings retained");
+    assert!(
+        timings.resolve_imports_ms > f64::EPSILON,
+        "production mode change must miss the graph cache, got {}ms",
+        timings.resolve_imports_ms
+    );
+    let unused_export_names: Vec<&str> = after
+        .results
+        .unused_exports
+        .iter()
+        .map(|finding| finding.export.export_name.as_str())
+        .collect();
+    assert!(
+        unused_export_names.contains(&"testHelper"),
+        "production analysis must reflect excluded test files, got {unused_export_names:?}"
+    );
+}
+
+/// Ignore patterns intentionally stay out of `resolver_options_hash`; they must
+/// invalidate through the discovered file set. A stale graph would keep the
+/// ignored orphan file in the result.
+#[test]
+#[expect(
+    deprecated,
+    reason = "trace timings are still the internal contract for this cache invalidation gate"
+)]
+fn ignore_pattern_change_misses_cache_and_reflects_file_set() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("basic-project"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let without_ignore = create_config_with_cache(root.clone(), cache_dir.clone());
+    let before = fallow_core::analyze(&without_ignore).expect("cold analysis");
+    assert!(
+        before
+            .unused_files
+            .iter()
+            .any(|issue| issue.file.path.ends_with("src/orphan.ts")),
+        "fixture should expose the ignored file before ignorePatterns change"
+    );
+
+    let with_ignore = create_custom_config_with_cache(root, cache_dir.clone(), |config| {
+        config.ignore_patterns = vec!["src/orphan.ts".to_string()];
+    });
+    let store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
+        .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&with_ignore, &store);
+    assert!(
+        !store.manifest.matches_inputs(&current),
+        "ignorePatterns change must invalidate via the discovered file set"
+    );
+
+    let after = fallow_core::analyze_with_trace(&with_ignore).expect("ignored analysis");
+    let timings = after.timings.expect("trace timings retained");
+    assert!(
+        timings.resolve_imports_ms > f64::EPSILON,
+        "ignorePatterns change must miss the graph cache, got {}ms",
+        timings.resolve_imports_ms
+    );
+    assert!(
+        after
+            .results
+            .unused_files
+            .iter()
+            .all(|issue| !issue.file.path.ends_with("src/orphan.ts")),
+        "ignored source file must not survive through a graph-cache hit"
+    );
+}
+
+/// Resolve conditions are graph-affecting resolver options, so they must
+/// invalidate through `GraphCacheMode` even when the discovered file set is
+/// unchanged.
+#[test]
+#[expect(
+    deprecated,
+    reason = "trace timings are still the internal contract for this cache invalidation gate"
+)]
+fn resolve_condition_change_misses_cache_and_matches_cold_output() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("barrel-exports"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let base = create_config_with_cache(root.clone(), cache_dir.clone());
+    fallow_core::analyze(&base).expect("cold base analysis");
+
+    let mut changed = create_config_with_cache(root.clone(), cache_dir);
+    changed.resolve.conditions.push("react-server".to_string());
+
+    let after = fallow_core::analyze_with_trace(&changed).expect("changed condition analysis");
+    let timings = after.timings.expect("trace timings retained");
+    assert!(
+        timings.resolve_imports_ms > f64::EPSILON,
+        "resolve condition changes must miss the graph cache, got {}ms",
+        timings.resolve_imports_ms
+    );
+
+    let mut cold_changed = create_config_with_cache(root, temp.path().join("cold-cache"));
+    cold_changed
+        .resolve
+        .conditions
+        .push("react-server".to_string());
+    cold_changed.no_cache = true;
+    let cold = fallow_core::analyze(&cold_changed).expect("cold changed condition analysis");
+    let cold_json = serde_json::to_value(&cold).expect("serialize cold changed results");
+    let after_json =
+        serde_json::to_value(&after.results).expect("serialize cache-miss changed results");
+    assert_eq!(
+        cold_json, after_json,
+        "a resolve-condition cache miss must match a cold analysis with the same config"
+    );
+}
+
+#[test]
+#[expect(
+    deprecated,
+    reason = "trace timings are still the internal contract for this cache performance gate"
+)]
+fn warm_graph_cache_hit_skips_import_resolution() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("barrel-exports"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let config = create_config_with_cache(root, cache_dir);
+
+    let cold = fallow_core::analyze_with_trace(&config).expect("cold analysis");
+    let warm = fallow_core::analyze_with_trace(&config).expect("warm analysis");
+
+    let cold_json = serde_json::to_value(&cold.results).expect("serialize cold results");
+    let warm_json = serde_json::to_value(&warm.results).expect("serialize warm results");
+    assert_eq!(
+        cold_json, warm_json,
+        "warm graph-cache hit must preserve analysis output"
+    );
+
+    let warm_timings = warm.timings.expect("trace timings retained");
+    assert!(
+        warm_timings.resolve_imports_ms.abs() <= f64::EPSILON,
+        "warm graph-cache hit must skip import resolution, got {}ms",
+        warm_timings.resolve_imports_ms
+    );
+}
+
+#[test]
+#[expect(
+    deprecated,
+    reason = "trace timings are still the internal contract for this cache performance gate"
+)]
+fn resolver_cache_hit_rebuilds_graph_when_file_ids_shift() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let root = temp.path().join("project");
+    copy_tree(&fixture_path("barrel-exports"), &root);
+    let cache_dir = temp.path().join("cache");
+
+    let config = create_config_with_cache(root, cache_dir.clone());
+
+    let cold = fallow_core::analyze_with_trace(&config).expect("cold analysis");
+    let mut store = fallow_core::graph_cache::GraphCacheStore::load(&cache_dir)
+        .expect("persisted graph cache exists after cold run");
+    let current = current_manifest_with_cached_mode(&config, &store);
+
+    for file in &mut store.manifest.files {
+        file.file_id = FileId(file.file_id.0 + 10_000);
+    }
+    store.graph.modules.clear();
+    store.graph.package_usage.clear();
+    store.graph.type_only_package_usage.clear();
+    store.graph.entry_points.clear();
+    store.graph.runtime_entry_points.clear();
+    store.graph.test_entry_points.clear();
+    store.graph.reverse_deps.clear();
+
+    assert!(
+        !store.manifest.matches_inputs(&current),
+        "shifted FileIds must not trust the persisted graph"
+    );
+    assert!(
+        store.manifest.matches_resolution_inputs(&current),
+        "stable file keys and fingerprints should still allow resolver reuse"
+    );
+    store.save(&cache_dir);
+
+    let warm = fallow_core::analyze_with_trace(&config).expect("resolver-cache analysis");
+    let cold_json = serde_json::to_value(&cold.results).expect("serialize cold results");
+    let warm_json = serde_json::to_value(&warm.results).expect("serialize warm results");
+    assert_eq!(
+        cold_json, warm_json,
+        "resolver-cache hit must rebuild the graph and preserve analysis output"
+    );
+
+    let warm_timings = warm.timings.expect("trace timings retained");
+    assert!(
+        warm_timings.resolve_imports_ms.abs() <= f64::EPSILON,
+        "resolver-cache hit must skip import resolution, got {}ms",
+        warm_timings.resolve_imports_ms
+    );
+    assert!(
+        warm_timings.build_graph_ms > f64::EPSILON,
+        "resolver-cache hit must rebuild the graph, got {}ms",
+        warm_timings.build_graph_ms
     );
 }
 

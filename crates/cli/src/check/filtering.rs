@@ -18,7 +18,7 @@ pub fn filter_to_workspaces(
     results: &mut fallow_types::results::AnalysisResults,
     ws_roots: &[PathBuf],
 ) {
-    fallow_engine::filter_to_workspaces(results, ws_roots);
+    fallow_engine::dead_code::filter_to_workspaces(results, ws_roots);
 }
 
 /// Resolve `--workspace <patterns...>` to a set of workspace roots, or exit with
@@ -235,7 +235,7 @@ fn find_matches(
     Ok(hits)
 }
 
-pub use fallow_engine::{
+pub use fallow_engine::changed_files::{
     filter_results_by_changed_files as filter_changed_files, get_changed_files,
     try_get_changed_files,
 };

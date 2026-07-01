@@ -8,7 +8,7 @@
 //! The cloud join key is `(filePath, functionName, lineNumber)` since the
 //! line-aware function-identity migration (`0010`), so distinct same-named
 //! functions at different lines in the same file are preserved and merged
-//! into their own rows. The walker behind `fallow_engine::walk_source_with_complexity`
+//! into their own rows. The walker behind `fallow_engine::source::inventory`
 //! emits Istanbul / `oxc-coverage-instrument`-compatible names and unique
 //! 1-based line numbers per function declaration.
 //!
@@ -22,9 +22,10 @@ use std::process::ExitCode;
 
 use fallow_config::ResolvedConfig;
 use fallow_cov_protocol::{FunctionIdentity, IdentityResolution, function_identity_id};
-use fallow_engine::{
-    ChurnResult, ChurnTrend, FileChurn, InventoryComplexity, InventoryEntry, analyze_churn_cached,
-    discover_files_with_plugin_scopes, parse_since, walk_source_with_complexity,
+use fallow_engine::churn::{ChurnResult, ChurnTrend, FileChurn, analyze_churn_cached, parse_since};
+use fallow_engine::discover::discover_files_with_plugin_scopes;
+use fallow_engine::source::inventory::{
+    InventoryComplexity, InventoryEntry, walk_source_with_complexity,
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -693,7 +694,7 @@ fn collect_caller_edges(
     config: &ResolvedConfig,
     functions: &[InventoryFunction],
 ) -> BTreeMap<String, Vec<CallerSitePayload>> {
-    let artifacts = match fallow_engine::analyze_retaining_modules(config, false, true) {
+    let artifacts = match fallow_engine::dead_code::analyze_retaining_modules(config, false, true) {
         Ok(artifacts) => artifacts,
         Err(err) => {
             eprintln!(

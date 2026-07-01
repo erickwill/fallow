@@ -70,7 +70,7 @@ struct DecisionAnalysis {
     root: PathBuf,
     results: fallow_types::results::AnalysisResults,
     public_api: FxHashSet<String>,
-    impact_closure: Option<fallow_engine::ImpactClosurePaths>,
+    impact_closure: Option<fallow_engine::module_graph::ImpactClosurePaths>,
     export_lines: Option<FxHashMap<String, Vec<(String, u32)>>>,
     internal_consumers: Option<FxHashMap<String, u64>>,
     routing: fallow_output::RoutingFacts,
@@ -94,7 +94,7 @@ fn run_decision_analysis(
                 .with_code("FALLOW_DECISION_SURFACE_FAILED")
                 .with_context("decision-surface")
         })?;
-    let fallow_engine::AnalysisSessionArtifacts {
+    let fallow_engine::session::AnalysisSessionArtifacts {
         analysis: mut output,
         changed_files,
         ..
@@ -102,10 +102,10 @@ fn run_decision_analysis(
     let changed_files = changed_files.as_ref();
 
     if let Some(workspace_roots) = resolved.workspace_roots.as_ref() {
-        fallow_engine::filter_to_workspaces(&mut output.results, workspace_roots);
+        fallow_engine::dead_code::filter_to_workspaces(&mut output.results, workspace_roots);
     }
     if let Some(changed_files) = changed_files {
-        fallow_engine::filter_by_changed_files(&mut output.results, changed_files);
+        fallow_engine::dead_code::filter_by_changed_files(&mut output.results, changed_files);
     }
 
     let public_api = output
@@ -121,16 +121,18 @@ fn run_decision_analysis(
             )
         });
     let impact_closure = output.graph.as_ref().and_then(|graph| {
-        changed_files
-            .and_then(|files| fallow_engine::impact_closure_for_changed_paths(graph, &root, files))
+        changed_files.and_then(|files| {
+            fallow_engine::module_graph::impact_closure_for_changed_paths(graph, &root, files)
+        })
     });
     let export_lines = output.graph.as_ref().and_then(|graph| {
-        changed_files
-            .and_then(|files| fallow_engine::export_lines_for_changed_paths(graph, &root, files))
+        changed_files.and_then(|files| {
+            fallow_engine::module_graph::export_lines_for_changed_paths(graph, &root, files)
+        })
     });
     let internal_consumers = output.graph.as_ref().and_then(|graph| {
         changed_files.and_then(|files| {
-            fallow_engine::internal_consumers_for_changed_paths(graph, &root, files)
+            fallow_engine::module_graph::internal_consumers_for_changed_paths(graph, &root, files)
         })
     });
     let routing = changed_files.map_or_else(fallow_output::RoutingFacts::default, |files| {
@@ -273,7 +275,7 @@ fn boundary_anchors(head: &DecisionAnalysis, deltas: &ReviewDeltas) -> Vec<Bound
 }
 
 fn coordination_anchors(
-    closure: Option<&fallow_engine::ImpactClosurePaths>,
+    closure: Option<&fallow_engine::module_graph::ImpactClosurePaths>,
 ) -> Vec<CoordinationAnchor> {
     let Some(closure) = closure else {
         return Vec::new();

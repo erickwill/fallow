@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use fallow_config::{OutputFormat, ProductionAnalysis, Severity};
-use fallow_engine::{derive_security_severity, security_catalogue_title};
+use fallow_engine::dead_code::{derive_security_severity, security_catalogue_title};
 pub use fallow_output::{
     SecurityBlindSpotFile, SecurityBlindSpotGroup, SecurityBlindSpotsOutput,
     SecurityBlindSpotsSchemaVersion, SecurityBlindSpotsSummary, SecurityGateVerdict,
@@ -664,9 +664,9 @@ fn security_output_config(
 
 fn apply_changed_scope(opts: &SecurityOptions<'_>, results: &mut AnalysisResults) {
     if let Some(git_ref) = opts.changed_since
-        && let Some(changed) = fallow_engine::get_changed_files(opts.root, git_ref)
+        && let Some(changed) = fallow_engine::changed_files::get_changed_files(opts.root, git_ref)
     {
-        fallow_engine::filter_results_by_changed_files(results, &changed);
+        fallow_engine::changed_files::filter_results_by_changed_files(results, &changed);
     }
     if opts.use_shared_diff_index
         && let Some(diff_index) = crate::report::ci::diff_filter::shared_diff_index()
@@ -720,7 +720,7 @@ fn apply_security_gate(
         if let Some(shared) = crate::report::ci::diff_filter::shared_diff_index() {
             shared
         } else if let Some(git_ref) = opts.changed_since {
-            match fallow_engine::try_get_changed_diff(opts.root, git_ref) {
+            match fallow_engine::changed_files::try_get_changed_diff(opts.root, git_ref) {
                 Ok(text) => owned_gate_diff
                     .insert(crate::report::ci::diff_filter::DiffIndex::from_unified_diff(&text)),
                 Err(err) => {
@@ -1063,7 +1063,7 @@ struct SecurityAnalysisState {
     results: AnalysisResults,
     modules: Option<Vec<ModuleInfo>>,
     files: Option<Vec<DiscoveredFile>>,
-    analysis_output: Option<fallow_engine::DeadCodeAnalysisArtifacts>,
+    analysis_output: Option<fallow_engine::dead_code::DeadCodeAnalysisArtifacts>,
 }
 
 fn analyze_security_candidates(
@@ -1071,7 +1071,7 @@ fn analyze_security_candidates(
     config: &fallow_config::ResolvedConfig,
 ) -> Result<SecurityAnalysisState, ExitCode> {
     if opts.runtime_coverage.is_none() {
-        return fallow_engine::analyze(config)
+        return fallow_engine::dead_code::analyze(config)
             .map(|analysis| SecurityAnalysisState {
                 results: analysis.results,
                 modules: None,
@@ -1081,7 +1081,7 @@ fn analyze_security_candidates(
             .map_err(|err| emit_error(&format!("Analysis error: {err}"), 2, opts.output));
     }
 
-    fallow_engine::analyze_retaining_modules(config, true, true)
+    fallow_engine::dead_code::analyze_retaining_modules(config, true, true)
         .map(|mut output| {
             let modules = output.modules.take();
             let files = output.files.take();
@@ -1118,7 +1118,7 @@ fn analyze_security_runtime(
     path: &Path,
     modules: Vec<ModuleInfo>,
     files: Vec<DiscoveredFile>,
-    analysis_output: fallow_engine::DeadCodeAnalysisArtifacts,
+    analysis_output: fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
 ) -> Result<Option<RuntimeCoverageReport>, ExitCode> {
     let runtime_coverage = crate::health::coverage::prepare_options(
         path,
@@ -1129,7 +1129,7 @@ fn analyze_security_runtime(
     )?;
     let result = crate::health::execute_health_with_shared_parse(
         &security_runtime_health_options(opts, runtime_coverage),
-        fallow_engine::HealthSharedParseData {
+        fallow_engine::health::HealthSharedParseData {
             files,
             modules,
             analysis_output: Some(analysis_output),
@@ -1142,7 +1142,7 @@ fn analyze_security_runtime(
 /// context for security findings (complexity/hotspot/ownership all disabled).
 fn security_runtime_health_options<'a>(
     opts: &SecurityOptions<'a>,
-    runtime_coverage: fallow_engine::RuntimeCoverageOptions,
+    runtime_coverage: fallow_engine::health::RuntimeCoverageOptions,
 ) -> HealthOptions<'a> {
     HealthOptions {
         root: opts.root,
@@ -1151,9 +1151,9 @@ fn security_runtime_health_options<'a>(
         no_cache: opts.no_cache,
         threads: opts.threads,
         quiet: opts.quiet,
-        thresholds: fallow_engine::HealthThresholdOverrides::default(),
+        thresholds: fallow_engine::health::HealthThresholdOverrides::default(),
         top: None,
-        sort: fallow_engine::HealthSort::Cyclomatic,
+        sort: fallow_engine::health::HealthSort::Cyclomatic,
         production: true,
         production_override: Some(true),
         changed_since: opts.changed_since,
@@ -1177,14 +1177,14 @@ fn security_runtime_health_options<'a>(
         enforce_coverage_gap_gate: false,
         effort: None,
         score: false,
-        gates: fallow_engine::HealthGateOptions::default(),
+        gates: fallow_engine::health::HealthGateOptions::default(),
         since: None,
         min_commits: None,
         explain: false,
         summary: false,
         save_snapshot: None,
         trend: false,
-        coverage_inputs: fallow_engine::HealthCoverageInputs::default(),
+        coverage_inputs: fallow_engine::health::HealthCoverageInputs::default(),
         performance: false,
         runtime_coverage: Some(runtime_coverage),
         churn_file: None,
@@ -1558,7 +1558,7 @@ fn filter_to_files(results: &mut AnalysisResults, root: &Path, files: &[PathBuf]
     }
 
     let file_set: rustc_hash::FxHashSet<PathBuf> = resolved_files.into_iter().collect();
-    fallow_engine::filter_results_by_changed_files(results, &file_set);
+    fallow_engine::changed_files::filter_results_by_changed_files(results, &file_set);
 }
 
 fn prepare_findings(
@@ -4125,7 +4125,7 @@ mod tests {
         .expect("fixture config loads");
         config.rules.security_sink = Severity::Warn;
 
-        let analysis = fallow_engine::analyze(&config).expect("fixture analyzes");
+        let analysis = fallow_engine::dead_code::analyze(&config).expect("fixture analyzes");
         let finding = analysis
             .results
             .security_findings

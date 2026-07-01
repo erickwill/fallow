@@ -1,4 +1,9 @@
-//! Analysis result types exposed through the engine boundary.
+//! Internal analysis result contracts re-exported through typed engine modules.
+
+#![allow(
+    unused_imports,
+    reason = "private result contract aggregation re-exports types consumed through typed engine modules"
+)]
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -7,11 +12,13 @@ use fallow_config::ResolvedConfig;
 use fallow_output::{HealthGrouping, HealthReport, HealthTimings};
 use fallow_types::discover::DiscoveredFile;
 use fallow_types::extract::ModuleInfo;
+use fallow_types::source_fingerprint::SourceFingerprint;
 use fallow_types::workspace::WorkspaceDiagnostic;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{duplicates, module_graph, trace};
 
+pub use crate::security::{derive_security_severity, security_catalogue_title};
 pub use fallow_types::output_dead_code::{
     BoundaryCallViolationFinding, BoundaryCoverageViolationFinding, BoundaryViolationFinding,
     CircularDependencyFinding, DuplicateExportFinding, DuplicatePropShapeFinding,
@@ -93,6 +100,30 @@ pub struct ProjectAnalysisOutput {
     pub duplication: duplicates::DuplicationReport,
 }
 
+/// Typed project analysis result with reusable session artifacts.
+#[derive(Debug)]
+pub struct ProjectAnalysisArtifacts {
+    pub dead_code: DeadCodeAnalysisArtifacts,
+    pub duplication: duplicates::DuplicationReport,
+    pub changed_files: Option<FxHashSet<PathBuf>>,
+    pub source_fingerprints: Option<FxHashMap<PathBuf, SourceFingerprint>>,
+}
+
+impl ProjectAnalysisArtifacts {
+    /// Drop retained reuse-only artifacts and return the stable project output.
+    #[must_use]
+    pub fn into_output(self) -> ProjectAnalysisOutput {
+        ProjectAnalysisOutput {
+            dead_code: DeadCodeAnalysisOutput {
+                results: self.dead_code.results,
+                modules: self.dead_code.modules,
+                files: self.dead_code.files,
+            },
+            duplication: self.duplication,
+        }
+    }
+}
+
 /// Typed duplication analysis result.
 #[derive(Debug)]
 pub struct DuplicationAnalysis {
@@ -145,6 +176,7 @@ impl<GroupResolver> HealthAnalysisResult<GroupResolver> {
 
 #[cfg(test)]
 mod tests {
+    use crate::project_config::{ProjectConfigOptions, config_for_project_analysis};
     use fallow_config::ProductionAnalysis;
     use fallow_types::output_format::OutputFormat;
 
@@ -153,10 +185,10 @@ mod tests {
     #[test]
     fn health_analysis_result_drops_presentation_resolver() {
         let project = tempfile::tempdir().expect("temp dir");
-        let project_config = crate::config_for_project_analysis(
+        let project_config = config_for_project_analysis(
             project.path(),
             None,
-            crate::ProjectConfigOptions {
+            ProjectConfigOptions {
                 output: OutputFormat::Json,
                 no_cache: true,
                 threads: 1,

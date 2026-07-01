@@ -73,9 +73,7 @@ mod cli_telemetry;
 mod watch;
 
 use check::{CheckOptions, IssueFilters, TraceOptions};
-mod error {
-    pub use fallow_engine::emit_error;
-}
+mod error;
 #[cfg(test)]
 use cli_format::parse_format_arg;
 use cli_format::{Format, FormatConfig, apply_ci_defaults};
@@ -2212,8 +2210,8 @@ fn signal_test_helper() -> ExitCode {
 }
 
 fn install_spawn_hooks() {
-    fallow_engine::set_churn_spawn_hook(signal::scoped_child::output);
-    fallow_engine::set_spawn_hook(signal::scoped_child::output);
+    fallow_engine::churn::set_spawn_hook(signal::scoped_child::output);
+    fallow_engine::changed_files::set_spawn_hook(signal::scoped_child::output);
 }
 
 fn install_signal_handlers() {
@@ -4114,7 +4112,7 @@ fn resolve_runtime_coverage_options(
     min_observation_volume: Option<u32>,
     low_traffic_threshold: Option<f64>,
     output: fallow_config::OutputFormat,
-) -> Result<Option<fallow_engine::RuntimeCoverageOptions>, ExitCode> {
+) -> Result<Option<fallow_engine::health::RuntimeCoverageOptions>, ExitCode> {
     let Some(path) = runtime_coverage else {
         return Ok(None);
     };
@@ -4160,40 +4158,42 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: &HealthDispatchArgs<'_>
             Ok(inputs) => inputs,
             Err(code) => return code,
         };
-    let run = fallow_engine::derive_health_run_options(fallow_engine::HealthRunOptionsInput {
-        output,
-        thresholds: fallow_engine::HealthThresholdOverrides {
-            max_cyclomatic: args.max_cyclomatic,
-            max_cognitive: args.max_cognitive,
-            max_crap: args.max_crap,
+    let run = fallow_engine::health::derive_health_run_options(
+        fallow_engine::health::HealthRunOptionsInput {
+            output,
+            thresholds: fallow_engine::health::HealthThresholdOverrides {
+                max_cyclomatic: args.max_cyclomatic,
+                max_cognitive: args.max_cognitive,
+                max_crap: args.max_crap,
+            },
+            top: args.top,
+            sort: args.sort.clone().into(),
+            complexity: args.complexity,
+            file_scores: args.file_scores,
+            coverage_gaps: args.coverage_gaps,
+            hotspots: args.hotspots,
+            ownership: args.ownership,
+            ownership_emails: args.ownership_emails,
+            targets: args.targets,
+            css: args.css,
+            effort: args.effort.map(EffortFilter::to_estimate),
+            score: args.score,
+            gates: fallow_engine::health::HealthGateOptions {
+                min_score: args.min_score,
+                min_severity: args.min_severity,
+                report_only: args.report_only,
+            },
+            snapshot_requested: args.save_snapshot.is_some(),
+            trend: args.trend,
+            since: args.since,
+            min_commits: args.min_commits,
+            coverage_inputs: fallow_engine::health::HealthCoverageInputs {
+                coverage: coverage_inputs.coverage.as_deref(),
+                coverage_root: coverage_inputs.coverage_root.as_deref(),
+            },
+            runtime_coverage,
         },
-        top: args.top,
-        sort: args.sort.clone().into(),
-        complexity: args.complexity,
-        file_scores: args.file_scores,
-        coverage_gaps: args.coverage_gaps,
-        hotspots: args.hotspots,
-        ownership: args.ownership,
-        ownership_emails: args.ownership_emails,
-        targets: args.targets,
-        css: args.css,
-        effort: args.effort.map(EffortFilter::to_estimate),
-        score: args.score,
-        gates: fallow_engine::HealthGateOptions {
-            min_score: args.min_score,
-            min_severity: args.min_severity,
-            report_only: args.report_only,
-        },
-        snapshot_requested: args.save_snapshot.is_some(),
-        trend: args.trend,
-        since: args.since,
-        min_commits: args.min_commits,
-        coverage_inputs: fallow_engine::HealthCoverageInputs {
-            coverage: coverage_inputs.coverage.as_deref(),
-            coverage_root: coverage_inputs.coverage_root.as_deref(),
-        },
-        runtime_coverage,
-    });
+    );
     run_health_dispatch(dispatch, args, ResolvedHealthDispatch { run, production })
 }
 
@@ -4201,7 +4201,7 @@ fn dispatch_health(dispatch: &DispatchContext<'_>, args: &HealthDispatchArgs<'_>
 /// builder. Owns the normalized engine run contract and resolved production
 /// mode.
 struct ResolvedHealthDispatch<'a> {
-    run: fallow_engine::HealthRunOptions<'a>,
+    run: fallow_engine::health::HealthRunOptions<'a>,
     production: bool,
 }
 

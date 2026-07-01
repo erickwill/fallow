@@ -107,22 +107,23 @@ fn run_clone_trace(
     trace_spec: &str,
     output: OutputFormat,
 ) -> ExitCode {
-    let (trace_result, not_found) =
-        if let Some(fp) = trace_spec.strip_prefix(fallow_engine::FINGERPRINT_PREFIX) {
-            let fingerprint = format!("{}{fp}", fallow_engine::FINGERPRINT_PREFIX);
-            let result = fallow_engine::trace_clone_by_fingerprint(report, root, &fingerprint);
-            (
-                result,
-                format!("no clone group with fingerprint {fingerprint}"),
-            )
-        } else {
-            let (file_path, line) = match parse_trace_spec(trace_spec) {
-                Ok(parsed) => parsed,
-                Err(msg) => return emit_error(msg, 2, output),
-            };
-            let result = fallow_engine::trace_clone(report, root, file_path, line);
-            (result, format!("no clone found at {file_path}:{line}"))
+    let (trace_result, not_found) = if let Some(fp) =
+        trace_spec.strip_prefix(fallow_engine::duplicates::FINGERPRINT_PREFIX)
+    {
+        let fingerprint = format!("{}{fp}", fallow_engine::duplicates::FINGERPRINT_PREFIX);
+        let result = fallow_engine::trace::trace_clone_by_fingerprint(report, root, &fingerprint);
+        (
+            result,
+            format!("no clone group with fingerprint {fingerprint}"),
+        )
+    } else {
+        let (file_path, line) = match parse_trace_spec(trace_spec) {
+            Ok(parsed) => parsed,
+            Err(msg) => return emit_error(msg, 2, output),
         };
+        let result = fallow_engine::trace::trace_clone(report, root, file_path, line);
+        (result, format!("no clone found at {file_path}:{line}"))
+    };
     if trace_result.matched_instance.is_none() {
         return emit_error(&not_found, 2, output);
     }
@@ -175,7 +176,7 @@ fn exceeds_threshold(threshold: f64, duplication_percentage: f64) -> bool {
     threshold > 0.0 && duplication_percentage > threshold
 }
 
-use fallow_engine::filter_duplication_by_changed_files as filter_by_changed_files;
+use fallow_engine::changed_files::filter_duplication_by_changed_files as filter_by_changed_files;
 
 /// Filter a duplication report to only retain clone groups where at least one
 /// instance belongs to a file under one of the given workspace roots. Mirrors
@@ -196,7 +197,7 @@ fn filter_by_workspaces(
             .iter()
             .any(|i| ws_roots.iter().any(|r| i.file.starts_with(r)))
     });
-    fallow_engine::refresh_clone_families(report, root);
+    fallow_engine::duplicates::refresh_clone_families(report, root);
     report.stats = recompute_stats(report);
 }
 
@@ -229,7 +230,7 @@ fn filter_by_diff(
     report
         .clone_groups
         .retain(|g| g.instances.iter().any(instance_overlaps));
-    fallow_engine::refresh_clone_families(report, root);
+    fallow_engine::duplicates::refresh_clone_families(report, root);
     report.stats = recompute_stats(report);
 }
 
@@ -331,8 +332,8 @@ fn execute_dupes_inner(
     let config = load_dupes_config_for_analysis(opts)?;
 
     let dupes_config = build_dupes_config(opts, &config.duplicates);
-    let files =
-        pre_discovered.unwrap_or_else(|| fallow_engine::discover_files_with_plugin_scopes(&config));
+    let files = pre_discovered
+        .unwrap_or_else(|| fallow_engine::discover::discover_files_with_plugin_scopes(&config));
 
     let changed_files_from_since = resolve_changed_since(opts);
     let effective_changed_files: Option<&rustc_hash::FxHashSet<std::path::PathBuf>> =
@@ -542,7 +543,7 @@ fn apply_top(report: &mut DuplicationReport, n: usize, root: &std::path::Path) {
             })
     });
     report.clone_groups.truncate(n);
-    fallow_engine::refresh_clone_families(report, root);
+    fallow_engine::duplicates::refresh_clone_families(report, root);
     report.stats.clone_groups = report.clone_groups.len();
     report.stats.clone_instances = report.clone_groups.iter().map(|g| g.instances.len()).sum();
     report.sort();
@@ -558,7 +559,7 @@ fn run_duplication_analysis(
     let cache_dir = (!opts.no_cache).then_some(config.cache_dir.as_path());
     let analysis = if let Some(changed_files) = changed_files {
         let changed_files = changed_files.iter().cloned().collect::<Vec<_>>();
-        fallow_engine::find_duplicates_touching_files_with_defaults(
+        fallow_engine::duplicates::find_duplicates_touching_files_with_defaults(
             &config.root,
             files,
             dupes_config,
@@ -566,7 +567,12 @@ fn run_duplication_analysis(
             cache_dir,
         )
     } else {
-        fallow_engine::find_duplicates_with_defaults(&config.root, files, dupes_config, cache_dir)
+        fallow_engine::duplicates::find_duplicates_with_defaults(
+            &config.root,
+            files,
+            dupes_config,
+            cache_dir,
+        )
     };
     (analysis.report, analysis.default_ignore_skips)
 }

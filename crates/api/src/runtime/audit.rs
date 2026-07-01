@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::{Instant, SystemTime};
 
 use fallow_config::AuditGate;
-use fallow_engine::clear_ambient_git_env;
+use fallow_engine::changed_files::clear_ambient_git_env;
 use fallow_output::build_audit_next_steps;
 use fallow_types::output::NextStep;
 use rustc_hash::FxHashSet;
@@ -86,7 +86,7 @@ pub fn run_audit(options: &AuditOptions) -> ProgrammaticResult<AuditProgrammatic
 
 fn validate_audit_api_options(options: &AuditOptions) -> ProgrammaticResult<()> {
     if let Err(err) =
-        fallow_engine::validate_coverage_root_absolute(options.coverage_root.as_deref())
+        fallow_engine::health::validate_coverage_root_absolute(options.coverage_root.as_deref())
     {
         return Err(ProgrammaticError::new(err, 2)
             .with_code("FALLOW_INVALID_COVERAGE_ROOT")

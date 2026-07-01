@@ -6,13 +6,19 @@ use rustc_hash::FxHashSet;
 
 use fallow_config::ResolvedConfig;
 
-use crate::{
+pub use crate::results::{
     AnalysisResults, DeadCodeAnalysis, DeadCodeAnalysisArtifacts, DeadCodeAnalysisOutput,
-    DeadCodeAnalysisWithHashes, EngineResult, ModuleInfo, core_backend,
+    DeadCodeAnalysisWithHashes, derive_security_severity, security_catalogue_title,
+};
+
+use crate::{
+    EngineResult, core_backend,
     session::{
         analyze_dead_code_from_config, analyze_dead_code_with_artifacts_from_config,
         analyze_dead_code_with_complexity_from_config,
+        analyze_dead_code_with_parse_result_from_config,
     },
+    source::ModuleInfo,
 };
 
 /// Run dead-code analysis for a resolved config.
@@ -84,7 +90,7 @@ pub fn analyze_with_parse_result(
     config: &ResolvedConfig,
     modules: &[ModuleInfo],
 ) -> EngineResult<DeadCodeAnalysisArtifacts> {
-    core_backend::analyze_with_parse_result(config, modules)
+    analyze_dead_code_with_parse_result_from_config(config, modules)
 }
 
 /// Run dead-code analysis with export usage and retained complexity artifacts.

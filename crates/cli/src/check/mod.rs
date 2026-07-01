@@ -320,13 +320,13 @@ pub struct CheckResult {
     pub baseline_matched: Option<(usize, usize)>,
     pub timings: Option<fallow_types::trace::PipelineTimings>,
     /// Retained parse data for sharing with health (only populated when retain_modules_for_health=true).
-    pub shared_parse: Option<fallow_engine::HealthSharedParseData>,
+    pub shared_parse: Option<fallow_engine::health::HealthSharedParseData>,
     /// Impact closure for the review brief: the transitive
     /// affected-but-not-in-diff set plus coordination gaps. Populated by the
     /// audit brief path from the retained graph against the changed-file set;
     /// `None` outside the brief path. Holds root-relative paths so it survives
     /// the graph drop and serializes directly.
-    pub impact_closure: Option<fallow_engine::ImpactClosurePaths>,
+    pub impact_closure: Option<fallow_engine::module_graph::ImpactClosurePaths>,
     /// Exports-aware public-export key set for the review brief: the
     /// `<rel_path>::<name>` keys reachable through `package.json` `exports` +
     /// re-export reachability. Computed from the retained graph on the brief
@@ -340,14 +340,14 @@ pub struct CheckResult {
     /// changed-file set, before the graph is dropped; `None` outside the brief
     /// path. Holds root-relative paths so it survives the graph drop and
     /// serializes directly.
-    pub partition_order: Option<fallow_engine::PartitionOrderPaths>,
+    pub partition_order: Option<fallow_engine::module_graph::PartitionOrderPaths>,
     /// Per-changed-file graph facts for the review brief's stage 4 weighted
     /// focus map: fan-in/out (blast radius) plus the dynamic-dispatch and
     /// re-export-indirection confidence-flag signals. Computed from the retained
     /// graph on the brief path against the changed-file set, before the graph is
     /// dropped; `None` outside the brief path. Holds root-relative paths so it
     /// survives the graph drop.
-    pub focus_facts: Option<Vec<fallow_engine::FocusFileFactsPaths>>,
+    pub focus_facts: Option<Vec<fallow_engine::module_graph::FocusFileFactsPaths>>,
     /// Per-changed-file `rel_path -> [(exported-symbol, 1-based declaration line)]`
     /// map for the decision surface, so a coordination / public-API decision can
     /// anchor an inline comment to the exact export line. Computed from the
@@ -363,7 +363,7 @@ pub struct CheckResult {
 
 struct CheckAnalysisData {
     results: AnalysisResults,
-    trace_graph: Option<fallow_engine::RetainedModuleGraph>,
+    trace_graph: Option<fallow_engine::module_graph::RetainedModuleGraph>,
     trace_timings: Option<fallow_types::trace::PipelineTimings>,
     retained_modules: Option<Vec<ModuleInfo>>,
     retained_files: Option<Vec<DiscoveredFile>>,
@@ -375,7 +375,7 @@ fn run_check_analysis(
     config: &ResolvedConfig,
 ) -> Result<CheckAnalysisData, ExitCode> {
     if opts.retain_modules_for_health {
-        return fallow_engine::analyze_retaining_modules(config, true, true)
+        return fallow_engine::dead_code::analyze_retaining_modules(config, true, true)
             .map(|output| CheckAnalysisData {
                 results: output.results,
                 trace_graph: output.graph,
@@ -388,7 +388,7 @@ fn run_check_analysis(
     }
 
     if opts.trace_opts.any_active() {
-        return fallow_engine::analyze_with_trace(config)
+        return fallow_engine::dead_code::analyze_with_trace(config)
             .map(|output| CheckAnalysisData {
                 results: output.results,
                 trace_graph: output.graph,
@@ -400,7 +400,7 @@ fn run_check_analysis(
             .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
     }
 
-    fallow_engine::analyze(config)
+    fallow_engine::dead_code::analyze(config)
         .map(|analysis| CheckAnalysisData {
             results: analysis.results,
             trace_graph: None,
@@ -437,7 +437,7 @@ fn prepare_check_config(opts: &CheckOptions<'_>) -> Result<ResolvedConfig, ExitC
 fn handle_trace_side_effects(
     opts: &CheckOptions<'_>,
     config: &ResolvedConfig,
-    trace_graph: Option<&fallow_engine::RetainedModuleGraph>,
+    trace_graph: Option<&fallow_engine::module_graph::RetainedModuleGraph>,
     trace_timings: Option<&fallow_types::trace::PipelineTimings>,
     script_used_packages: &rustc_hash::FxHashSet<String>,
 ) -> Result<(), ExitCode> {
@@ -582,12 +582,12 @@ fn regression_config_path(opts: &CheckOptions<'_>) -> std::path::PathBuf {
 
 fn build_shared_parse_data(
     results: &AnalysisResults,
-    trace_graph: Option<fallow_engine::RetainedModuleGraph>,
+    trace_graph: Option<fallow_engine::module_graph::RetainedModuleGraph>,
     retained_modules: Option<Vec<ModuleInfo>>,
     retained_files: Option<Vec<DiscoveredFile>>,
     script_used_packages: &rustc_hash::FxHashSet<String>,
-) -> Option<fallow_engine::HealthSharedParseData> {
-    fallow_engine::health_shared_parse_data_from_artifacts(
+) -> Option<fallow_engine::health::HealthSharedParseData> {
+    fallow_engine::health::shared_parse_data_from_artifacts(
         results,
         trace_graph,
         retained_modules,

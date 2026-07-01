@@ -1,14 +1,18 @@
 //! Persisted graph-cache identity contracts and on-disk store.
 //!
 //! The manifest types here define the invalidation surface a persisted graph
-//! cache must satisfy before a cached graph can be trusted; the store implements
-//! the coarse all-or-nothing load / save of a previously-built `ModuleGraph`
-//! keyed by that manifest.
+//! cache must satisfy before a cached graph can be trusted. Exact manifest hits
+//! can reuse a previously-built `ModuleGraph`; stable-key resolver hits can
+//! reuse resolver output and rebuild the graph with current `FileId`s.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use fallow_types::discover::{DiscoveredFile, StableFileKey};
+use fallow_types::discover::{DiscoveredFile, FileId, StableFileKey};
+use fallow_types::extract::{ImportInfo, ReExportInfo};
 use fallow_types::source_fingerprint::SourceFingerprint;
+use oxc_span::Span;
+
+use crate::resolve::{ResolveResult, ResolvedImport, ResolvedModule, ResolvedReExport};
 
 mod store;
 
@@ -20,7 +24,415 @@ pub use store::GraphCacheStore;
 /// graph types that derive serde for the cache, the manifest types, or the
 /// store envelope) changes, so a stale `graph-cache.bin` written by an older
 /// binary is rejected rather than deserialized into the wrong shape.
-pub const GRAPH_CACHE_VERSION: u32 = 1;
+pub const GRAPH_CACHE_VERSION: u32 = 3;
+
+/// Cached form of a resolved target.
+///
+/// Internal targets are stored by stable file key, not by `FileId`, so resolver
+/// output can be reused across a future FileId assignment shift. The persisted
+/// `ModuleGraph` itself is still `FileId`-keyed; callers may only trust the
+/// cached graph when the manifest's `file_id` assignments match, but they may
+/// remap this resolver payload and rebuild the graph.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum CachedResolveResult {
+    /// Resolved to a file within the project.
+    InternalModule(StableFileKey),
+    /// Resolved to a project file through a framework convention auto-import.
+    SyntheticAutoImport(StableFileKey),
+    /// Resolved to a workspace or self package source file.
+    InternalPackageModule {
+        /// Stable source file reached by the package map.
+        key: StableFileKey,
+        /// Package name that was used in the import specifier.
+        package_name: String,
+    },
+    /// Resolved to a file outside the project.
+    ExternalFile(PathBuf),
+    /// Bare specifier.
+    NpmPackage(String),
+    /// Could not resolve.
+    Unresolvable(String),
+}
+
+impl CachedResolveResult {
+    fn from_resolve_result(
+        target: &ResolveResult,
+        key_by_file_id: &rustc_hash::FxHashMap<FileId, StableFileKey>,
+    ) -> Option<Self> {
+        Some(match target {
+            ResolveResult::InternalModule(file_id) => {
+                Self::InternalModule(key_by_file_id.get(file_id)?.clone())
+            }
+            ResolveResult::SyntheticAutoImport(file_id) => {
+                Self::SyntheticAutoImport(key_by_file_id.get(file_id)?.clone())
+            }
+            ResolveResult::InternalPackageModule {
+                file_id,
+                package_name,
+            } => Self::InternalPackageModule {
+                key: key_by_file_id.get(file_id)?.clone(),
+                package_name: package_name.clone(),
+            },
+            ResolveResult::ExternalFile(path) => Self::ExternalFile(path.clone()),
+            ResolveResult::NpmPackage(package_name) => Self::NpmPackage(package_name.clone()),
+            ResolveResult::Unresolvable(specifier) => Self::Unresolvable(specifier.clone()),
+        })
+    }
+
+    fn into_resolve_result(
+        self,
+        id_by_key: &rustc_hash::FxHashMap<StableFileKey, FileId>,
+    ) -> Option<ResolveResult> {
+        Some(match self {
+            Self::InternalModule(key) => ResolveResult::InternalModule(*id_by_key.get(&key)?),
+            Self::SyntheticAutoImport(key) => {
+                ResolveResult::SyntheticAutoImport(*id_by_key.get(&key)?)
+            }
+            Self::InternalPackageModule { key, package_name } => {
+                ResolveResult::InternalPackageModule {
+                    file_id: *id_by_key.get(&key)?,
+                    package_name,
+                }
+            }
+            Self::ExternalFile(path) => ResolveResult::ExternalFile(path),
+            Self::NpmPackage(package_name) => ResolveResult::NpmPackage(package_name),
+            Self::Unresolvable(specifier) => ResolveResult::Unresolvable(specifier),
+        })
+    }
+}
+
+/// Cached import edge that can be restored without re-running resolution.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedResolvedImport {
+    /// Import metadata mirrored from extraction or resolver synthesis.
+    pub info: CachedImportInfo,
+    /// Resolved target for this import edge.
+    pub target: CachedResolveResult,
+}
+
+impl CachedResolvedImport {
+    fn from_resolved(
+        import: &ResolvedImport,
+        key_by_file_id: &rustc_hash::FxHashMap<FileId, StableFileKey>,
+    ) -> Option<Self> {
+        Some(Self {
+            info: CachedImportInfo::from(&import.info),
+            target: CachedResolveResult::from_resolve_result(&import.target, key_by_file_id)?,
+        })
+    }
+
+    fn into_resolved(
+        self,
+        id_by_key: &rustc_hash::FxHashMap<StableFileKey, FileId>,
+    ) -> Option<ResolvedImport> {
+        Some(ResolvedImport {
+            info: self.info.into(),
+            target: self.target.into_resolve_result(id_by_key)?,
+        })
+    }
+}
+
+/// Cached re-export edge that can be restored without re-running resolution.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedResolvedReExport {
+    /// Re-export metadata mirrored from extraction.
+    pub info: CachedReExportInfo,
+    /// Resolved target for this re-export source.
+    pub target: CachedResolveResult,
+}
+
+impl CachedResolvedReExport {
+    fn from_resolved(
+        re_export: &ResolvedReExport,
+        key_by_file_id: &rustc_hash::FxHashMap<FileId, StableFileKey>,
+    ) -> Option<Self> {
+        Some(Self {
+            info: CachedReExportInfo::from(&re_export.info),
+            target: CachedResolveResult::from_resolve_result(&re_export.target, key_by_file_id)?,
+        })
+    }
+
+    fn into_resolved(
+        self,
+        id_by_key: &rustc_hash::FxHashMap<StableFileKey, FileId>,
+    ) -> Option<ResolvedReExport> {
+        Some(ResolvedReExport {
+            info: self.info.into(),
+            target: self.target.into_resolve_result(id_by_key)?,
+        })
+    }
+}
+
+/// Cache-friendly mirror of [`ImportInfo`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedImportInfo {
+    /// Import source specifier.
+    pub source: String,
+    /// Imported binding shape.
+    pub imported_name: fallow_types::extract::ImportedName,
+    /// Local binding name.
+    pub local_name: String,
+    /// Whether this import is type-only.
+    pub is_type_only: bool,
+    /// Whether this import originated from a style context.
+    pub from_style: bool,
+    /// Span of the full import declaration.
+    pub span: [u32; 2],
+    /// Span of the import source literal.
+    pub source_span: [u32; 2],
+}
+
+impl From<&ImportInfo> for CachedImportInfo {
+    fn from(info: &ImportInfo) -> Self {
+        Self {
+            source: info.source.clone(),
+            imported_name: info.imported_name.clone(),
+            local_name: info.local_name.clone(),
+            is_type_only: info.is_type_only,
+            from_style: info.from_style,
+            span: span_to_pair(info.span),
+            source_span: span_to_pair(info.source_span),
+        }
+    }
+}
+
+impl From<CachedImportInfo> for ImportInfo {
+    fn from(info: CachedImportInfo) -> Self {
+        Self {
+            source: info.source,
+            imported_name: info.imported_name,
+            local_name: info.local_name,
+            is_type_only: info.is_type_only,
+            from_style: info.from_style,
+            span: pair_to_span(info.span),
+            source_span: pair_to_span(info.source_span),
+        }
+    }
+}
+
+/// Cache-friendly mirror of [`ReExportInfo`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedReExportInfo {
+    /// Re-export source specifier.
+    pub source: String,
+    /// Imported name from the source module.
+    pub imported_name: String,
+    /// Exported name from this module.
+    pub exported_name: String,
+    /// Whether this re-export is type-only.
+    pub is_type_only: bool,
+    /// Span of the re-export declaration.
+    pub span: [u32; 2],
+}
+
+impl From<&ReExportInfo> for CachedReExportInfo {
+    fn from(info: &ReExportInfo) -> Self {
+        Self {
+            source: info.source.clone(),
+            imported_name: info.imported_name.clone(),
+            exported_name: info.exported_name.clone(),
+            is_type_only: info.is_type_only,
+            span: span_to_pair(info.span),
+        }
+    }
+}
+
+impl From<CachedReExportInfo> for ReExportInfo {
+    fn from(info: CachedReExportInfo) -> Self {
+        Self {
+            source: info.source,
+            imported_name: info.imported_name,
+            exported_name: info.exported_name,
+            is_type_only: info.is_type_only,
+            span: pair_to_span(info.span),
+        }
+    }
+}
+
+/// Cached resolver output for one module.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedResolvedModule {
+    /// Stable identity of the source module.
+    pub key: StableFileKey,
+    /// Static import and require edges after resolution.
+    pub resolved_imports: Vec<CachedResolvedImport>,
+    /// Literal dynamic import edges after resolution.
+    pub resolved_dynamic_imports: Vec<CachedResolvedImport>,
+    /// Re-export source edges after resolution.
+    pub re_exports: Vec<CachedResolvedReExport>,
+    /// Dynamic import pattern targets, aligned with current extracted patterns.
+    pub resolved_dynamic_pattern_targets: Vec<Vec<StableFileKey>>,
+}
+
+impl CachedResolvedModule {
+    fn from_resolved(
+        module: &ResolvedModule,
+        key_by_file_id: &rustc_hash::FxHashMap<FileId, StableFileKey>,
+    ) -> Option<Self> {
+        Some(Self {
+            key: key_by_file_id.get(&module.file_id)?.clone(),
+            resolved_imports: module
+                .resolved_imports
+                .iter()
+                .map(|import| CachedResolvedImport::from_resolved(import, key_by_file_id))
+                .collect::<Option<Vec<_>>>()?,
+            resolved_dynamic_imports: module
+                .resolved_dynamic_imports
+                .iter()
+                .map(|import| CachedResolvedImport::from_resolved(import, key_by_file_id))
+                .collect::<Option<Vec<_>>>()?,
+            re_exports: module
+                .re_exports
+                .iter()
+                .map(|re_export| CachedResolvedReExport::from_resolved(re_export, key_by_file_id))
+                .collect::<Option<Vec<_>>>()?,
+            resolved_dynamic_pattern_targets: module
+                .resolved_dynamic_patterns
+                .iter()
+                .map(|(_, targets)| {
+                    targets
+                        .iter()
+                        .map(|target| key_by_file_id.get(target).cloned())
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+}
+
+/// Convert resolved modules into the compact graph-cache resolver payload.
+#[must_use]
+pub fn cache_resolved_modules(
+    root: &Path,
+    files: &[DiscoveredFile],
+    resolved: &[ResolvedModule],
+) -> Option<Vec<CachedResolvedModule>> {
+    let key_by_file_id = stable_key_by_file_id(root, files);
+    resolved
+        .iter()
+        .map(|module| CachedResolvedModule::from_resolved(module, &key_by_file_id))
+        .collect()
+}
+
+/// Restore resolved modules from cached resolver payloads and current parsed modules.
+///
+/// Returns `None` if the payload no longer aligns with the current parse result.
+/// A normal graph-cache manifest hit should keep these aligned; this extra check
+/// keeps corrupt or hand-edited cache files on the safe miss path.
+#[must_use]
+pub fn restore_resolved_modules(
+    root: &Path,
+    modules: &[fallow_types::extract::ModuleInfo],
+    files: &[DiscoveredFile],
+    cached: &[CachedResolvedModule],
+) -> Option<Vec<ResolvedModule>> {
+    if modules.len() != cached.len() {
+        return None;
+    }
+
+    let key_by_file_id = stable_key_by_file_id(root, files);
+    let id_by_key: rustc_hash::FxHashMap<_, _> = key_by_file_id
+        .iter()
+        .map(|(file_id, key)| (key.clone(), *file_id))
+        .collect();
+    let mut by_key: rustc_hash::FxHashMap<_, _> = modules
+        .iter()
+        .filter_map(|module| {
+            key_by_file_id
+                .get(&module.file_id)
+                .map(|key| (key.clone(), module))
+        })
+        .collect();
+    let path_by_key: rustc_hash::FxHashMap<_, _> = files
+        .iter()
+        .map(|file| {
+            (
+                StableFileKey::from_root_relative(root, &file.path),
+                file.path.clone(),
+            )
+        })
+        .collect();
+
+    cached
+        .iter()
+        .map(|entry| {
+            let module = by_key.remove(&entry.key)?;
+            let path = path_by_key.get(&entry.key)?.clone();
+            if entry.resolved_dynamic_pattern_targets.len() != module.dynamic_import_patterns.len()
+            {
+                return None;
+            }
+            let resolved_dynamic_pattern_targets = entry
+                .resolved_dynamic_pattern_targets
+                .iter()
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .map(|key| id_by_key.get(key).copied())
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some(ResolvedModule {
+                file_id: module.file_id,
+                path,
+                exports: module.exports.clone(),
+                re_exports: entry
+                    .re_exports
+                    .iter()
+                    .cloned()
+                    .map(|re_export| re_export.into_resolved(&id_by_key))
+                    .collect::<Option<Vec<_>>>()?,
+                resolved_imports: entry
+                    .resolved_imports
+                    .iter()
+                    .cloned()
+                    .map(|import| import.into_resolved(&id_by_key))
+                    .collect::<Option<Vec<_>>>()?,
+                resolved_dynamic_imports: entry
+                    .resolved_dynamic_imports
+                    .iter()
+                    .cloned()
+                    .map(|import| import.into_resolved(&id_by_key))
+                    .collect::<Option<Vec<_>>>()?,
+                resolved_dynamic_patterns: module
+                    .dynamic_import_patterns
+                    .iter()
+                    .cloned()
+                    .zip(resolved_dynamic_pattern_targets)
+                    .collect(),
+                member_accesses: module.member_accesses.clone(),
+                semantic_facts: module.semantic_facts.clone(),
+                whole_object_uses: module.whole_object_uses.clone(),
+                has_cjs_exports: module.has_cjs_exports,
+                has_angular_component_template_url: module.has_angular_component_template_url,
+                unused_import_bindings: module.unused_import_bindings.iter().cloned().collect(),
+                type_referenced_import_bindings: module.type_referenced_import_bindings.clone(),
+                value_referenced_import_bindings: module.value_referenced_import_bindings.clone(),
+                namespace_object_aliases: module.namespace_object_aliases.clone(),
+                exported_factory_returns: module.exported_factory_returns.clone(),
+            })
+        })
+        .collect()
+}
+
+fn stable_key_by_file_id(
+    root: &Path,
+    files: &[DiscoveredFile],
+) -> rustc_hash::FxHashMap<FileId, StableFileKey> {
+    files
+        .iter()
+        .map(|file| (file.id, StableFileKey::from_root_relative(root, &file.path)))
+        .collect()
+}
+
+fn span_to_pair(span: Span) -> [u32; 2] {
+    [span.start, span.end]
+}
+
+fn pair_to_span(pair: [u32; 2]) -> Span {
+    Span::new(pair[0], pair[1])
+}
 
 /// Serialize an [`oxc_span::Span`] as a `[start, end]` `u32` pair.
 ///
@@ -151,6 +563,13 @@ impl GraphCacheMode {
 pub struct GraphCacheFile {
     /// Persistable identity for the file.
     pub key: StableFileKey,
+    /// Current in-memory identifier for the file.
+    ///
+    /// The stable key is the durable identity, but the persisted `ModuleGraph`
+    /// is still `FileId`-keyed. Until a future graph-cache format remaps graph
+    /// edges through stable keys, a changed assignment must miss rather than
+    /// trust a graph whose `modules[file_id]` indexes point at different files.
+    pub file_id: FileId,
     /// Metadata fingerprint for cache invalidation.
     pub fingerprint: SourceFingerprint,
 }
@@ -165,6 +584,7 @@ impl GraphCacheFile {
     ) -> Self {
         Self {
             key: StableFileKey::from_root_relative(root, &file.path),
+            file_id: file.id,
             fingerprint,
         }
     }
@@ -177,7 +597,7 @@ pub struct GraphCacheManifest {
     pub version: u32,
     /// Graph-affecting option dimensions.
     pub mode: GraphCacheMode,
-    /// Stable file identities and freshness metadata.
+    /// Stable file identities, current FileId assignments, and freshness metadata.
     pub files: Vec<GraphCacheFile>,
 }
 
@@ -216,6 +636,27 @@ impl GraphCacheManifest {
             && current.version == GRAPH_CACHE_VERSION
             && self.mode == current.mode
             && self.files == current.files
+    }
+
+    /// True when a persisted resolver payload can be remapped to current FileIds.
+    ///
+    /// Unlike [`Self::matches_inputs`], this intentionally ignores each row's
+    /// `file_id`. It is not sufficient to trust the persisted `ModuleGraph`, but
+    /// it is sufficient to reuse stable-keyed resolver output and rebuild the
+    /// graph with current FileIds.
+    #[must_use]
+    pub fn matches_resolution_inputs(&self, current: &Self) -> bool {
+        self.version == GRAPH_CACHE_VERSION
+            && current.version == GRAPH_CACHE_VERSION
+            && self.mode == current.mode
+            && self.files.len() == current.files.len()
+            && self
+                .files
+                .iter()
+                .zip(current.files.iter())
+                .all(|(cached, current)| {
+                    cached.key == current.key && cached.fingerprint == current.fingerprint
+                })
     }
 }
 
@@ -261,6 +702,18 @@ mod tests {
         })
     }
 
+    fn import_info(source: &str) -> ImportInfo {
+        ImportInfo {
+            source: source.to_string(),
+            imported_name: fallow_types::extract::ImportedName::SideEffect,
+            local_name: String::new(),
+            is_type_only: false,
+            from_style: false,
+            span: Span::new(0, 0),
+            source_span: Span::new(0, 0),
+        }
+    }
+
     #[test]
     fn manifest_sorts_by_stable_file_key() {
         let files = vec![file(0, "/project/src/z.ts"), file(1, "/project/src/a.ts")];
@@ -280,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_matches_across_file_id_shift() {
+    fn manifest_misses_on_file_id_shift_until_graph_remap_exists() {
         let before = vec![file(0, "/project/src/a.ts"), file(1, "/project/src/c.ts")];
         let after = vec![file(9, "/project/src/c.ts"), file(2, "/project/src/a.ts")];
         let map = fingerprints(&[
@@ -291,7 +744,68 @@ mod tests {
         let cached = manifest(&before, mode(), &map);
         let current = manifest(&after, mode(), &map);
 
-        assert!(cached.matches_inputs(&current));
+        assert!(
+            !cached.matches_inputs(&current),
+            "the persisted graph is still FileId-keyed, so FileId shifts cannot trust it"
+        );
+        assert!(
+            cached.matches_resolution_inputs(&current),
+            "stable-keyed resolver payloads may be remapped across FileId shifts"
+        );
+    }
+
+    #[test]
+    fn cached_resolve_result_remaps_internal_targets_by_stable_key() {
+        let key_a = StableFileKey::from_root_relative(
+            Path::new("/project"),
+            Path::new("/project/src/a.ts"),
+        );
+        let key_b = StableFileKey::from_root_relative(
+            Path::new("/project"),
+            Path::new("/project/src/b.ts"),
+        );
+        let key_by_file_id =
+            FxHashMap::from_iter([(FileId(0), key_a.clone()), (FileId(1), key_b.clone())]);
+        let id_by_key = FxHashMap::from_iter([(key_a, FileId(7)), (key_b, FileId(9))]);
+
+        let cached = CachedResolveResult::from_resolve_result(
+            &ResolveResult::InternalPackageModule {
+                file_id: FileId(1),
+                package_name: "@scope/pkg".to_string(),
+            },
+            &key_by_file_id,
+        )
+        .expect("target file id should map to a stable key");
+
+        let restored = cached
+            .into_resolve_result(&id_by_key)
+            .expect("stable key should map to current FileId");
+
+        assert!(matches!(
+            restored,
+            ResolveResult::InternalPackageModule {
+                file_id: FileId(9),
+                ref package_name,
+            } if package_name == "@scope/pkg"
+        ));
+    }
+
+    #[test]
+    fn cache_resolved_modules_rejects_unknown_internal_targets() {
+        let files = vec![file(0, "/project/src/a.ts")];
+        let module = ResolvedModule {
+            file_id: FileId(0),
+            path: PathBuf::from("/project/src/a.ts"),
+            resolved_imports: vec![ResolvedImport {
+                info: import_info("./missing"),
+                target: ResolveResult::InternalModule(FileId(1)),
+            }],
+            ..ResolvedModule::default()
+        };
+
+        let cached = cache_resolved_modules(Path::new("/project"), &files, &[module]);
+
+        assert!(cached.is_none());
     }
 
     #[test]
@@ -322,6 +836,46 @@ mod tests {
         let current = manifest(&after, mode(), &map);
 
         assert!(!cached.matches_inputs(&current));
+    }
+
+    #[test]
+    fn manifest_misses_on_file_rename_with_same_fingerprint() {
+        let before = vec![file(0, "/project/src/old.ts")];
+        let after = vec![file(0, "/project/src/new.ts")];
+        let map = fingerprints(&[
+            ("/project/src/old.ts", SourceFingerprint::new(10, 1)),
+            ("/project/src/new.ts", SourceFingerprint::new(10, 1)),
+        ]);
+
+        let cached = manifest(&before, mode(), &map);
+        let current = manifest(&after, mode(), &map);
+
+        assert!(!cached.matches_inputs(&current));
+    }
+
+    #[test]
+    fn manifest_misses_on_workspace_scoped_file_set() {
+        let full_project = vec![
+            file(0, "/project/packages/app/src/index.ts"),
+            file(1, "/project/packages/shared/src/index.ts"),
+        ];
+        let workspace_scoped = vec![file(0, "/project/packages/app/src/index.ts")];
+        let map = fingerprints(&[
+            (
+                "/project/packages/app/src/index.ts",
+                SourceFingerprint::new(10, 1),
+            ),
+            (
+                "/project/packages/shared/src/index.ts",
+                SourceFingerprint::new(20, 1),
+            ),
+        ]);
+
+        let cached = manifest(&full_project, mode(), &map);
+        let current = manifest(&workspace_scoped, mode(), &map);
+
+        assert!(!cached.matches_inputs(&current));
+        assert!(!cached.matches_resolution_inputs(&current));
     }
 
     #[test]

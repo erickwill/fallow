@@ -168,6 +168,17 @@ pub struct AnalysisOutput {
     pub file_hashes: rustc_hash::FxHashMap<std::path::PathBuf, u64>,
 }
 
+/// Parse/cache phase metrics supplied by callers that own parsing before
+/// handing modules back to the core detector backend.
+#[derive(Debug, Clone, Copy)]
+pub struct AnalysisParseMetrics {
+    pub parse_ms: f64,
+    pub cache_ms: f64,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
+    pub parse_cpu_ms: f64,
+}
+
 /// Update cache: write freshly parsed modules and refresh stale mtime/size entries.
 fn update_cache(
     store: &mut cache::CacheStore,
@@ -338,20 +349,6 @@ pub fn analyze_with_usages(config: &ResolvedConfig) -> Result<AnalysisResults, F
     Ok(output.results)
 }
 
-/// Run the full analysis pipeline with export usage collection from a reusable
-/// discovery prelude.
-///
-/// # Errors
-///
-/// Returns an error if parsing or analysis fails.
-pub fn analyze_with_usages_from_discovery(
-    config: &ResolvedConfig,
-    discovery: &AnalysisDiscovery,
-) -> Result<AnalysisResults, FallowError> {
-    let output = analyze_full_from_discovery(config, discovery, false, true, false, false)?;
-    Ok(output.results)
-}
-
 /// Run the full analysis pipeline with export usage collection and retained
 /// per-function complexity modules.
 ///
@@ -370,19 +367,6 @@ pub fn analyze_with_usages_and_complexity(
     config: &ResolvedConfig,
 ) -> Result<AnalysisOutput, FallowError> {
     analyze_full(config, false, true, true, true)
-}
-
-/// Run the full analysis pipeline with export usage collection and retained
-/// complexity artifacts from a reusable discovery prelude.
-///
-/// # Errors
-///
-/// Returns an error if parsing or analysis fails.
-pub fn analyze_with_usages_and_complexity_from_discovery(
-    config: &ResolvedConfig,
-    discovery: &AnalysisDiscovery,
-) -> Result<AnalysisOutput, FallowError> {
-    analyze_full_from_discovery(config, discovery, false, true, true, true)
 }
 
 /// Run the full analysis pipeline with optional performance timings and graph retention.
@@ -433,28 +417,6 @@ pub fn analyze_retaining_modules(
     retain_graph: bool,
 ) -> Result<AnalysisOutput, FallowError> {
     analyze_full(config, retain_graph, false, need_complexity, true)
-}
-
-/// Run the full analysis pipeline with retained modules/files from a reusable
-/// discovery prelude.
-///
-/// # Errors
-///
-/// Returns an error if parsing or analysis fails.
-pub fn analyze_retaining_modules_from_discovery(
-    config: &ResolvedConfig,
-    discovery: &AnalysisDiscovery,
-    need_complexity: bool,
-    retain_graph: bool,
-) -> Result<AnalysisOutput, FallowError> {
-    analyze_full_from_discovery(
-        config,
-        discovery,
-        retain_graph,
-        false,
-        need_complexity,
-        true,
-    )
 }
 
 fn new_analysis_progress(config: &ResolvedConfig) -> progress::AnalysisProgress {
@@ -531,10 +493,36 @@ pub struct AnalysisDiscovery {
 }
 
 impl AnalysisDiscovery {
+    /// Build a discovery prelude from an engine-owned discovery run.
+    #[must_use]
+    pub fn from_parts(
+        files: Vec<discover::DiscoveredFile>,
+        workspaces: Vec<fallow_config::WorkspaceInfo>,
+        root_pkg: Option<PackageJson>,
+        config_candidates: Vec<std::path::PathBuf>,
+        discover_ms: f64,
+        workspaces_ms: f64,
+    ) -> Self {
+        Self {
+            files,
+            workspaces,
+            root_pkg,
+            config_candidates,
+            discover_ms,
+            workspaces_ms,
+        }
+    }
+
     /// Discovered source files, indexed by stable `FileId` for this session.
     #[must_use]
     pub fn files(&self) -> &[discover::DiscoveredFile] {
         &self.files
+    }
+
+    /// Discovered workspace packages for this session.
+    #[must_use]
+    pub fn workspaces(&self) -> &[fallow_config::WorkspaceInfo] {
+        &self.workspaces
     }
 
     /// Consume this discovery prelude and return its source file registry.
@@ -544,11 +532,10 @@ impl AnalysisDiscovery {
     }
 }
 
-/// Owned state shared across one core analysis run.
+/// Owned state shared across one legacy core analysis run.
 ///
-/// This is the first non-persisted session boundary for the engine. It keeps
-/// discovery, workspace and package prelude state together so later slices can
-/// reuse pipeline products without introducing graph-cache invalidation risk.
+/// Engine-owned sessions use `fallow-engine`; this remains only for deprecated
+/// core entrypoints while core is being narrowed to detector/backend helpers.
 pub(crate) struct AnalysisSession<'a> {
     config: &'a ResolvedConfig,
     pipeline_start: Instant,
@@ -581,19 +568,6 @@ impl<'a> AnalysisSession<'a> {
             config_candidates,
             discover_ms,
             workspaces_ms,
-        }
-    }
-
-    fn from_discovery(config: &'a ResolvedConfig, discovery: AnalysisDiscovery) -> Self {
-        Self {
-            config,
-            pipeline_start: Instant::now(),
-            progress: new_analysis_progress(config),
-            project: project::ProjectState::new(discovery.files, discovery.workspaces),
-            root_pkg: discovery.root_pkg,
-            config_candidates: discovery.config_candidates,
-            discover_ms: discovery.discover_ms,
-            workspaces_ms: discovery.workspaces_ms,
         }
     }
 
@@ -658,9 +632,25 @@ impl<'a> AnalysisSession<'a> {
         };
 
         let entry_points = discover_analysis_entry_points(&shared);
-        let resolved = resolve_analysis_imports_timed(&shared, &modules);
-        let graph =
-            build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, &modules);
+        let (resolved, graph) = if let Some(hit) =
+            try_load_analysis_graph_cache(&shared, &entry_points, &modules)
+        {
+            (
+                TimedResolvedModules {
+                    resolved: hit.resolved,
+                    elapsed_ms: 0.0,
+                },
+                TimedGraph {
+                    graph: hit.graph,
+                    elapsed_ms: hit.elapsed_ms,
+                },
+            )
+        } else {
+            let resolved = resolve_analysis_imports_timed(&shared, &modules);
+            let graph =
+                build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, &modules);
+            (resolved, graph)
+        };
         release_resolution_payloads(&mut modules);
         let analysis = analyze_dead_code_timed(
             &shared,
@@ -790,35 +780,6 @@ fn run_analysis_setup(config: &ResolvedConfig) -> AnalysisSetup {
     }
 }
 
-/// Run the shared discovery prelude once for callers that need a reusable
-/// analysis session.
-///
-/// # Panics
-///
-/// Panics only when the underlying source discovery walk hits its documented
-/// compile-time glob/template invariants.
-#[must_use]
-pub fn prepare_analysis_discovery(config: &ResolvedConfig) -> AnalysisDiscovery {
-    let AnalysisSetup {
-        progress,
-        project,
-        root_pkg,
-        config_candidates,
-        discover_ms,
-        workspaces_ms,
-    } = run_analysis_setup(config);
-    progress.finish();
-
-    AnalysisDiscovery {
-        files: project.files().to_vec(),
-        workspaces: project.workspaces().to_vec(),
-        root_pkg,
-        config_candidates,
-        discover_ms,
-        workspaces_ms,
-    }
-}
-
 /// Borrowed inputs for plugin detection and script analysis.
 struct PluginScriptInput<'a> {
     config: &'a ResolvedConfig,
@@ -858,6 +819,227 @@ fn run_plugins_and_scripts(
     let scripts_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     Ok((plugin_result, plugins_ms, scripts_ms))
+}
+
+/// Timings captured by the dead-code backend prelude.
+#[derive(Debug, Clone, Copy)]
+pub struct DeadCodePreludeTimings {
+    pub discover_ms: f64,
+    pub workspaces_ms: f64,
+    pub plugins_ms: f64,
+    pub scripts_ms: f64,
+}
+
+/// Opaque backend prelude for engine-owned dead-code orchestration.
+///
+/// The engine owns the phase ordering. Core keeps the detector/backend state
+/// needed by those phases private.
+pub struct DeadCodeBackendPrelude<'a> {
+    config: &'a ResolvedConfig,
+    pipeline_start: Instant,
+    progress: progress::AnalysisProgress,
+    discovery: &'a AnalysisDiscovery,
+    workspace_pkgs: Vec<LoadedWorkspacePackage<'a>>,
+    plugin_result: plugins::AggregatedPluginResult,
+    plugins_ms: f64,
+    scripts_ms: f64,
+}
+
+impl DeadCodeBackendPrelude<'_> {
+    #[must_use]
+    pub fn timings(&self) -> DeadCodePreludeTimings {
+        DeadCodePreludeTimings {
+            discover_ms: self.discovery.discover_ms,
+            workspaces_ms: self.discovery.workspaces_ms,
+            plugins_ms: self.plugins_ms,
+            scripts_ms: self.scripts_ms,
+        }
+    }
+
+    #[must_use]
+    pub fn elapsed_ms(&self) -> f64 {
+        self.pipeline_start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    #[must_use]
+    pub fn script_used_packages(&self) -> FxHashSet<String> {
+        self.plugin_result.script_used_packages.clone()
+    }
+
+    pub fn finish(&self) {
+        self.progress.finish();
+    }
+}
+
+/// Entry-point discovery result for an engine-owned dead-code pipeline.
+pub struct DeadCodeEntryPoints {
+    inner: TimedEntryPoints,
+}
+
+impl DeadCodeEntryPoints {
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.inner.count
+    }
+
+    #[must_use]
+    pub fn elapsed_ms(&self) -> f64 {
+        self.inner.elapsed_ms
+    }
+}
+
+/// Import-resolution result for an engine-owned dead-code pipeline.
+pub struct DeadCodeResolvedModules {
+    pub resolved: Vec<resolve::ResolvedModule>,
+    pub elapsed_ms: f64,
+}
+
+/// Graph build or graph-cache result for an engine-owned dead-code pipeline.
+pub struct DeadCodeGraphRun {
+    pub graph: graph::ModuleGraph,
+    pub elapsed_ms: f64,
+}
+
+/// Detector result for an engine-owned dead-code pipeline.
+pub struct DeadCodeDetectorRun {
+    pub results: AnalysisResults,
+    pub elapsed_ms: f64,
+}
+
+/// Prepare plugin and script context for engine-owned dead-code orchestration.
+///
+/// # Errors
+///
+/// Returns an error if plugin detection fails.
+pub fn prepare_dead_code_backend_prelude<'a>(
+    config: &'a ResolvedConfig,
+    discovery: &'a AnalysisDiscovery,
+) -> Result<DeadCodeBackendPrelude<'a>, FallowError> {
+    let progress = new_analysis_progress(config);
+    let pipeline_start = Instant::now();
+    let workspace_pkgs = load_workspace_packages(&discovery.workspaces);
+    let (plugin_result, plugins_ms, scripts_ms) = run_plugins_and_scripts(&PluginScriptInput {
+        config,
+        progress: &progress,
+        files: discovery.files(),
+        workspaces: &discovery.workspaces,
+        root_pkg: discovery.root_pkg.as_ref(),
+        workspace_pkgs: &workspace_pkgs,
+        config_candidates: &discovery.config_candidates,
+    })?;
+
+    Ok(DeadCodeBackendPrelude {
+        config,
+        pipeline_start,
+        progress,
+        discovery,
+        workspace_pkgs,
+        plugin_result,
+        plugins_ms,
+        scripts_ms,
+    })
+}
+
+/// Discover entry points for an engine-owned dead-code pipeline.
+#[must_use]
+pub fn discover_dead_code_entry_points(
+    prelude: &DeadCodeBackendPrelude<'_>,
+) -> DeadCodeEntryPoints {
+    let shared = prelude.shared_input();
+    DeadCodeEntryPoints {
+        inner: discover_analysis_entry_points(&shared),
+    }
+}
+
+/// Try loading the graph cache for an engine-owned dead-code pipeline.
+#[must_use]
+pub fn try_load_dead_code_graph_cache(
+    prelude: &DeadCodeBackendPrelude<'_>,
+    entry_points: &DeadCodeEntryPoints,
+    modules: &[extract::ModuleInfo],
+) -> Option<(DeadCodeResolvedModules, DeadCodeGraphRun)> {
+    let shared = prelude.shared_input();
+    try_load_analysis_graph_cache(&shared, &entry_points.inner, modules).map(|hit| {
+        (
+            DeadCodeResolvedModules {
+                resolved: hit.resolved,
+                elapsed_ms: 0.0,
+            },
+            DeadCodeGraphRun {
+                graph: hit.graph,
+                elapsed_ms: hit.elapsed_ms,
+            },
+        )
+    })
+}
+
+/// Resolve imports for an engine-owned dead-code pipeline.
+#[must_use]
+pub fn resolve_dead_code_imports(
+    prelude: &DeadCodeBackendPrelude<'_>,
+    modules: &[extract::ModuleInfo],
+) -> DeadCodeResolvedModules {
+    let shared = prelude.shared_input();
+    let resolved = resolve_analysis_imports_timed(&shared, modules);
+    DeadCodeResolvedModules {
+        resolved: resolved.resolved,
+        elapsed_ms: resolved.elapsed_ms,
+    }
+}
+
+/// Build the module graph for an engine-owned dead-code pipeline.
+#[must_use]
+pub fn build_dead_code_graph(
+    prelude: &DeadCodeBackendPrelude<'_>,
+    resolved: &[resolve::ResolvedModule],
+    entry_points: &DeadCodeEntryPoints,
+    modules: &[extract::ModuleInfo],
+) -> DeadCodeGraphRun {
+    let shared = prelude.shared_input();
+    let graph = build_analysis_graph_timed(&shared, resolved, &entry_points.inner, modules);
+    DeadCodeGraphRun {
+        graph: graph.graph,
+        elapsed_ms: graph.elapsed_ms,
+    }
+}
+
+/// Run the dead-code detectors for an engine-owned pipeline.
+#[must_use]
+pub fn run_dead_code_detectors(
+    prelude: &DeadCodeBackendPrelude<'_>,
+    graph: &graph::ModuleGraph,
+    resolved: &[resolve::ResolvedModule],
+    modules: &[extract::ModuleInfo],
+    collect_usages: bool,
+    entry_points: &DeadCodeEntryPoints,
+) -> DeadCodeDetectorRun {
+    let shared = prelude.shared_input();
+    let analysis = analyze_dead_code_timed(
+        &shared,
+        graph,
+        resolved,
+        modules,
+        collect_usages,
+        entry_points.inner.summary.clone(),
+    );
+    DeadCodeDetectorRun {
+        results: analysis.result,
+        elapsed_ms: analysis.elapsed_ms,
+    }
+}
+
+impl<'a> DeadCodeBackendPrelude<'a> {
+    fn shared_input(&'a self) -> AnalysisCoreSharedInput<'a> {
+        AnalysisCoreSharedInput {
+            config: self.config,
+            progress: &self.progress,
+            files: self.discovery.files(),
+            workspaces: &self.discovery.workspaces,
+            root_pkg: self.discovery.root_pkg.as_ref(),
+            workspace_pkgs: &self.workspace_pkgs,
+            plugin_result: &self.plugin_result,
+        }
+    }
 }
 
 /// Run the analysis pipeline using pre-parsed modules, skipping the parsing stage.
@@ -1005,6 +1187,12 @@ struct TimedGraph {
     elapsed_ms: f64,
 }
 
+struct GraphCacheHit {
+    graph: graph::ModuleGraph,
+    resolved: Vec<resolve::ResolvedModule>,
+    elapsed_ms: f64,
+}
+
 struct TimedAnalysis {
     result: AnalysisResults,
     elapsed_ms: f64,
@@ -1034,8 +1222,24 @@ fn run_reused_analysis_core(input: &ReusedAnalysisCoreInput<'_>) -> ReusedAnalys
     };
 
     let entry_points = discover_analysis_entry_points(&shared);
-    let resolved = resolve_analysis_imports_timed(&shared, modules);
-    let graph = build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, modules);
+    let (resolved, graph) = if let Some(hit) =
+        try_load_analysis_graph_cache(&shared, &entry_points, modules)
+    {
+        (
+            TimedResolvedModules {
+                resolved: hit.resolved,
+                elapsed_ms: 0.0,
+            },
+            TimedGraph {
+                graph: hit.graph,
+                elapsed_ms: hit.elapsed_ms,
+            },
+        )
+    } else {
+        let resolved = resolve_analysis_imports_timed(&shared, modules);
+        let graph = build_analysis_graph_timed(&shared, &resolved.resolved, &entry_points, modules);
+        (resolved, graph)
+    };
 
     let mut analysis_modules = modules.to_vec();
     release_resolution_payloads(&mut analysis_modules);
@@ -1079,6 +1283,60 @@ fn discover_analysis_entry_points(input: &AnalysisCoreSharedInput<'_>) -> TimedE
         count,
         elapsed_ms,
     }
+}
+
+fn try_load_analysis_graph_cache(
+    input: &AnalysisCoreSharedInput<'_>,
+    entry_points: &TimedEntryPoints,
+    modules: &[extract::ModuleInfo],
+) -> Option<GraphCacheHit> {
+    if input.config.no_cache {
+        return None;
+    }
+
+    let t = Instant::now();
+    input.progress.set_stage("loading module graph cache...");
+    let current = build_graph_cache_manifest(
+        input.config,
+        input.plugin_result,
+        &entry_points.entry_points,
+        input.files,
+    );
+    let store = graph_cache::GraphCacheStore::load(&input.config.cache_dir)?;
+    if store.manifest.matches_inputs(&current) {
+        let resolved = graph_cache::restore_resolved_modules(
+            &input.config.root,
+            modules,
+            input.files,
+            &store.resolved_modules,
+        )?;
+        tracing::debug!("Graph cache hit: skipping import resolution and graph build");
+
+        return Some(GraphCacheHit {
+            graph: store.graph,
+            resolved,
+            elapsed_ms: t.elapsed().as_secs_f64() * 1000.0,
+        });
+    }
+
+    if !store.manifest.matches_resolution_inputs(&current) {
+        return None;
+    }
+
+    let resolved = graph_cache::restore_resolved_modules(
+        &input.config.root,
+        modules,
+        input.files,
+        &store.resolved_modules,
+    )?;
+    tracing::debug!("Graph resolver cache hit: skipping import resolution and rebuilding graph");
+    let graph = build_analysis_graph_timed(input, &resolved, entry_points, modules);
+
+    Some(GraphCacheHit {
+        graph: graph.graph,
+        resolved,
+        elapsed_ms: t.elapsed().as_secs_f64() * 1000.0,
+    })
 }
 
 fn resolve_analysis_imports_timed(
@@ -1168,23 +1426,6 @@ fn analyze_full(
 ) -> Result<AnalysisOutput, FallowError> {
     let _span = tracing::info_span!("fallow_analyze").entered();
     AnalysisSession::new(config).run_full(retain, collect_usages, need_complexity, retain_modules)
-}
-
-fn analyze_full_from_discovery(
-    config: &ResolvedConfig,
-    discovery: &AnalysisDiscovery,
-    retain: bool,
-    collect_usages: bool,
-    need_complexity: bool,
-    retain_modules: bool,
-) -> Result<AnalysisOutput, FallowError> {
-    let _span = tracing::info_span!("fallow_analyze").entered();
-    AnalysisSession::from_discovery(config, discovery.clone()).run_full(
-        retain,
-        collect_usages,
-        need_complexity,
-        retain_modules,
-    )
 }
 
 fn full_analysis_pipeline_profile(
@@ -1310,6 +1551,18 @@ struct ParseMetrics {
     cache_hits: usize,
     cache_misses: usize,
     parse_cpu_ms: f64,
+}
+
+impl From<AnalysisParseMetrics> for ParseMetrics {
+    fn from(metrics: AnalysisParseMetrics) -> Self {
+        Self {
+            parse_ms: metrics.parse_ms,
+            cache_ms: metrics.cache_ms,
+            cache_hits: metrics.cache_hits,
+            cache_misses: metrics.cache_misses,
+            parse_cpu_ms: metrics.parse_cpu_ms,
+        }
+    }
 }
 
 fn parse_analysis_modules(
@@ -1467,32 +1720,23 @@ struct BuildAnalysisGraphInput<'a> {
     workspaces: &'a [fallow_config::WorkspaceInfo],
 }
 
-/// Build the analysis graph, transparently backed by a persisted graph cache.
+/// Build the analysis graph and persist it for the next identical run.
 ///
-/// On a re-run whose file set + fingerprints + graph-affecting options are
-/// byte-identical to the previous run, the previously-built `ModuleGraph` is
-/// loaded from `.fallow/graph-cache.bin` and the (potentially large) build is
-/// skipped. The persisted graph already includes the `credit_*` post-build
-/// steps, so the cache hit returns it directly; a miss builds fresh, runs both
-/// credit steps, and persists for next time. The cache is gated on
-/// `config.no_cache` (same flag as the extraction cache) and is a strict
-/// performance optimization: a cache hit produces an identical `ModuleGraph`,
-/// so analysis results are unchanged (the mandatory correctness gate).
+/// The warm hit path happens before import resolution in
+/// `try_load_analysis_graph_cache`. This miss path always builds fresh, runs
+/// both credit steps, and persists the graph plus resolver outputs for next
+/// time. The cache is gated on `config.no_cache` and is a strict performance
+/// optimization: a cache hit produces identical analysis results.
 fn build_analysis_graph(input: &BuildAnalysisGraphInput<'_>) -> graph::ModuleGraph {
     let caching_enabled = !input.config.no_cache;
-
-    let current_manifest = caching_enabled.then(|| build_graph_cache_manifest(input));
-
-    if let Some(current) = current_manifest.as_ref()
-        && let Some(store) = graph_cache::GraphCacheStore::load(&input.config.cache_dir)
-        && store.manifest.matches_inputs(current)
-    {
-        // Cache hit: the persisted graph already includes the post-build credit
-        // steps and a reconstructed `namespace_imported` bitset (rebuilt inside
-        // `GraphCacheStore::load`), so it is returned verbatim.
-        tracing::debug!("Graph cache hit: skipping graph build");
-        return store.graph;
-    }
+    let current_manifest = caching_enabled.then(|| {
+        build_graph_cache_manifest(
+            input.config,
+            input.plugin_result,
+            input.entry_points,
+            input.files,
+        )
+    });
 
     let mut graph = graph::ModuleGraph::build_with_reachability_roots(
         input.resolved,
@@ -1505,10 +1749,16 @@ fn build_analysis_graph(input: &BuildAnalysisGraphInput<'_>) -> graph::ModuleGra
     credit_workspace_package_usage(&mut graph, input.resolved, input.workspaces);
 
     if let Some(manifest) = current_manifest {
+        let Some(resolved_modules) =
+            graph_cache::cache_resolved_modules(&input.config.root, input.files, input.resolved)
+        else {
+            return graph;
+        };
         let store = graph_cache::GraphCacheStore {
             version: graph_cache::GRAPH_CACHE_VERSION,
             manifest,
             graph,
+            resolved_modules,
         };
         store.save(&input.config.cache_dir);
         // `save` borrows the store, so the freshly built graph is moved back out
@@ -1524,26 +1774,24 @@ fn build_analysis_graph(input: &BuildAnalysisGraphInput<'_>) -> graph::ModuleGra
 /// Build the current `GraphCacheManifest` from the run's discovered files and
 /// graph-affecting option hashes.
 fn build_graph_cache_manifest(
-    input: &BuildAnalysisGraphInput<'_>,
+    config: &ResolvedConfig,
+    plugin_result: &plugins::AggregatedPluginResult,
+    entry_points: &discover::CategorizedEntryPoints,
+    files: &[discover::DiscoveredFile],
 ) -> graph_cache::GraphCacheManifest {
     let mode = graph_cache::GraphCacheMode::new(
-        resolver_options_hash(input.config),
-        entry_points_hash(input.entry_points),
-        plugin_config_hash(input.plugin_result),
+        resolver_options_hash(config),
+        entry_points_hash(entry_points),
+        plugin_config_hash(plugin_result),
     );
-    graph_cache::GraphCacheManifest::from_discovered_files(
-        &input.config.root,
-        input.files,
-        mode,
-        |path| {
-            std::fs::metadata(path).map_or(
-                fallow_types::source_fingerprint::SourceFingerprint::new(0, 0),
-                |metadata| {
-                    fallow_types::source_fingerprint::SourceFingerprint::from_metadata(&metadata)
-                },
-            )
-        },
-    )
+    graph_cache::GraphCacheManifest::from_discovered_files(&config.root, files, mode, |path| {
+        std::fs::metadata(path).map_or(
+            fallow_types::source_fingerprint::SourceFingerprint::new(0, 0),
+            |metadata| {
+                fallow_types::source_fingerprint::SourceFingerprint::from_metadata(&metadata)
+            },
+        )
+    })
 }
 
 /// Hash the resolver-affecting options: the project root, extraction config
@@ -2535,6 +2783,20 @@ mod tests {
             resolver_options_hash(&config_a),
             resolver_options_hash(&config_b),
             "shared cache dirs must not reuse graphs across project roots"
+        );
+    }
+
+    #[test]
+    fn graph_cache_resolver_hash_includes_resolve_conditions() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let config_a = session_config(dir.path());
+        let mut config_b = session_config(dir.path());
+        config_b.resolve.conditions.push("react-server".to_string());
+
+        assert_ne!(
+            resolver_options_hash(&config_a),
+            resolver_options_hash(&config_b),
+            "resolve condition changes must invalidate the graph cache"
         );
     }
 

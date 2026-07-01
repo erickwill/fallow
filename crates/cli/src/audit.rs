@@ -4,7 +4,7 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use fallow_config::{AuditGate, OutputFormat};
-use fallow_engine::clear_ambient_git_env;
+use fallow_engine::changed_files::clear_ambient_git_env;
 use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -390,7 +390,7 @@ fn count_introduced(keys: &FxHashSet<String>, base: Option<&FxHashSet<String>>) 
 /// surface the most likely culprit so a user hitting an unexpected worktree
 /// failure can short-circuit the diagnosis. Returns `None` otherwise.
 fn ambient_git_env_hint() -> Option<String> {
-    use fallow_engine::AMBIENT_GIT_ENV_VARS;
+    use fallow_engine::changed_files::AMBIENT_GIT_ENV_VARS;
     for var in AMBIENT_GIT_ENV_VARS {
         if let Ok(value) = std::env::var(var)
             && !value.is_empty()
@@ -828,7 +828,7 @@ fn js_ts_tokens_equivalent(path: &Path, current: &str, base: &str) -> bool {
     ) {
         return false;
     }
-    fallow_engine::source_token_kinds_equivalent(path, current, base, false)
+    fallow_engine::duplicates::source_token_kinds_equivalent(path, current, base, false)
 }
 
 fn remap_focus_files(
@@ -1005,14 +1005,14 @@ fn compute_brief_impact_closure(
     root: &std::path::Path,
     check: &CheckResult,
     changed_files: &FxHashSet<PathBuf>,
-) -> Option<fallow_engine::ImpactClosurePaths> {
+) -> Option<fallow_engine::module_graph::ImpactClosurePaths> {
     let graph = check
         .shared_parse
         .as_ref()
         .and_then(|sp| sp.analysis_output.as_ref())
         .and_then(|out| out.graph.as_ref())?;
 
-    fallow_engine::impact_closure_for_changed_paths(graph, root, changed_files)
+    fallow_engine::module_graph::impact_closure_for_changed_paths(graph, root, changed_files)
 }
 
 /// Compute the partition + order for the review brief's stage 2 from the
@@ -1026,14 +1026,14 @@ fn compute_brief_partition_order(
     root: &std::path::Path,
     check: &CheckResult,
     changed_files: &FxHashSet<PathBuf>,
-) -> Option<fallow_engine::PartitionOrderPaths> {
+) -> Option<fallow_engine::module_graph::PartitionOrderPaths> {
     let graph = check
         .shared_parse
         .as_ref()
         .and_then(|sp| sp.analysis_output.as_ref())
         .and_then(|out| out.graph.as_ref())?;
 
-    fallow_engine::partition_order_for_changed_paths(graph, root, changed_files)
+    fallow_engine::module_graph::partition_order_for_changed_paths(graph, root, changed_files)
 }
 
 /// Precompute the per-changed-file `rel_path -> [(export-name, 1-based line)]` map
@@ -1051,7 +1051,7 @@ fn compute_brief_export_lines(
         .and_then(|sp| sp.analysis_output.as_ref())
         .and_then(|out| out.graph.as_ref())?;
 
-    fallow_engine::export_lines_for_changed_paths(graph, root, changed_files)
+    fallow_engine::module_graph::export_lines_for_changed_paths(graph, root, changed_files)
 }
 
 /// Precompute the per-anchor honest consumer count for the decision surface:
@@ -1073,7 +1073,7 @@ fn compute_brief_internal_consumers(
         .and_then(|sp| sp.analysis_output.as_ref())
         .and_then(|out| out.graph.as_ref())?;
 
-    fallow_engine::internal_consumers_for_changed_paths(graph, root, changed_files)
+    fallow_engine::module_graph::internal_consumers_for_changed_paths(graph, root, changed_files)
 }
 
 /// Compute the per-file focus graph facts (fan-in/out + the dynamic-dispatch /
@@ -1089,14 +1089,14 @@ fn compute_brief_focus_facts(
     root: &std::path::Path,
     check: &CheckResult,
     changed_files: &FxHashSet<PathBuf>,
-) -> Option<Vec<fallow_engine::FocusFileFactsPaths>> {
+) -> Option<Vec<fallow_engine::module_graph::FocusFileFactsPaths>> {
     let graph = check
         .shared_parse
         .as_ref()
         .and_then(|sp| sp.analysis_output.as_ref())
         .and_then(|out| out.graph.as_ref())?;
 
-    fallow_engine::focus_facts_for_changed_paths(graph, root, changed_files)
+    fallow_engine::module_graph::focus_facts_for_changed_paths(graph, root, changed_files)
 }
 
 /// Run the audit pipeline: resolve base ref, run analyses, compute verdict.
@@ -1372,7 +1372,7 @@ fn compute_change_anchors(
     if let Some(raw) = crate::report::ci::diff_filter::shared_diff_raw() {
         return crate::audit_walkthrough::parse_change_anchors(raw);
     }
-    fallow_engine::try_get_changed_diff(root, base_ref)
+    fallow_engine::changed_files::try_get_changed_diff(root, base_ref)
         .map(|diff| crate::audit_walkthrough::parse_change_anchors(&diff))
         .unwrap_or_default()
 }
@@ -1497,7 +1497,7 @@ fn compute_decision_surface(
 /// the blast and the union of consumed symbols as the contract. Sorted by changed
 /// file for deterministic output.
 fn aggregate_coordination_gaps(
-    gaps: &[fallow_engine::CoordinationGapPaths],
+    gaps: &[fallow_engine::module_graph::CoordinationGapPaths],
 ) -> Vec<crate::audit_decision_surface::CoordinationAnchor> {
     use crate::audit_decision_surface::CoordinationAnchor;
     let mut by_file: FxHashMap<String, (u64, FxHashSet<String>)> = FxHashMap::default();
@@ -1959,7 +1959,7 @@ fn build_audit_dupes_options<'a>(
 fn run_audit_health<'a>(
     opts: &'a AuditOptions<'a>,
     changed_since: Option<&'a str>,
-    shared_parse: Option<fallow_engine::HealthSharedParseData>,
+    shared_parse: Option<fallow_engine::health::HealthSharedParseData>,
 ) -> Result<Option<HealthResult>, ExitCode> {
     let runtime_coverage = match opts.runtime_coverage {
         Some(path) => match crate::health::coverage::prepare_options(
@@ -1992,7 +1992,7 @@ fn run_audit_health<'a>(
 fn build_audit_health_options<'a>(
     opts: &'a AuditOptions<'a>,
     changed_since: Option<&'a str>,
-    runtime_coverage: Option<fallow_engine::RuntimeCoverageOptions>,
+    runtime_coverage: Option<fallow_engine::health::RuntimeCoverageOptions>,
 ) -> HealthOptions<'a> {
     HealthOptions {
         root: opts.root,
@@ -2001,13 +2001,13 @@ fn build_audit_health_options<'a>(
         no_cache: opts.no_cache,
         threads: opts.threads,
         quiet: opts.quiet,
-        thresholds: fallow_engine::HealthThresholdOverrides {
+        thresholds: fallow_engine::health::HealthThresholdOverrides {
             max_cyclomatic: None,
             max_cognitive: None,
             max_crap: opts.max_crap,
         },
         top: None,
-        sort: fallow_engine::HealthSort::Cyclomatic,
+        sort: fallow_engine::health::HealthSort::Cyclomatic,
         production: opts.production_health.unwrap_or(opts.production),
         production_override: opts.production_health,
         changed_since,
@@ -2031,14 +2031,14 @@ fn build_audit_health_options<'a>(
         enforce_coverage_gap_gate: false,
         effort: None,
         score: false,
-        gates: fallow_engine::HealthGateOptions::default(),
+        gates: fallow_engine::health::HealthGateOptions::default(),
         since: None,
         min_commits: None,
         explain: opts.explain,
         summary: false,
         save_snapshot: None,
         trend: false,
-        coverage_inputs: fallow_engine::HealthCoverageInputs {
+        coverage_inputs: fallow_engine::health::HealthCoverageInputs {
             coverage: opts.coverage,
             coverage_root: opts.coverage_root,
         },
@@ -2065,7 +2065,7 @@ pub use output::{
 /// clears. The marker only affects the local Impact store; it never changes
 /// the verdict, exit code, or output.
 pub fn run_audit(opts: &AuditOptions<'_>, gate_marker: Option<&str>) -> ExitCode {
-    if let Err(e) = fallow_engine::validate_coverage_root_absolute(opts.coverage_root) {
+    if let Err(e) = fallow_engine::health::validate_coverage_root_absolute(opts.coverage_root) {
         return emit_error(&e, 2, opts.output);
     }
     let coverage_resolved = opts

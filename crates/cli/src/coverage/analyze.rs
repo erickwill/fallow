@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use fallow_config::OutputFormat;
 use fallow_cov_protocol::function_identity_id;
-use fallow_engine::clear_ambient_git_env;
+use fallow_engine::changed_files::clear_ambient_git_env;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::coverage::RunContext;
@@ -152,7 +152,7 @@ fn run_local(path: &Path, args: &AnalyzeArgs, ctx: &RunContext<'_>) -> ExitCode 
 fn local_health_options<'a>(
     args: &AnalyzeArgs,
     ctx: &RunContext<'a>,
-    runtime_coverage: fallow_engine::RuntimeCoverageOptions,
+    runtime_coverage: fallow_engine::health::RuntimeCoverageOptions,
 ) -> HealthOptions<'a> {
     HealthOptions {
         root: ctx.root,
@@ -161,9 +161,9 @@ fn local_health_options<'a>(
         no_cache: ctx.no_cache,
         threads: ctx.threads,
         quiet: ctx.quiet,
-        thresholds: fallow_engine::HealthThresholdOverrides::default(),
+        thresholds: fallow_engine::health::HealthThresholdOverrides::default(),
         top: args.top,
-        sort: fallow_engine::HealthSort::Cyclomatic,
+        sort: fallow_engine::health::HealthSort::Cyclomatic,
         production: args.production,
         production_override: Some(args.production),
         changed_since: None,
@@ -187,14 +187,14 @@ fn local_health_options<'a>(
         enforce_coverage_gap_gate: false,
         effort: None,
         score: false,
-        gates: fallow_engine::HealthGateOptions::default(),
+        gates: fallow_engine::health::HealthGateOptions::default(),
         since: None,
         min_commits: None,
         explain: ctx.explain,
         summary: false,
         save_snapshot: None,
         trend: false,
-        coverage_inputs: fallow_engine::HealthCoverageInputs::default(),
+        coverage_inputs: fallow_engine::health::HealthCoverageInputs::default(),
         performance: false,
         runtime_coverage: Some(runtime_coverage),
         churn_file: None,
@@ -380,7 +380,7 @@ fn build_static_index(ctx: &RunContext<'_>, production: bool) -> Result<StaticIn
         },
         fallow_config::ProductionAnalysis::Health,
     )?;
-    let session = fallow_engine::AnalysisSession::from_resolved_config(config);
+    let session = fallow_engine::session::AnalysisSession::from_resolved_config(config);
     let analysis_output = session
         .analyze_dead_code_with_artifacts(true, true)
         .map_err(|err| emit_error(&format!("analysis failed: {err}"), 2, ctx.output))?;
@@ -414,7 +414,7 @@ fn build_static_index(ctx: &RunContext<'_>, production: bool) -> Result<StaticIn
 fn build_index_from_analysis(
     root: &Path,
     modules: &[fallow_types::extract::ModuleInfo],
-    analysis_output: &fallow_engine::DeadCodeAnalysisArtifacts,
+    analysis_output: &fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
     file_paths: &FxHashMap<fallow_types::discover::FileId, &PathBuf>,
     codeowners: Option<&crate::codeowners::CodeOwners>,
 ) -> StaticIndex {
@@ -453,7 +453,9 @@ struct UnusedStaticSets {
 }
 
 impl UnusedStaticSets {
-    fn from_analysis(analysis_output: &fallow_engine::DeadCodeAnalysisArtifacts) -> Self {
+    fn from_analysis(
+        analysis_output: &fallow_engine::dead_code::DeadCodeAnalysisArtifacts,
+    ) -> Self {
         let files: FxHashSet<PathBuf> = analysis_output
             .results
             .unused_files
