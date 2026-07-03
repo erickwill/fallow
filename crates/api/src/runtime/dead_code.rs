@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use fallow_config::ProductionAnalysis;
 use fallow_engine::{
+    dead_code::DeadCodeAnalysisArtifacts,
     project_config::{ProjectConfig, ProjectConfigOptions},
     session::AnalysisSession,
 };
@@ -19,12 +20,20 @@ use crate::{
     AnalysisOptions, BoundaryViolationsProgrammaticOutput, CircularDependenciesProgrammaticOutput,
     DeadCodeFilters, DeadCodeOptions, DeadCodeProgrammaticOutput, ProgrammaticError,
     analysis_context::{
-        ProgrammaticAnalysisContext, changed_files_for_run, resolve_programmatic_analysis_context,
+        ProgrammaticAnalysisContext, changed_files_for_run,
+        resolve_programmatic_analysis_context_deferred_workspace, workspace_roots_for_session,
     },
-    next_steps::{default_workspace_ref, setup_pointer_applicable, suggestions_enabled},
+    next_steps::{
+        default_workspace_ref_for_workspaces, setup_pointer_applicable, suggestions_enabled,
+    },
 };
 
 use super::{ProgrammaticResult, root_envelope_mode};
+
+pub(super) struct DeadCodeProgrammaticRunWithArtifacts {
+    pub output: DeadCodeProgrammaticOutput,
+    pub artifacts: DeadCodeAnalysisArtifacts,
+}
 
 /// Run dead-code analysis and return typed API output before serialization.
 ///
@@ -34,7 +43,7 @@ use super::{ProgrammaticResult, root_envelope_mode};
 /// options, config load failures, analysis failures, or git changed-file
 /// failures.
 pub fn run_dead_code(options: &DeadCodeOptions) -> ProgrammaticResult<DeadCodeProgrammaticOutput> {
-    let resolved = resolve_programmatic_analysis_context(&options.analysis)?;
+    let resolved = resolve_programmatic_analysis_context_deferred_workspace(&options.analysis)?;
     resolved.install(|| run_dead_code_inner(options, &resolved, |_| {}))
 }
 
@@ -46,7 +55,7 @@ pub fn run_dead_code(options: &DeadCodeOptions) -> ProgrammaticResult<DeadCodePr
 pub fn run_circular_dependencies(
     options: &DeadCodeOptions,
 ) -> ProgrammaticResult<CircularDependenciesProgrammaticOutput> {
-    let resolved = resolve_programmatic_analysis_context(&options.analysis)?;
+    let resolved = resolve_programmatic_analysis_context_deferred_workspace(&options.analysis)?;
     resolved.install(|| {
         run_dead_code_inner(options, &resolved, keep_circular_dependencies).map(Into::into)
     })
@@ -60,7 +69,7 @@ pub fn run_circular_dependencies(
 pub fn run_boundary_violations(
     options: &DeadCodeOptions,
 ) -> ProgrammaticResult<BoundaryViolationsProgrammaticOutput> {
-    let resolved = resolve_programmatic_analysis_context(&options.analysis)?;
+    let resolved = resolve_programmatic_analysis_context_deferred_workspace(&options.analysis)?;
     resolved.install(|| {
         run_dead_code_inner(options, &resolved, keep_boundary_violations).map(Into::into)
     })
@@ -95,6 +104,88 @@ pub(super) fn run_dead_code_with_session(
     apply_dead_code_filters(&options.filters, &mut results);
     post_filter(&mut results);
 
+    Ok(build_dead_code_programmatic_output(
+        options, resolved, session, results, start,
+    ))
+}
+
+pub(super) fn run_dead_code_with_session_artifacts(
+    options: &DeadCodeOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<std::path::PathBuf>>,
+    post_filter: impl FnOnce(&mut AnalysisResults),
+    start: Instant,
+) -> ProgrammaticResult<DeadCodeProgrammaticRunWithArtifacts> {
+    let mut artifacts = session
+        .analyze_dead_code_with_artifacts(true, true)
+        .map_err(|err| {
+            ProgrammaticError::new(format!("dead-code analysis failed: {err}"), 2)
+                .with_code("FALLOW_DEAD_CODE_FAILED")
+                .with_context("dead-code")
+        })?;
+
+    apply_dead_code_scope(
+        options,
+        resolved,
+        session,
+        changed_files,
+        &mut artifacts.results,
+    )?;
+    apply_dead_code_filters(&options.filters, &mut artifacts.results);
+    post_filter(&mut artifacts.results);
+
+    Ok(build_dead_code_run_with_artifacts(
+        options, resolved, session, artifacts, start,
+    ))
+}
+
+pub(super) fn run_dead_code_from_artifacts(
+    options: &DeadCodeOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<std::path::PathBuf>>,
+    mut artifacts: DeadCodeAnalysisArtifacts,
+    start: Instant,
+) -> ProgrammaticResult<DeadCodeProgrammaticRunWithArtifacts> {
+    apply_dead_code_scope(
+        options,
+        resolved,
+        session,
+        changed_files,
+        &mut artifacts.results,
+    )?;
+    apply_dead_code_filters(&options.filters, &mut artifacts.results);
+
+    Ok(build_dead_code_run_with_artifacts(
+        options, resolved, session, artifacts, start,
+    ))
+}
+
+fn build_dead_code_run_with_artifacts(
+    options: &DeadCodeOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    artifacts: DeadCodeAnalysisArtifacts,
+    start: Instant,
+) -> DeadCodeProgrammaticRunWithArtifacts {
+    let output = build_dead_code_programmatic_output(
+        options,
+        resolved,
+        session,
+        artifacts.results.clone(),
+        start,
+    );
+    DeadCodeProgrammaticRunWithArtifacts { output, artifacts }
+}
+
+fn build_dead_code_programmatic_output(
+    options: &DeadCodeOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    results: AnalysisResults,
+    start: Instant,
+) -> DeadCodeProgrammaticOutput {
     let root = session.root();
     let next_steps = build_dead_code_next_steps(DeadCodeNextStepsInput {
         suggestions_enabled: suggestions_enabled(),
@@ -102,28 +193,28 @@ pub(super) fn run_dead_code_with_session(
         root,
         offer_setup: setup_pointer_applicable(root),
         impact_digest: None,
-        workspace_ref: default_workspace_ref(root).as_deref(),
+        workspace_ref: default_workspace_ref_for_workspaces(root, session.workspaces()).as_deref(),
         audit_changed: fallow_engine::churn::is_git_repo(root),
     });
+    let config_fixable =
+        fallow_config::is_config_fixable(&resolved.root, resolved.config_path.as_ref());
     let output = build_check_output(CheckOutputInput {
         schema_version: CHECK_SCHEMA_VERSION,
         version: env!("CARGO_PKG_VERSION").to_string(),
         elapsed: start.elapsed(),
         results,
-        config_fixable: fallow_config::is_config_fixable(
-            &resolved.root,
-            resolved.config_path.as_ref(),
-        ),
+        config_fixable,
         meta: options.analysis.explain.then(check_meta),
         workspace_diagnostics: session.workspace_diagnostics().to_vec(),
         next_steps,
     });
-    Ok(DeadCodeProgrammaticOutput {
+    DeadCodeProgrammaticOutput {
         output,
         root: session.root().to_path_buf(),
+        config_fixable,
         envelope_mode: root_envelope_mode(),
         telemetry_analysis_run_id: None,
-    })
+    }
 }
 
 fn keep_circular_dependencies(results: &mut AnalysisResults) {
@@ -220,7 +311,8 @@ fn apply_dead_code_scope(
     changed_files: Option<&FxHashSet<std::path::PathBuf>>,
     results: &mut AnalysisResults,
 ) -> ProgrammaticResult<()> {
-    if let Some(workspace_roots) = resolved.workspace_roots.as_ref() {
+    let workspace_roots = workspace_roots_for_session(resolved, session.workspaces())?;
+    if let Some(workspace_roots) = workspace_roots.as_ref() {
         fallow_engine::dead_code::filter_to_workspaces(results, workspace_roots);
     }
     let resolved_changed_files = if changed_files.is_some() {

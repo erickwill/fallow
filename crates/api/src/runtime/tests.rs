@@ -7,13 +7,14 @@ use fallow_types::output::NextStep;
 use super::*;
 use crate::runtime_json::{
     serialize_boundary_violations_programmatic_json,
-    serialize_circular_dependencies_programmatic_json, serialize_dead_code_programmatic_json,
-    serialize_duplication_programmatic_json, serialize_feature_flags_programmatic_json,
-    serialize_health_programmatic_json,
+    serialize_circular_dependencies_programmatic_json, serialize_combined_programmatic_json,
+    serialize_dead_code_programmatic_json, serialize_duplication_programmatic_json,
+    serialize_feature_flags_programmatic_json, serialize_health_programmatic_json,
 };
 use crate::runtime_output::HEALTH_SCHEMA_VERSION;
 use crate::{
-    AnalysisOptions, DeadCodeFilters, DeadCodeOptions, DuplicationOptions, FeatureFlagsOptions,
+    AnalysisOptions, CombinedOptions, DeadCodeFilters, DeadCodeOptions, DuplicationOptions,
+    FeatureFlagsOptions,
     analysis_context::resolve_workspace_filters,
     duplication_filters::{filter_by_diff, filter_by_workspaces},
 };
@@ -111,6 +112,7 @@ fn runtime_entrypoint_modules_return_typed_outputs_before_json() {
     );
 
     for (module, source) in [
+        ("combined", include_str!("combined.rs")),
         ("dead_code", include_str!("dead_code.rs")),
         ("duplication", include_str!("duplication.rs")),
         ("feature_flags", include_str!("feature_flags.rs")),
@@ -129,6 +131,46 @@ fn runtime_entrypoint_modules_return_typed_outputs_before_json() {
             "runtime::{module} must use typed run_* naming for inner execution"
         );
     }
+}
+
+#[test]
+fn run_combined_returns_typed_sections_before_json() {
+    let project = tempfile::tempdir().expect("project");
+    let root = project.path();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"combined-api","type":"module","main":"src/index.ts"}"#,
+    )
+    .expect("write package");
+    std::fs::create_dir_all(root.join("src")).expect("create src");
+    std::fs::write(
+        root.join("src/index.ts"),
+        "export const used = 1;\nconsole.log(used);\n",
+    )
+    .expect("write entry");
+    std::fs::write(root.join("src/unused.ts"), "export const unused = 1;\n").expect("write unused");
+
+    let output = run_combined(&CombinedOptions {
+        analysis: analysis_at(root),
+        health_options: ComplexityOptions {
+            complexity: true,
+            file_scores: true,
+            score: true,
+            ..ComplexityOptions::default()
+        },
+        ..CombinedOptions::default()
+    })
+    .expect("combined output");
+
+    assert!(output.dead_code.is_some());
+    assert!(output.duplication.is_some());
+    assert!(output.health.is_some());
+
+    let json = serialize_combined_programmatic_json(output).expect("combined json");
+    assert_eq!(json["kind"], "combined");
+    assert!(json.get("check").is_some());
+    assert!(json.get("dupes").is_some());
+    assert!(json.get("health").is_some());
 }
 
 #[test]
@@ -178,6 +220,154 @@ fn derives_programmatic_health_execution_options_from_api_contracts() {
     assert!(!execution.performance);
     assert!(execution.runtime_coverage.is_none());
     assert!(execution.group_by.is_none());
+}
+
+#[test]
+fn run_health_with_session_reuses_existing_discovery() {
+    let project = tempfile::tempdir().expect("temp dir");
+    let src = project.path().join("src");
+    std::fs::create_dir(&src).expect("src dir");
+    std::fs::write(
+        src.join("index.ts"),
+        "export function existing(value: boolean) { if (value) { return 1; } return 0; }\n",
+    )
+    .expect("source file");
+
+    let options = ComplexityOptions {
+        analysis: analysis_at(project.path()),
+        max_cyclomatic: Some(1),
+        complexity: true,
+        ..ComplexityOptions::default()
+    };
+    let resolved = resolve_programmatic_analysis_context(&options.analysis)
+        .expect("programmatic context resolves");
+    let session =
+        fallow_engine::session::AnalysisSession::load(project.path(), None).expect("session loads");
+
+    std::fs::write(
+        src.join("late.ts"),
+        "export function late(value: boolean) { if (value) { return 1; } return 0; }\n",
+    )
+    .expect("late source file");
+
+    let output = resolved
+        .install(|| run_health_with_session(&options, &resolved, &session, None))
+        .expect("health succeeds");
+
+    assert!(
+        output
+            .report
+            .findings
+            .iter()
+            .any(|finding| finding.path.ends_with("src/index.ts"))
+    );
+    assert!(
+        output
+            .report
+            .findings
+            .iter()
+            .all(|finding| !finding.path.ends_with("src/late.ts")),
+        "session-backed health must not rediscover files added after session load"
+    );
+}
+
+#[test]
+fn audit_reuses_dead_code_artifacts_when_only_health_scope_matches() {
+    let source = include_str!("audit.rs");
+    assert!(
+        source.contains("fn run_dead_code_and_health_with_session("),
+        "programmatic audit must keep dead-code plus health artifact reuse in one helper"
+    );
+    assert!(
+        source.contains("production_modes.dead_code == production_modes.health"),
+        "programmatic audit must reuse dead-code artifacts when effective health scope matches dead-code scope"
+    );
+    assert!(
+        !source.contains("if options.production_dead_code == options.production_health"),
+        "programmatic audit must not compare raw production overrides before config resolution"
+    );
+    assert!(
+        source.contains("duplication: run_duplication(&duplication_options)?"),
+        "the mixed-scope audit branch must only isolate duplication instead of isolating health too"
+    );
+}
+
+#[test]
+fn effective_production_modes_resolve_per_analysis_config() {
+    let project = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        project.path().join("package.json"),
+        r#"{"name":"production-config","type":"module"}"#,
+    )
+    .expect("package json");
+    std::fs::write(
+        project.path().join(".fallowrc.json"),
+        r#"{"production":{"deadCode":false,"health":true,"dupes":false}}"#,
+    )
+    .expect("config");
+
+    let analysis = analysis_at(project.path());
+    let resolved = resolve_programmatic_analysis_context(&analysis).expect("context resolves");
+    let modes =
+        resolve_effective_production_modes(&resolved, None, None, None).expect("modes resolve");
+
+    assert!(!modes.dead_code);
+    assert!(modes.health);
+    assert!(!modes.dupes);
+}
+
+#[test]
+fn combined_reuse_uses_effective_production_modes() {
+    let source = include_str!("combined.rs");
+    assert!(
+        source.contains("resolve_effective_production_modes(&resolved, None, None, None)"),
+        "programmatic combined must resolve config-derived production modes before sharing sessions"
+    );
+    assert!(
+        source.contains("production_modes.dead_code == production_modes.health"),
+        "programmatic combined must compare effective production modes before sharing health artifacts"
+    );
+}
+
+#[test]
+fn run_health_with_session_artifacts_accepts_retained_dead_code_analysis() {
+    let project = tempfile::tempdir().expect("temp dir");
+    let src = project.path().join("src");
+    std::fs::create_dir(&src).expect("src dir");
+    std::fs::write(
+        src.join("index.ts"),
+        "export function score(value: boolean) { if (value) { return 1; } return 0; }\n",
+    )
+    .expect("source file");
+
+    let options = ComplexityOptions {
+        analysis: analysis_at(project.path()),
+        file_scores: true,
+        ..ComplexityOptions::default()
+    };
+    let resolved = resolve_programmatic_analysis_context(&options.analysis)
+        .expect("programmatic context resolves");
+    let session =
+        fallow_engine::session::AnalysisSession::load(project.path(), None).expect("session loads");
+    let artifacts = session
+        .analyze_dead_code_with_artifacts(true, true)
+        .expect("dead-code artifacts");
+    assert!(artifacts.graph.is_some());
+
+    let output = resolved
+        .install(|| {
+            run_health_with_session_artifacts(
+                &options,
+                &resolved,
+                &session,
+                None,
+                Some(artifacts),
+                None,
+            )
+        })
+        .expect("health succeeds");
+
+    assert!(!output.report.file_scores.is_empty());
 }
 
 #[test]
@@ -588,6 +778,25 @@ fn serialized_dead_code_marks_duplicate_export_config_action_fixable() {
     .expect("dead-code succeeds");
 
     let action = &json["duplicate_exports"][0]["actions"][0];
+    assert_eq!(action["type"], "add-to-config");
+    assert_eq!(action["auto_fixable"], true);
+}
+
+#[test]
+fn serialized_combined_marks_duplicate_export_config_action_fixable() {
+    let project = duplicate_export_project();
+    let root = project.path();
+
+    let output = run_combined(&CombinedOptions {
+        analysis: analysis_at(root),
+        duplication: false,
+        health: false,
+        ..CombinedOptions::default()
+    })
+    .expect("combined succeeds");
+    let json = serialize_combined_programmatic_json(output).expect("combined json");
+
+    let action = &json["check"]["duplicate_exports"][0]["actions"][0];
     assert_eq!(action["type"], "add-to-config");
     assert_eq!(action["auto_fixable"], true);
 }

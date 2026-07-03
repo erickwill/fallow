@@ -12,7 +12,7 @@ use rmcp::model::{CallToolResult, Content};
 
 use super::{
     ISSUE_TYPE_FLAGS,
-    api_runtime::{env_diff_file, run_api_blocking},
+    api_runtime::{changed_since_from_param, env_diff_file, run_api_blocking},
     api_runtime::{json_success, non_empty_path, non_empty_string, programmatic_error_body},
     fallback_policy::{
         CliFallbackReason, baseline_fallback_reason, grouped_fallback_reason,
@@ -176,6 +176,7 @@ fn dead_code_options_from_params(params: &AnalyzeParams) -> Result<DeadCodeOptio
             threads: params.threads,
             production: params.production.unwrap_or(false),
             production_override: params.production,
+            changed_since: changed_since_from_param(None),
             diff_file: env_diff_file(),
             workspace: non_empty_string(params.workspace.as_deref())
                 .map(|workspace| vec![workspace]),
@@ -210,38 +211,8 @@ fn filters_from_params(params: &AnalyzeParams) -> Result<DeadCodeFilters, String
 }
 
 fn apply_issue_type_filter(filters: &mut DeadCodeFilters, issue_type: &str) -> Result<(), String> {
-    match issue_type {
-        "unused-files" => filters.unused_files = true,
-        "unused-exports" => filters.unused_exports = true,
-        "unused-types" => filters.unused_types = true,
-        "private-type-leaks" => filters.private_type_leaks = true,
-        "unused-deps" => filters.unused_deps = true,
-        "unused-enum-members" => filters.unused_enum_members = true,
-        "unused-class-members" => filters.unused_class_members = true,
-        "unused-store-members" => filters.unused_store_members = true,
-        "unprovided-injects" => filters.unprovided_injects = true,
-        "unrendered-components" => filters.unrendered_components = true,
-        "unused-component-props" => filters.unused_component_props = true,
-        "unused-component-emits" => filters.unused_component_emits = true,
-        "unused-component-inputs" => filters.unused_component_inputs = true,
-        "unused-component-outputs" => filters.unused_component_outputs = true,
-        "unused-svelte-events" => filters.unused_svelte_events = true,
-        "unused-server-actions" => filters.unused_server_actions = true,
-        "unused-load-data-keys" => filters.unused_load_data_keys = true,
-        "unresolved-imports" => filters.unresolved_imports = true,
-        "unlisted-deps" => filters.unlisted_deps = true,
-        "duplicate-exports" => filters.duplicate_exports = true,
-        "circular-deps" => filters.circular_deps = true,
-        "re-export-cycles" => filters.re_export_cycles = true,
-        "boundary-violations" => filters.boundary_violations = true,
-        "policy-violations" => filters.policy_violations = true,
-        "stale-suppressions" => filters.stale_suppressions = true,
-        "unused-catalog-entries" => filters.unused_catalog_entries = true,
-        "empty-catalog-groups" => filters.empty_catalog_groups = true,
-        "unresolved-catalog-references" => filters.unresolved_catalog_references = true,
-        "unused-dependency-overrides" => filters.unused_dependency_overrides = true,
-        "misconfigured-dependency-overrides" => filters.misconfigured_dependency_overrides = true,
-        unknown => return Err(unknown_issue_type_error(unknown)),
+    if !filters.enable_registry_selector(issue_type) {
+        return Err(unknown_issue_type_error(issue_type));
     }
     Ok(())
 }
@@ -369,6 +340,19 @@ mod tests {
 
         let err = dead_code_options_from_params(&params).expect_err("invalid issue type");
         assert!(err.contains("Unknown issue type"));
+    }
+
+    #[test]
+    fn api_path_accepts_every_registry_issue_type() {
+        for (issue_type, _) in ISSUE_TYPE_FLAGS.iter() {
+            let params = AnalyzeParams {
+                issue_types: Some(vec![(*issue_type).to_string()]),
+                ..AnalyzeParams::default()
+            };
+
+            dead_code_options_from_params(&params)
+                .unwrap_or_else(|err| panic!("{issue_type} should map through API path: {err}"));
+        }
     }
 
     #[test]

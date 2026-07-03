@@ -4,6 +4,8 @@ use std::fs;
 #[cfg(test)]
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use rquickjs::prelude::{Func, MutFn};
@@ -336,18 +338,19 @@ impl CodeModeState {
                 self.max_output_bytes
             ));
         }
-        let stdout = if let Some(value) = run_api_tool(tool, params.clone())? {
-            serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
-        } else {
-            let args = build_tool_args(tool, params)?;
-            run_fallow_sync(
-                &self.binary,
-                "code_execute",
-                &args,
-                self.deadline,
-                remaining_output_bytes,
-            )?
-        };
+        let stdout =
+            if let Some(value) = run_api_tool_with_deadline(tool, params.clone(), self.deadline)? {
+                serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+            } else {
+                let args = build_tool_args(tool, params)?;
+                run_fallow_sync(
+                    &self.binary,
+                    "code_execute",
+                    &args,
+                    self.deadline,
+                    remaining_output_bytes,
+                )?
+            };
         call.output_bytes = stdout.len();
         self.output_bytes = self
             .output_bytes
@@ -360,6 +363,51 @@ impl CodeModeState {
             ));
         }
         Ok(stdout)
+    }
+}
+
+fn run_api_tool_with_deadline(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+    deadline: Instant,
+) -> Result<Option<serde_json::Value>, String> {
+    run_api_tool_with_deadline_and_runner(tool, params, deadline, run_api_tool)
+}
+
+fn run_api_tool_with_deadline_and_runner<F>(
+    tool: CodeModeTool,
+    params: serde_json::Value,
+    deadline: Instant,
+    runner: F,
+) -> Result<Option<serde_json::Value>, String>
+where
+    F: FnOnce(CodeModeTool, serde_json::Value) -> Result<Option<serde_json::Value>, String>
+        + Send
+        + 'static,
+{
+    if !tool.is_code_mode_api_backed() {
+        return Ok(None);
+    }
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        return Err("code mode execution timed out".to_string());
+    };
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("fallow-code-mode-api".to_string())
+        .spawn(move || {
+            let result = runner(tool, params);
+            let _ = tx.send(result);
+        })
+        .map_err(|err| format!("failed to start code mode API host call: {err}"))?;
+
+    match rx.recv_timeout(remaining) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err("code mode execution timed out while running fallow".to_string())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("code mode API host call failed".to_string())
+        }
     }
 }
 
@@ -473,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn api_backed_analyze_does_not_spawn_binary() {
+    fn heavy_code_mode_analyze_uses_cancellable_subprocess_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::create_dir(temp.path().join("src")).expect("src dir");
         fs::write(
@@ -498,50 +546,46 @@ mod tests {
                 max_output_bytes: Some(200_000),
             },
         )
-        .expect("api-backed analyze should not need the binary");
+        .expect_err("heavy analyze should use the cancellable subprocess path");
 
         let json: serde_json::Value = serde_json::from_str(&output).expect("code mode json");
-        assert_eq!(json["ok"].as_bool(), Some(true));
-        assert_eq!(json["result"]["kind"].as_str(), Some("dead-code"));
+        assert_eq!(json["ok"].as_bool(), Some(false));
         assert_eq!(json["calls"][0]["tool"].as_str(), Some("analyze"));
-        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(true));
+        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(false));
+        assert_eq!(json["calls"][0]["error_kind"].as_str(), Some("subprocess"));
     }
 
     #[test]
-    fn api_backed_analyze_circular_only_uses_family_output() {
+    fn heavy_code_mode_combined_uses_cancellable_subprocess_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::create_dir(temp.path().join("src")).expect("src dir");
         fs::write(
             temp.path().join("package.json"),
-            r#"{"name":"code-mode-circular-test","type":"module","main":"src/a.ts"}"#,
+            r#"{"name":"code-mode-combined-test","type":"module","main":"src/index.ts"}"#,
         )
         .expect("package json");
-        fs::write(temp.path().join("src/a.ts"), "import './b';\n").expect("source a");
-        fs::write(temp.path().join("src/b.ts"), "import './a';\n").expect("source b");
+        fs::write(
+            temp.path().join("src/index.ts"),
+            "export const unused = 1;\n",
+        )
+        .expect("source");
 
         let output = execute_code_mode(
             "/definitely/not/fallow".to_string(),
             CodeExecuteParams {
-                code:
-                    r#"return fallow.analyze({ issue_types: ["circular-deps"], no_cache: true });"#
-                        .to_string(),
+                code: "return fallow.combined({ no_cache: true, score: true });".to_string(),
                 root: Some(temp.path().display().to_string()),
                 timeout_ms: Some(5_000),
                 max_output_bytes: Some(200_000),
             },
         )
-        .expect("api-backed circular analyze should not need the binary");
+        .expect_err("heavy combined should use the cancellable subprocess path");
 
         let json: serde_json::Value = serde_json::from_str(&output).expect("code mode json");
-        assert_eq!(json["ok"].as_bool(), Some(true));
-        assert_eq!(json["result"]["kind"].as_str(), Some("dead-code"));
-        assert!(json["result"]["circular_dependencies"].is_array());
-        assert_eq!(
-            json["result"]["unused_exports"].as_array().map(Vec::len),
-            Some(0)
-        );
-        assert_eq!(json["calls"][0]["tool"].as_str(), Some("analyze"));
-        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(true));
+        assert_eq!(json["ok"].as_bool(), Some(false));
+        assert_eq!(json["calls"][0]["tool"].as_str(), Some("combined"));
+        assert_eq!(json["calls"][0]["ok"].as_bool(), Some(false));
+        assert_eq!(json["calls"][0]["error_kind"].as_str(), Some("subprocess"));
     }
 
     #[test]
@@ -780,12 +824,43 @@ mod tests {
         assert_eq!(json["calls"].as_array().map(Vec::len), Some(0));
     }
 
+    #[test]
+    fn api_host_calls_check_deadline_before_starting() {
+        let result = run_api_tool_with_deadline(
+            CodeModeTool::ProjectInfo,
+            serde_json::json!({}),
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("past instant"),
+        );
+
+        let err = result.expect_err("expired deadline must reject API host calls");
+        assert_eq!(err, "code mode execution timed out");
+    }
+
+    #[test]
+    fn api_host_calls_time_out_while_running() {
+        let result = run_api_tool_with_deadline_and_runner(
+            CodeModeTool::ProjectInfo,
+            serde_json::json!({}),
+            Instant::now() + Duration::from_millis(1),
+            |_tool, _params| {
+                std::thread::sleep(Duration::from_millis(50));
+                Ok(Some(serde_json::json!({"ok": true})))
+            },
+        );
+
+        let err = result.expect_err("slow API host call must hit the external timeout");
+        assert_eq!(err, "code mode execution timed out while running fallow");
+    }
+
     // ---- CodeModeTool::from_name round-trip --------------------------------
 
     #[test]
     fn all_valid_tool_names_parse_successfully() {
         let valid = [
             "analyze",
+            "combined",
             "check_changed",
             "security_candidates",
             "find_dupes",
@@ -852,6 +927,7 @@ mod tests {
     fn tool_name_round_trips_through_from_name_and_name() {
         let pairs: &[(&str, &str)] = &[
             ("analyze", "analyze"),
+            ("combined", "combined"),
             ("check_changed", "check_changed"),
             ("security_candidates", "security_candidates"),
             ("find_dupes", "find_dupes"),
@@ -1152,6 +1228,18 @@ mod tests {
         assert!(args.contains(&"dead-code".to_string()));
         assert!(args.contains(&"--format".to_string()));
         assert!(args.contains(&"json".to_string()));
+    }
+
+    #[test]
+    fn build_tool_args_combined_uses_bare_command_flags() {
+        let params = serde_json::json!({ "root": "/tmp/proj", "dupes_mode": "semantic" });
+        let args =
+            build_tool_args(CodeModeTool::Combined, params).expect("combined args should build");
+        assert!(!args.contains(&"dead-code".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--dupes-mode".to_string()));
+        assert!(args.contains(&"semantic".to_string()));
     }
 
     #[test]

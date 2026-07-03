@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use fallow_config::{OutputFormat, ResolvedConfig, RulesConfig, Severity};
+use fallow_config::{OutputFormat, ResolvedConfig, RulesConfig, Severity, WorkspaceInfo};
 use fallow_types::discover::DiscoveredFile;
 use fallow_types::extract::ModuleInfo;
 use fallow_types::results::AnalysisResults;
@@ -64,6 +64,45 @@ pub struct IssueFilters {
 }
 
 impl IssueFilters {
+    pub fn enable_cli_filter_flag(&mut self, flag: &str) -> bool {
+        match flag {
+            "--unused-files" => self.unused_files = true,
+            "--unused-exports" => self.unused_exports = true,
+            "--unused-deps" => self.unused_deps = true,
+            "--unused-types" => self.unused_types = true,
+            "--private-type-leaks" => self.private_type_leaks = true,
+            "--unused-enum-members" => self.unused_enum_members = true,
+            "--unused-class-members" => self.unused_class_members = true,
+            "--unused-store-members" => self.unused_store_members = true,
+            "--unprovided-injects" => self.unprovided_injects = true,
+            "--unrendered-components" => self.unrendered_components = true,
+            "--unused-component-props" => self.unused_component_props = true,
+            "--unused-component-emits" => self.unused_component_emits = true,
+            "--unused-component-inputs" => self.unused_component_inputs = true,
+            "--unused-component-outputs" => self.unused_component_outputs = true,
+            "--unused-svelte-events" => self.unused_svelte_events = true,
+            "--unused-server-actions" => self.unused_server_actions = true,
+            "--unused-load-data-keys" => self.unused_load_data_keys = true,
+            "--unresolved-imports" => self.unresolved_imports = true,
+            "--unlisted-deps" => self.unlisted_deps = true,
+            "--duplicate-exports" => self.duplicate_exports = true,
+            "--circular-deps" => self.circular_deps = true,
+            "--re-export-cycles" => self.re_export_cycles = true,
+            "--boundary-violations" => self.boundary_violations = true,
+            "--policy-violations" => self.policy_violations = true,
+            "--stale-suppressions" => self.stale_suppressions = true,
+            "--unused-catalog-entries" => self.unused_catalog_entries = true,
+            "--empty-catalog-groups" => self.empty_catalog_groups = true,
+            "--unresolved-catalog-references" => self.unresolved_catalog_references = true,
+            "--unused-dependency-overrides" => self.unused_dependency_overrides = true,
+            "--misconfigured-dependency-overrides" => {
+                self.misconfigured_dependency_overrides = true;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub const fn any_active(&self) -> bool {
         self.unused_files
             || self.unused_exports
@@ -359,6 +398,8 @@ pub struct CheckResult {
     /// number. Computed from the retained graph's reverse-deps on the brief path
     /// BEFORE the graph is dropped; `None` otherwise. Internal (not serialized).
     pub internal_consumers: Option<rustc_hash::FxHashMap<String, u64>>,
+    pub workspaces: Vec<WorkspaceInfo>,
+    retained_files: Option<Vec<DiscoveredFile>>,
 }
 
 struct CheckAnalysisData {
@@ -367,6 +408,7 @@ struct CheckAnalysisData {
     trace_timings: Option<fallow_types::trace::PipelineTimings>,
     retained_modules: Option<Vec<ModuleInfo>>,
     retained_files: Option<Vec<DiscoveredFile>>,
+    workspaces: Vec<WorkspaceInfo>,
     script_used_packages: rustc_hash::FxHashSet<String>,
 }
 
@@ -374,40 +416,63 @@ fn run_check_analysis(
     opts: &CheckOptions<'_>,
     config: &ResolvedConfig,
 ) -> Result<CheckAnalysisData, ExitCode> {
+    let session = fallow_engine::session::AnalysisSession::from_resolved_config(config.clone());
+
     if opts.retain_modules_for_health {
-        return fallow_engine::dead_code::analyze_retaining_modules(config, true, true)
+        return session
+            .analyze_dead_code_with_artifacts(true, true)
             .map(|output| CheckAnalysisData {
                 results: output.results,
                 trace_graph: output.graph,
                 trace_timings: output.timings,
                 retained_modules: output.modules,
                 retained_files: output.files,
+                workspaces: session.workspaces().to_vec(),
+                script_used_packages: output.script_used_packages,
+            })
+            .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
+    }
+
+    if opts.include_dupes {
+        return session
+            .analyze_dead_code_retaining_files(false, opts.trace_opts.any_active())
+            .map(|output| CheckAnalysisData {
+                results: output.results,
+                trace_graph: output.graph,
+                trace_timings: output.timings,
+                retained_modules: None,
+                retained_files: output.files,
+                workspaces: session.workspaces().to_vec(),
                 script_used_packages: output.script_used_packages,
             })
             .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
     }
 
     if opts.trace_opts.any_active() {
-        return fallow_engine::dead_code::analyze_with_trace(config)
+        return session
+            .analyze_dead_code_with_artifacts(false, true)
             .map(|output| CheckAnalysisData {
                 results: output.results,
                 trace_graph: output.graph,
                 trace_timings: output.timings,
                 retained_modules: None,
                 retained_files: None,
+                workspaces: session.workspaces().to_vec(),
                 script_used_packages: output.script_used_packages,
             })
             .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output));
     }
 
-    fallow_engine::dead_code::analyze(config)
-        .map(|analysis| CheckAnalysisData {
-            results: analysis.results,
+    session
+        .analyze_dead_code_with_artifacts(false, false)
+        .map(|output| CheckAnalysisData {
+            results: output.results,
             trace_graph: None,
             trace_timings: None,
             retained_modules: None,
             retained_files: None,
-            script_used_packages: rustc_hash::FxHashSet::default(),
+            workspaces: session.workspaces().to_vec(),
+            script_used_packages: output.script_used_packages,
         })
         .map_err(|e| emit_error(&format!("Analysis error: {e}"), 2, opts.output))
 }
@@ -585,6 +650,7 @@ fn build_shared_parse_data(
     trace_graph: Option<fallow_engine::module_graph::RetainedModuleGraph>,
     retained_modules: Option<Vec<ModuleInfo>>,
     retained_files: Option<Vec<DiscoveredFile>>,
+    workspaces: Vec<WorkspaceInfo>,
     script_used_packages: &rustc_hash::FxHashSet<String>,
 ) -> Option<fallow_engine::health::HealthSharedParseData> {
     fallow_engine::health::shared_parse_data_from_artifacts(
@@ -592,6 +658,7 @@ fn build_shared_parse_data(
         trace_graph,
         retained_modules,
         retained_files,
+        workspaces,
         script_used_packages.iter().cloned(),
     )
 }
@@ -630,7 +697,8 @@ fn complete_check_execution(
         trace_graph,
         trace_timings,
         retained_modules,
-        retained_files,
+        mut retained_files,
+        workspaces,
         script_used_packages,
     } = data;
 
@@ -638,11 +706,20 @@ fn complete_check_execution(
         output::write_sarif_file(&results, &config, sarif_path, opts.quiet);
     }
 
+    let retained_files_for_cross_reference = if opts.include_dupes && retained_modules.is_some() {
+        retained_files.clone()
+    } else if opts.include_dupes {
+        retained_files.take()
+    } else {
+        None
+    };
+
     let shared_parse = build_shared_parse_data(
         &results,
         trace_graph,
         retained_modules,
         retained_files,
+        workspaces.clone(),
         &script_used_packages,
     );
 
@@ -669,6 +746,8 @@ fn complete_check_execution(
         focus_facts: None,
         export_lines: None,
         internal_consumers: None,
+        workspaces,
+        retained_files: retained_files_for_cross_reference,
     }
 }
 
@@ -906,7 +985,14 @@ pub fn run_check(opts: &CheckOptions<'_>) -> ExitCode {
     );
 
     if opts.include_dupes && result.config.duplicates.enabled {
-        output::run_cross_reference(&result.config, &result.results, opts.quiet);
+        let Some(files) = result.retained_files.as_deref() else {
+            return emit_error(
+                "internal error: --include-dupes analysis did not retain discovered files",
+                2,
+                opts.output,
+            );
+        };
+        output::run_cross_reference(&result.config, &result.results, files, opts.quiet);
     }
 
     exit
@@ -1207,25 +1293,17 @@ mod tests {
     }
 
     #[test]
-    fn each_filter_flag_registers_as_active() {
-        let flags: Vec<fn(&mut IssueFilters)> = vec![
-            |f| f.unused_files = true,
-            |f| f.unused_exports = true,
-            |f| f.unused_deps = true,
-            |f| f.unused_types = true,
-            |f| f.unused_enum_members = true,
-            |f| f.unused_class_members = true,
-            |f| f.unresolved_imports = true,
-            |f| f.unlisted_deps = true,
-            |f| f.duplicate_exports = true,
-            |f| f.circular_deps = true,
-            |f| f.re_export_cycles = true,
-            |f| f.boundary_violations = true,
-        ];
-        for setter in flags {
+    fn every_registry_filter_flag_registers_as_active() {
+        for flag in fallow_types::issue_meta::DEAD_CODE_FILTER_FLAGS.iter() {
             let mut f = no_filters();
-            setter(&mut f);
-            assert!(f.any_active());
+            assert!(
+                f.enable_cli_filter_flag(flag),
+                "registry filter flag {flag} has no CLI IssueFilters mapping"
+            );
+            assert!(
+                f.any_active(),
+                "registry filter flag {flag} stayed inactive"
+            );
         }
     }
 

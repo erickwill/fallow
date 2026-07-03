@@ -88,15 +88,24 @@ fn collect_list_data(
 
     let need_plugin_result = opts.plugins || opts.entry_points || show_all;
     let need_files = needs_file_discovery(opts.files, show_all, opts.entry_points, opts.boundaries);
-    let discovered = if need_files || need_plugin_result {
-        Some(fallow_engine::discover::discover_files_with_plugin_scopes(
-            config,
-        ))
+    let session = if need_files || need_plugin_result {
+        Some(fallow_engine::session::AnalysisSession::from_resolved_config(config.clone()))
     } else {
         None
     };
+    let discovered = session.as_ref().map(|session| session.files().to_vec());
+    let session_workspaces = session.as_ref().map(|session| session.workspaces());
+    let session_workspace_diagnostics = session
+        .as_ref()
+        .map(|session| session.workspace_diagnostics());
 
-    let plugin_result = collect_plugin_result(opts, config, show_all, discovered.as_deref())?;
+    let plugin_result = collect_plugin_result(
+        opts,
+        config,
+        show_all,
+        discovered.as_deref(),
+        session_workspaces,
+    )?;
 
     let entry_points = collect_list_entry_points(
         opts,
@@ -104,6 +113,7 @@ fn collect_list_data(
         show_all,
         discovered.as_deref(),
         plugin_result.as_ref(),
+        session_workspaces,
     );
 
     let boundary_data = if opts.boundaries {
@@ -115,7 +125,13 @@ fn collect_list_data(
         None
     };
 
-    let workspace_data = collect_list_workspace_data(opts, config, show_all)?;
+    let workspace_data = collect_list_workspace_data(
+        opts,
+        config,
+        show_all,
+        session_workspaces,
+        session_workspace_diagnostics,
+    )?;
 
     Ok(ListData {
         show_all,
@@ -133,17 +149,26 @@ fn collect_list_entry_points(
     show_all: bool,
     discovered: Option<&[fallow_engine::discover::DiscoveredFile]>,
     plugin_result: Option<&fallow_engine::plugins::AggregatedPluginResult>,
+    workspaces: Option<&[fallow_config::WorkspaceInfo]>,
 ) -> Option<Vec<fallow_engine::discover::EntryPoint>> {
     if !(opts.entry_points || show_all) {
         return None;
     }
     let disc = discovered?;
     let mut entries = fallow_engine::discover::discover_entry_points(config, disc);
-    let workspaces = fallow_config::discover_workspaces(opts.root);
-    for ws in &workspaces {
-        let ws_entries =
-            fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
-        entries.extend(ws_entries);
+    if let Some(workspaces) = workspaces {
+        for ws in workspaces {
+            let ws_entries =
+                fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
+            entries.extend(ws_entries);
+        }
+    } else {
+        let workspaces = fallow_config::discover_workspaces(opts.root);
+        for ws in &workspaces {
+            let ws_entries =
+                fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
+            entries.extend(ws_entries);
+        }
     }
     if let Some(pr) = plugin_result {
         let plugin_entries =
@@ -157,9 +182,17 @@ fn collect_list_workspace_data(
     opts: &ListOptions<'_>,
     config: &fallow_config::ResolvedConfig,
     show_all: bool,
+    workspaces: Option<&[fallow_config::WorkspaceInfo]>,
+    workspace_diagnostics: Option<&[fallow_config::WorkspaceDiagnostic]>,
 ) -> Result<Option<WorkspaceData>, ExitCode> {
     if !(opts.workspaces || show_all) {
         return Ok(None);
+    }
+    if let Some(workspaces) = workspaces {
+        return Ok(Some(WorkspaceData {
+            workspaces: workspaces.to_vec(),
+            diagnostics: workspace_diagnostics.unwrap_or(&[]).to_vec(),
+        }));
     }
     match fallow_config::discover_workspaces_with_diagnostics(opts.root, &config.ignore_patterns) {
         Ok((workspaces, mut diagnostics)) => {
@@ -227,18 +260,13 @@ fn collect_plugin_result(
     config: &fallow_config::ResolvedConfig,
     show_all: bool,
     discovered: Option<&[fallow_engine::discover::DiscoveredFile]>,
+    workspaces: Option<&[fallow_config::WorkspaceInfo]>,
 ) -> Result<Option<fallow_engine::plugins::AggregatedPluginResult>, ExitCode> {
     if !(opts.plugins || opts.entry_points || show_all) {
         return Ok(None);
     }
-    let fallback_discovered;
-    let disc = match discovered {
-        Some(discovered) => discovered,
-        None => {
-            fallback_discovered =
-                fallow_engine::discover::discover_files_with_plugin_scopes(config);
-            &fallback_discovered
-        }
+    let Some(disc) = discovered else {
+        return Ok(None);
     };
     let file_paths: Vec<std::path::PathBuf> = disc.iter().map(|f| f.path.clone()).collect();
     let registry = fallow_engine::plugins::PluginRegistry::new(config.external_plugins.clone());
@@ -250,7 +278,7 @@ fn collect_plugin_result(
         opts.output,
     )?
     .unwrap_or_default();
-    merge_workspace_plugins(opts, &registry, &file_paths, &mut result)?;
+    merge_workspace_plugins(opts, &registry, &file_paths, workspaces, &mut result)?;
     Ok(Some(result))
 }
 
@@ -277,8 +305,25 @@ fn merge_workspace_plugins(
     opts: &ListOptions<'_>,
     registry: &fallow_engine::plugins::PluginRegistry,
     file_paths: &[std::path::PathBuf],
+    workspaces: Option<&[fallow_config::WorkspaceInfo]>,
     result: &mut fallow_engine::plugins::AggregatedPluginResult,
 ) -> Result<(), ExitCode> {
+    if let Some(workspaces) = workspaces {
+        for ws in workspaces {
+            let Some(ws_result) = run_package_plugins(
+                registry,
+                &ws.root.join("package.json"),
+                &ws.root,
+                file_paths,
+                opts.output,
+            )?
+            else {
+                continue;
+            };
+            result.merge_active_plugins_from(&ws_result);
+        }
+        return Ok(());
+    }
     for ws in &fallow_config::discover_workspaces(opts.root) {
         let Some(ws_result) = run_package_plugins(
             registry,

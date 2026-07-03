@@ -2,11 +2,17 @@
 
 use std::path::PathBuf;
 
+use fallow_config::{FallowConfig, ProductionAnalysis, ProductionConfig};
+use fallow_engine::{
+    dead_code::DeadCodeAnalysisArtifacts, duplicates::DuplicationReport, session::AnalysisSession,
+};
 use fallow_output::{HealthGrouping, HealthReport, RootEnvelopeMode};
 use fallow_types::output_format::OutputFormat;
 use fallow_types::workspace::WorkspaceDiagnostic;
+use rustc_hash::FxHashSet;
 
 mod audit;
+mod combined;
 mod dead_code;
 mod decision_surface;
 mod duplication;
@@ -16,15 +22,16 @@ mod trace;
 pub use crate::runtime_output::{
     AuditProgrammaticKeySnapshot, AuditProgrammaticOutput, BoundaryViolationsOutput,
     BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
-    CircularDependenciesProgrammaticOutput, DeadCodeOutput, DeadCodeProgrammaticOutput,
-    DecisionSurfaceProgrammaticOutput, DuplicationOutput, DuplicationProgrammaticOutput,
-    FeatureFlagsOutput, FeatureFlagsProgrammaticOutput, HealthJsonReportInput,
-    HealthProgrammaticOutput, TraceCloneOutput, TraceCloneProgrammaticOutput,
-    TraceDependencyOutput, TraceDependencyProgrammaticOutput, TraceExportOutput,
-    TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
+    CircularDependenciesProgrammaticOutput, CombinedProgrammaticOutput, DeadCodeOutput,
+    DeadCodeProgrammaticOutput, DecisionSurfaceProgrammaticOutput, DuplicationOutput,
+    DuplicationProgrammaticOutput, FeatureFlagsOutput, FeatureFlagsProgrammaticOutput,
+    HealthJsonReportInput, HealthProgrammaticOutput, TraceCloneOutput,
+    TraceCloneProgrammaticOutput, TraceDependencyOutput, TraceDependencyProgrammaticOutput,
+    TraceExportOutput, TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
     serialize_health_report_json,
 };
 pub use audit::run_audit;
+pub use combined::run_combined;
 pub use dead_code::{run_boundary_violations, run_circular_dependencies, run_dead_code};
 pub use decision_surface::run_decision_surface;
 pub use duplication::run_duplication;
@@ -33,11 +40,102 @@ pub use trace::{run_trace_clone, run_trace_dependency, run_trace_export, run_tra
 
 use crate::{
     ComplexityOptions, ProgrammaticError,
-    analysis_context::{ProgrammaticAnalysisContext, resolve_programmatic_analysis_context},
+    analysis_context::{
+        ProgrammaticAnalysisContext, resolve_programmatic_analysis_context,
+        workspace_roots_for_session,
+    },
+    derive_complexity_options,
     next_steps::{setup_pointer_applicable, suggestions_enabled},
 };
 
 type ProgrammaticResult<T> = Result<T, ProgrammaticError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EffectiveProductionModes {
+    pub dead_code: bool,
+    pub health: bool,
+    pub dupes: bool,
+}
+
+pub(super) fn resolve_effective_production_modes(
+    resolved: &ProgrammaticAnalysisContext,
+    dead_code_override: Option<bool>,
+    health_override: Option<bool>,
+    dupes_override: Option<bool>,
+) -> ProgrammaticResult<EffectiveProductionModes> {
+    let config = load_context_production_config(resolved)?;
+    Ok(EffectiveProductionModes {
+        dead_code: effective_production_mode(
+            config,
+            ProductionAnalysis::DeadCode,
+            resolved,
+            dead_code_override,
+        ),
+        health: effective_production_mode(
+            config,
+            ProductionAnalysis::Health,
+            resolved,
+            health_override,
+        ),
+        dupes: effective_production_mode(
+            config,
+            ProductionAnalysis::Dupes,
+            resolved,
+            dupes_override,
+        ),
+    })
+}
+
+fn effective_production_mode(
+    config: ProductionConfig,
+    analysis: ProductionAnalysis,
+    resolved: &ProgrammaticAnalysisContext,
+    analysis_override: Option<bool>,
+) -> bool {
+    analysis_override
+        .or_else(|| resolved.production_override())
+        .unwrap_or_else(|| config.for_analysis(analysis))
+}
+
+fn load_context_production_config(
+    resolved: &ProgrammaticAnalysisContext,
+) -> ProgrammaticResult<ProductionConfig> {
+    let loaded = if let Some(path) = resolved.config_path().as_deref() {
+        FallowConfig::load(path).map(Some).map_err(|err| {
+            ProgrammaticError::new(format!("failed to load config: {err:#}"), 2)
+                .with_code("FALLOW_CONFIG_LOAD_FAILED")
+                .with_context("analysis.configPath")
+        })?
+    } else {
+        FallowConfig::find_and_load(resolved.root())
+            .map(|found| found.map(|(config, _)| config))
+            .map_err(|err| {
+                ProgrammaticError::new(format!("failed to load config: {err}"), 2)
+                    .with_code("FALLOW_CONFIG_LOAD_FAILED")
+                    .with_context("analysis.configPath")
+            })?
+    };
+    Ok(loaded.map_or_else(ProductionConfig::default, |config| config.production))
+}
+
+pub(super) fn health_may_consume_dead_code_artifacts(
+    options: &ComplexityOptions,
+    config: &fallow_config::ResolvedConfig,
+) -> bool {
+    let sections = derive_complexity_options(options);
+    let max_crap = options.max_crap.unwrap_or(config.health.max_crap);
+    sections.file_scores
+        || sections.coverage_gaps
+        || sections.hotspots
+        || sections.targets
+        || sections.force_full
+        || max_crap > 0.0
+}
+
+pub(super) fn health_may_consume_duplication_report(options: &ComplexityOptions) -> bool {
+    let sections = derive_complexity_options(options);
+    sections.score || sections.targets
+}
 
 /// Runtime probes used by programmatic health output assembly.
 ///
@@ -134,6 +232,12 @@ fn run_programmatic_health_on_engine(
     )
     .map_err(|_| generic_health_error("health"))?;
 
+    Ok(programmatic_health_run_from_engine_result(result))
+}
+
+fn programmatic_health_run_from_engine_result<GroupResolver>(
+    result: fallow_engine::health::HealthAnalysisResult<GroupResolver>,
+) -> ProgrammaticHealthRun {
     let root = result.config.root.clone();
     let next_step_facts = ProgrammaticHealthNextStepFacts {
         suggestions_enabled: suggestions_enabled(),
@@ -141,12 +245,49 @@ fn run_programmatic_health_on_engine(
         impact_digest: None,
         audit_changed: fallow_engine::churn::is_git_repo(&root),
     };
-    Ok(ProgrammaticHealthRun {
+    ProgrammaticHealthRun {
         workspace_diagnostics: result.workspace_diagnostics.clone(),
         analysis: ProgrammaticHealthAnalysis::from_engine(result.without_group_resolver()),
         next_step_facts,
         telemetry_analysis_run_id: None,
-    })
+    }
+}
+
+#[cfg(test)]
+pub(super) fn run_health_with_session(
+    options: &ComplexityOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<PathBuf>>,
+) -> ProgrammaticResult<HealthProgrammaticOutput> {
+    run_health_with_session_artifacts(options, resolved, session, changed_files, None, None)
+}
+
+pub(super) fn run_health_with_session_artifacts(
+    options: &ComplexityOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    session: &AnalysisSession,
+    changed_files: Option<&FxHashSet<PathBuf>>,
+    pre_computed_analysis: Option<DeadCodeAnalysisArtifacts>,
+    pre_computed_duplication: Option<DuplicationReport>,
+) -> ProgrammaticResult<HealthProgrammaticOutput> {
+    crate::validate_complexity_options(options)?;
+    let health_options = derive_programmatic_health_execution_options(resolved, options);
+    let workspace_roots = workspace_roots_for_session(resolved, session.workspaces())?;
+    let result = fallow_engine::health::run_ungrouped_health_with_session_artifacts(
+        &health_options,
+        workspace_roots,
+        session,
+        changed_files.map(|files| files.iter().cloned().collect()),
+        pre_computed_analysis,
+        pre_computed_duplication,
+    )
+    .map_err(|_| generic_health_error("health"))?;
+
+    Ok(assemble_health_programmatic_output(
+        options,
+        programmatic_health_run_from_engine_result(result),
+    ))
 }
 
 fn generic_health_error(command: &str) -> ProgrammaticError {
@@ -246,12 +387,22 @@ pub fn run_complexity_with_runner(
     runner: &impl ProgrammaticHealthRunner,
 ) -> ProgrammaticResult<HealthProgrammaticOutput> {
     crate::validate_complexity_options(options)?;
+    Ok(assemble_health_programmatic_output(
+        options,
+        runner.run_programmatic_health(options)?,
+    ))
+}
+
+fn assemble_health_programmatic_output(
+    options: &ComplexityOptions,
+    run: ProgrammaticHealthRun,
+) -> HealthProgrammaticOutput {
     let ProgrammaticHealthRun {
         analysis,
         workspace_diagnostics,
         next_step_facts,
         telemetry_analysis_run_id,
-    } = runner.run_programmatic_health(options)?;
+    } = run;
     let root = analysis.root.clone();
     let next_steps =
         fallow_output::build_health_next_steps(fallow_output::build_health_next_steps_input(
@@ -261,7 +412,7 @@ pub fn run_complexity_with_runner(
             next_step_facts.impact_digest,
             next_step_facts.audit_changed,
         ));
-    Ok(HealthProgrammaticOutput {
+    HealthProgrammaticOutput {
         report: analysis.report,
         grouping: analysis.grouping,
         root,
@@ -271,7 +422,7 @@ pub fn run_complexity_with_runner(
         next_steps,
         envelope_mode: root_envelope_mode(),
         telemetry_analysis_run_id,
-    })
+    }
 }
 
 /// Alias for [`run_complexity_with_runner`] with a product-oriented name.

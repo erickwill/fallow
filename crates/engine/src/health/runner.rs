@@ -6,10 +6,13 @@ use std::time::Instant;
 
 use fallow_config::ProductionAnalysis;
 use fallow_types::output_format::OutputFormat;
+use rustc_hash::FxHashSet;
 
 use crate::{
+    duplicates::DuplicationReport,
     project_config::{ProjectConfigOptions, config_for_project_analysis},
-    session::AnalysisSession,
+    results::DeadCodeAnalysisArtifacts,
+    session::{AnalysisSession, ParsedAnalysisSessionParts},
 };
 
 use super::{
@@ -54,10 +57,113 @@ pub fn run_ungrouped_health(
     let changed_files = options
         .changed_since
         .and_then(|git_ref| session.changed_files_since(git_ref).ok());
-    let parts = session.into_parsed_parts(true);
+    let parts = session.parsed_parts_uncached(true);
+    let pre_computed_analysis =
+        super::should_precompute_dead_code_analysis(options, session.config())
+            .then(|| session.analyze_dead_code_with_parsed_modules(&parts.modules))
+            .transpose()
+            .map_err(|_| ExitCode::from(2))?;
+
+    run_ungrouped_health_from_parts(HealthRunPartsInput {
+        options,
+        ws_roots,
+        parts,
+        changed_files,
+        config_ms,
+        shared_parse: false,
+        pre_computed_analysis,
+        pre_computed_duplication: None,
+    })
+}
+
+/// Run health analysis from an existing analysis session.
+///
+/// This lets audit and other compound programmatic surfaces share config,
+/// discovery, and parser-cache state across analysis families.
+///
+/// # Errors
+///
+/// Returns the health command exit code for invalid inputs or analysis failures.
+pub fn run_ungrouped_health_with_session(
+    options: &HealthExecutionOptions<'_>,
+    ws_roots: Option<Vec<PathBuf>>,
+    session: &AnalysisSession,
+    changed_files: Option<Vec<PathBuf>>,
+) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
+    run_ungrouped_health_with_session_artifacts(
+        options,
+        ws_roots,
+        session,
+        changed_files,
+        None,
+        None,
+    )
+}
+
+/// Run health analysis from an existing analysis session and retained
+/// dead-code artifacts.
+///
+/// # Errors
+///
+/// Returns the health command exit code for invalid inputs or analysis failures.
+pub fn run_ungrouped_health_with_session_artifacts(
+    options: &HealthExecutionOptions<'_>,
+    ws_roots: Option<Vec<PathBuf>>,
+    session: &AnalysisSession,
+    changed_files: Option<Vec<PathBuf>>,
+    pre_computed_analysis: Option<DeadCodeAnalysisArtifacts>,
+    pre_computed_duplication: Option<DuplicationReport>,
+) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
+    validate_health_churn_file(options).map_err(|_| ExitCode::from(2))?;
+
+    let changed_files = changed_files.map(FxHashSet::from_iter).or_else(|| {
+        options
+            .changed_since
+            .and_then(|git_ref| session.changed_files_since(git_ref).ok())
+    });
+    let parts = session.parsed_parts(true);
+    let shared_parse = parts.parse_ms == 0.0;
+
+    run_ungrouped_health_from_parts(HealthRunPartsInput {
+        options,
+        ws_roots,
+        parts,
+        changed_files,
+        config_ms: 0.0,
+        shared_parse,
+        pre_computed_analysis,
+        pre_computed_duplication,
+    })
+}
+
+struct HealthRunPartsInput<'a> {
+    options: &'a HealthExecutionOptions<'a>,
+    ws_roots: Option<Vec<PathBuf>>,
+    parts: ParsedAnalysisSessionParts,
+    changed_files: Option<FxHashSet<PathBuf>>,
+    config_ms: f64,
+    shared_parse: bool,
+    pre_computed_analysis: Option<DeadCodeAnalysisArtifacts>,
+    pre_computed_duplication: Option<DuplicationReport>,
+}
+
+fn run_ungrouped_health_from_parts(
+    input: HealthRunPartsInput<'_>,
+) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
+    let HealthRunPartsInput {
+        options,
+        ws_roots,
+        parts,
+        changed_files,
+        config_ms,
+        shared_parse,
+        pre_computed_analysis,
+        pre_computed_duplication,
+    } = input;
     let config = parts.config;
     let files = parts.files;
     let modules = parts.modules;
+    let workspaces = parts.workspaces;
     let workspace_diagnostics = parts.workspace_diagnostics;
     let parse_ms = parts.parse_ms;
     let parse_cpu_ms = parts.parse_cpu_ms;
@@ -83,8 +189,10 @@ pub fn run_ungrouped_health(
             discover_ms: 0.0,
             parse_ms,
             parse_cpu_ms,
-            shared_parse: false,
-            pre_computed_analysis: None,
+            shared_parse,
+            pre_computed_analysis,
+            pre_computed_duplication,
+            workspaces,
             workspace_diagnostics,
         },
         scope_inputs,

@@ -149,25 +149,27 @@ pub use output_contracts::{
 pub use runtime::{
     AuditProgrammaticKeySnapshot, AuditProgrammaticOutput, BoundaryViolationsOutput,
     BoundaryViolationsProgrammaticOutput, CircularDependenciesOutput,
-    CircularDependenciesProgrammaticOutput, DeadCodeOutput, DeadCodeProgrammaticOutput,
-    DecisionSurfaceProgrammaticOutput, DuplicationOutput, DuplicationProgrammaticOutput,
-    EngineHealthRunner, FeatureFlagsOutput, FeatureFlagsProgrammaticOutput, HealthJsonReportInput,
-    HealthProgrammaticOutput, ProgrammaticHealthAnalysis, ProgrammaticHealthNextStepFacts,
-    ProgrammaticHealthRun, ProgrammaticHealthRunner, TraceCloneOutput,
-    TraceCloneProgrammaticOutput, TraceDependencyOutput, TraceDependencyProgrammaticOutput,
-    TraceExportOutput, TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput,
-    run_audit, run_boundary_violations, run_circular_dependencies, run_complexity_with_runner,
+    CircularDependenciesProgrammaticOutput, CombinedProgrammaticOutput, DeadCodeOutput,
+    DeadCodeProgrammaticOutput, DecisionSurfaceProgrammaticOutput, DuplicationOutput,
+    DuplicationProgrammaticOutput, EngineHealthRunner, FeatureFlagsOutput,
+    FeatureFlagsProgrammaticOutput, HealthJsonReportInput, HealthProgrammaticOutput,
+    ProgrammaticHealthAnalysis, ProgrammaticHealthNextStepFacts, ProgrammaticHealthRun,
+    ProgrammaticHealthRunner, TraceCloneOutput, TraceCloneProgrammaticOutput,
+    TraceDependencyOutput, TraceDependencyProgrammaticOutput, TraceExportOutput,
+    TraceExportProgrammaticOutput, TraceFileOutput, TraceFileProgrammaticOutput, run_audit,
+    run_boundary_violations, run_circular_dependencies, run_combined, run_complexity_with_runner,
     run_dead_code, run_decision_surface, run_duplication, run_feature_flags, run_health,
     run_health_with_runner, run_trace_clone, run_trace_dependency, run_trace_export,
     run_trace_file, serialize_health_report_json,
 };
 pub use runtime_json::{
     serialize_audit_programmatic_json, serialize_boundary_violations_programmatic_json,
-    serialize_circular_dependencies_programmatic_json, serialize_dead_code_programmatic_json,
-    serialize_decision_surface_programmatic_json, serialize_duplication_programmatic_json,
-    serialize_feature_flags_programmatic_json, serialize_health_programmatic_json,
-    serialize_trace_clone_programmatic_json, serialize_trace_dependency_programmatic_json,
-    serialize_trace_export_programmatic_json, serialize_trace_file_programmatic_json,
+    serialize_circular_dependencies_programmatic_json, serialize_combined_programmatic_json,
+    serialize_dead_code_programmatic_json, serialize_decision_surface_programmatic_json,
+    serialize_duplication_programmatic_json, serialize_feature_flags_programmatic_json,
+    serialize_health_programmatic_json, serialize_trace_clone_programmatic_json,
+    serialize_trace_dependency_programmatic_json, serialize_trace_export_programmatic_json,
+    serialize_trace_file_programmatic_json,
 };
 pub use sarif_output::{
     annotate_sarif_results, build_duplication_sarif, build_grouped_duplication_sarif,
@@ -292,6 +294,62 @@ pub struct DeadCodeFilters {
     pub misconfigured_dependency_overrides: bool,
 }
 
+impl DeadCodeFilters {
+    /// Enable the issue filter addressed by a shared registry selector.
+    ///
+    /// Returns `false` when the selector is not registered for dead-code
+    /// filtering. Callers that expose user input should surface their own
+    /// validation error with the accepted registry values.
+    pub fn enable_registry_selector(&mut self, selector: &str) -> bool {
+        let Some(flag) = fallow_types::issue_meta::MCP_ISSUE_TYPE_FLAGS
+            .iter()
+            .find_map(|&(name, flag)| (name == selector).then_some(flag))
+        else {
+            return false;
+        };
+        self.enable_cli_filter_flag(flag);
+        true
+    }
+
+    fn enable_cli_filter_flag(&mut self, flag: &str) {
+        match flag {
+            "--unused-files" => self.unused_files = true,
+            "--unused-exports" => self.unused_exports = true,
+            "--unused-types" => self.unused_types = true,
+            "--private-type-leaks" => self.private_type_leaks = true,
+            "--unused-deps" => self.unused_deps = true,
+            "--unused-enum-members" => self.unused_enum_members = true,
+            "--unused-class-members" => self.unused_class_members = true,
+            "--unused-store-members" => self.unused_store_members = true,
+            "--unprovided-injects" => self.unprovided_injects = true,
+            "--unrendered-components" => self.unrendered_components = true,
+            "--unused-component-props" => self.unused_component_props = true,
+            "--unused-component-emits" => self.unused_component_emits = true,
+            "--unused-component-inputs" => self.unused_component_inputs = true,
+            "--unused-component-outputs" => self.unused_component_outputs = true,
+            "--unused-svelte-events" => self.unused_svelte_events = true,
+            "--unused-server-actions" => self.unused_server_actions = true,
+            "--unused-load-data-keys" => self.unused_load_data_keys = true,
+            "--unresolved-imports" => self.unresolved_imports = true,
+            "--unlisted-deps" => self.unlisted_deps = true,
+            "--duplicate-exports" => self.duplicate_exports = true,
+            "--circular-deps" => self.circular_deps = true,
+            "--re-export-cycles" => self.re_export_cycles = true,
+            "--boundary-violations" => self.boundary_violations = true,
+            "--policy-violations" => self.policy_violations = true,
+            "--stale-suppressions" => self.stale_suppressions = true,
+            "--unused-catalog-entries" => self.unused_catalog_entries = true,
+            "--empty-catalog-groups" => self.empty_catalog_groups = true,
+            "--unresolved-catalog-references" => self.unresolved_catalog_references = true,
+            "--unused-dependency-overrides" => self.unused_dependency_overrides = true,
+            "--misconfigured-dependency-overrides" => {
+                self.misconfigured_dependency_overrides = true;
+            }
+            _ => unreachable!("registry emitted unsupported dead-code filter flag: {flag}"),
+        }
+    }
+}
+
 /// Options for dead-code-oriented analyses.
 #[derive(Debug, Clone, Default)]
 pub struct DeadCodeOptions {
@@ -317,6 +375,32 @@ pub struct AuditOptions {
     pub include_entry_exports: bool,
     pub runtime_coverage: Option<PathBuf>,
     pub min_invocations_hot: u64,
+}
+
+/// Options for bare combined analysis through the programmatic API.
+#[derive(Debug, Clone)]
+pub struct CombinedOptions {
+    pub analysis: AnalysisOptions,
+    pub dead_code: bool,
+    pub duplication: bool,
+    pub health: bool,
+    pub include_entry_exports: bool,
+    pub duplication_options: DuplicationOptions,
+    pub health_options: ComplexityOptions,
+}
+
+impl Default for CombinedOptions {
+    fn default() -> Self {
+        Self {
+            analysis: AnalysisOptions::default(),
+            dead_code: true,
+            duplication: true,
+            health: true,
+            include_entry_exports: false,
+            duplication_options: DuplicationOptions::default(),
+            health_options: ComplexityOptions::default(),
+        }
+    }
 }
 
 /// Options for changed-code decision-surface analysis.
@@ -781,6 +865,24 @@ mod tests {
         assert_eq!(error.code.as_deref(), Some("FALLOW_TEST"));
         assert_eq!(error.help.as_deref(), Some("Try again"));
         assert_eq!(error.context.as_deref(), Some("analysis.root"));
+    }
+
+    #[test]
+    fn dead_code_filters_accept_shared_registry_selectors() {
+        for (selector, _) in fallow_types::issue_meta::MCP_ISSUE_TYPE_FLAGS.iter() {
+            let mut filters = DeadCodeFilters::default();
+            assert!(
+                filters.enable_registry_selector(selector),
+                "{selector} should be accepted"
+            );
+        }
+
+        let mut filters = DeadCodeFilters::default();
+        assert!(filters.enable_registry_selector("unused-files"));
+        assert!(filters.unused_files);
+        assert!(filters.enable_registry_selector("boundary-violations"));
+        assert!(filters.boundary_violations);
+        assert!(!filters.enable_registry_selector("not-a-real-selector"));
     }
 
     #[test]

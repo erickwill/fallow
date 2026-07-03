@@ -10,14 +10,12 @@ use fallow_config::{
 use fallow_graph::graph::ModuleGraph;
 use fallow_types::discover::{DiscoveredFile, EntryPoint};
 use fallow_types::duplicates::{CloneGroup, CloneInstance, DuplicationReport};
-use fallow_types::results::{SecurityFinding, SecuritySeverity};
 use fallow_types::trace::PipelineTimings;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use std::path::{Path, PathBuf};
 
 use crate::{
     EngineResult,
-    changed_files::{ChangedFilesError, ChangedFilesSpawnHook},
     churn::{AuthorContribution, ChurnResult, ChurnSpawnHook, FileChurn, SinceDuration},
     cross_reference::{
         CombinedFinding as EngineCombinedFinding,
@@ -71,17 +69,6 @@ impl BackendAnalysisDiscovery {
     pub fn into_files(self) -> Vec<DiscoveredFile> {
         self.inner.into_files()
     }
-}
-
-pub fn config_for_project(
-    root: &Path,
-    config_path: Option<&Path>,
-) -> EngineResult<(ResolvedConfig, Option<PathBuf>)> {
-    fallow_core::config_for_project(root, config_path).map_err(engine_error)
-}
-
-pub fn resolve_cache_max_size_bytes(config: &ResolvedConfig) -> usize {
-    fallow_core::resolve_cache_max_size_bytes(config)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -293,20 +280,6 @@ pub fn dead_code_pipeline_profile(
     }
 }
 
-pub fn collect_file_hashes(
-    modules: &[ModuleInfo],
-    files: &[DiscoveredFile],
-) -> FxHashMap<PathBuf, u64> {
-    modules
-        .iter()
-        .filter_map(|module| {
-            files
-                .get(module.file_id.0 as usize)
-                .map(|file| (file.path.clone(), module.content_hash))
-        })
-        .collect()
-}
-
 impl From<ParseMetrics> for fallow_core::AnalysisParseMetrics {
     fn from(metrics: ParseMetrics) -> Self {
         Self {
@@ -317,13 +290,6 @@ impl From<ParseMetrics> for fallow_core::AnalysisParseMetrics {
             parse_cpu_ms: metrics.parse_cpu_ms,
         }
     }
-}
-
-pub fn filter_results_by_changed_files(
-    results: &mut AnalysisResults,
-    changed_files: &FxHashSet<PathBuf>,
-) {
-    fallow_core::changed_files::filter_results_by_changed_files(results, changed_files);
 }
 
 fn dead_code_kind(kind: fallow_core::cross_reference::DeadCodeKind) -> EngineDeadCodeKind {
@@ -430,71 +396,6 @@ pub fn trace_symbol_chain(
     query: fallow_types::trace_chain::SymbolChainQuery<'_>,
 ) -> Option<fallow_types::trace_chain::SymbolChainTrace> {
     fallow_core::trace_chain::trace_symbol_chain(graph, modules, root, query)
-}
-
-fn changed_files_error(error: fallow_core::changed_files::ChangedFilesError) -> ChangedFilesError {
-    match error {
-        fallow_core::changed_files::ChangedFilesError::InvalidRef(err) => {
-            ChangedFilesError::InvalidRef(err)
-        }
-        fallow_core::changed_files::ChangedFilesError::GitMissing(err) => {
-            ChangedFilesError::GitMissing(err)
-        }
-        fallow_core::changed_files::ChangedFilesError::NotARepository => {
-            ChangedFilesError::NotARepository
-        }
-        fallow_core::changed_files::ChangedFilesError::GitFailed(stderr) => {
-            ChangedFilesError::GitFailed(stderr)
-        }
-    }
-}
-
-pub fn set_changed_files_spawn_hook(hook: ChangedFilesSpawnHook) {
-    fallow_core::changed_files::set_spawn_hook(hook);
-}
-
-pub fn validate_git_ref(s: &str) -> Result<&str, String> {
-    fallow_core::changed_files::validate_git_ref(s)
-}
-
-pub fn resolve_git_toplevel(cwd: &Path) -> Result<PathBuf, ChangedFilesError> {
-    fallow_core::changed_files::resolve_git_toplevel(cwd).map_err(changed_files_error)
-}
-
-pub fn resolve_git_common_dir(cwd: &Path) -> Result<PathBuf, ChangedFilesError> {
-    fallow_core::changed_files::resolve_git_common_dir(cwd).map_err(changed_files_error)
-}
-
-pub fn try_get_changed_files(
-    root: &Path,
-    git_ref: &str,
-) -> Result<FxHashSet<PathBuf>, ChangedFilesError> {
-    fallow_core::changed_files::try_get_changed_files(root, git_ref).map_err(changed_files_error)
-}
-
-pub fn try_get_changed_files_with_toplevel(
-    cwd: &Path,
-    toplevel: &Path,
-    git_ref: &str,
-) -> Result<FxHashSet<PathBuf>, ChangedFilesError> {
-    fallow_core::changed_files::try_get_changed_files_with_toplevel(cwd, toplevel, git_ref)
-        .map_err(changed_files_error)
-}
-
-pub fn try_get_changed_diff(root: &Path, git_ref: &str) -> Result<String, ChangedFilesError> {
-    fallow_core::changed_files::try_get_changed_diff(root, git_ref).map_err(changed_files_error)
-}
-
-pub fn get_changed_files(root: &Path, git_ref: &str) -> Option<FxHashSet<PathBuf>> {
-    fallow_core::changed_files::get_changed_files(root, git_ref)
-}
-
-pub fn filter_duplication_by_changed_files(
-    report: &mut DuplicationReport,
-    changed_files: &FxHashSet<PathBuf>,
-    root: &Path,
-) {
-    fallow_core::changed_files::filter_duplication_by_changed_files(report, changed_files, root);
 }
 
 #[derive(Debug, Clone)]
@@ -714,23 +615,6 @@ pub fn analyze_churn_cached(
         .map(|(result, cache_hit)| (churn_result(result), cache_hit))
 }
 
-pub fn derive_security_severity(finding: &SecurityFinding) -> SecuritySeverity {
-    fallow_core::analyze::derive_security_severity(finding)
-}
-
-pub fn security_catalogue_title(kind: &str) -> Option<&'static str> {
-    fallow_core::analyze::security_catalogue_title(kind)
-}
-
-pub fn public_api_package_entry_points(
-    graph: &ModuleGraph,
-    config: &ResolvedConfig,
-    root_pkg: Option<&fallow_config::PackageJson>,
-    workspaces: &[fallow_config::WorkspaceInfo],
-) -> FxHashSet<fallow_types::discover::FileId> {
-    fallow_core::analyze::public_api_package_entry_points(graph, config, root_pkg, workspaces)
-}
-
 fn hidden_dir_scope(value: &fallow_core::discover::HiddenDirScope) -> HiddenDirScope {
     HiddenDirScope::new(value.root().to_path_buf(), value.dirs().to_vec())
 }
@@ -769,28 +653,12 @@ pub fn collect_hidden_dir_scopes(
         .collect()
 }
 
-pub fn discover_files(config: &ResolvedConfig) -> Vec<DiscoveredFile> {
-    fallow_core::discover::discover_files(config)
-}
-
 pub fn discover_files_and_config_candidates(
     config: &ResolvedConfig,
     additional_hidden_dir_scopes: &[HiddenDirScope],
 ) -> (Vec<DiscoveredFile>, Vec<PathBuf>) {
     let scopes = core_hidden_dir_scopes(additional_hidden_dir_scopes);
     fallow_core::discover::discover_files_and_config_candidates(config, &scopes)
-}
-
-pub fn discover_files_with_additional_hidden_dirs(
-    config: &ResolvedConfig,
-    additional_hidden_dir_scopes: &[HiddenDirScope],
-) -> Vec<DiscoveredFile> {
-    let scopes = core_hidden_dir_scopes(additional_hidden_dir_scopes);
-    fallow_core::discover::discover_files_with_additional_hidden_dirs(config, &scopes)
-}
-
-pub fn discover_files_with_plugin_scopes(config: &ResolvedConfig) -> Vec<DiscoveredFile> {
-    fallow_core::discover::discover_files_with_plugin_scopes(config)
 }
 
 pub fn discover_entry_points(config: &ResolvedConfig, files: &[DiscoveredFile]) -> Vec<EntryPoint> {

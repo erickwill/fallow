@@ -3,9 +3,10 @@
 ADR-008 makes `fallow-core` an internal implementation crate. Starting with
 2.76.0, the top-level `fallow_core::analyze*` entry points plus the
 detector helpers under `fallow_core::analyze::*` emit deprecation
-warnings. The publish cutoff is now tracked as part of the next
-breaking-compatible cleanup release so it can align with the `fallow-api`
-surface.
+warnings. `fallow-core` remains a published implementation dependency while
+`fallow-engine` still builds on it, but it is no longer the supported Rust
+embedder surface. Use the published `fallow-api` facade or the typed
+`fallow-engine` layer instead.
 
 Use the supported embedder API in `fallow_api`. New Rust consumers should call
 the typed `run_*` functions (`run_dead_code`, `run_duplication`,
@@ -22,7 +23,8 @@ typed `AnalysisResults`.
 
 | Deprecated `fallow_core` function | Replacement |
 | --- | --- |
-| `fallow_core::analyze`, `analyze_with_usages`, `analyze_with_trace`, `analyze_retaining_modules`, `analyze_with_parse_result`, `analyze_project` | `fallow_api::run_dead_code` for typed output before serialization, or `fallow_engine` for lower-level in-process analysis |
+| `fallow_core::analyze`, `analyze_with_usages`, `analyze_with_trace`, `analyze_retaining_modules` | `fallow_api::run_dead_code` for typed output before serialization, or `fallow_engine` for lower-level in-process analysis |
+| Removed top-level wrappers such as `analyze_with_parse_result` and `analyze_project` | Use `fallow_engine::AnalysisSession` internally, or `fallow_api` for supported programmatic surfaces |
 | `fallow_core::analyze::find_dead_code_full` | `fallow_api::run_dead_code` |
 | `find_unused_files` | `fallow_api::run_dead_code` |
 | `find_unused_exports` | `fallow_api::run_dead_code` |
