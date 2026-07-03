@@ -67,11 +67,13 @@ def main() -> int:
 
     if commits_via_git(commands):
         staged = git_lines(repo, ["diff", "--cached", "--name-only"])
-        if needs_vscode_dist(staged):
+        if needs_vscode_dist(repo, staged):
             deny(
-                "VS Code extension runtime files are staged without the committed dist bundle. "
-                "Run `pnpm --dir editors/vscode run build` and `pnpm --dir editors/vscode run check:dist`, "
-                "or set `SKIP_FALLOW_AGENT_GUARD=1` if this commit is intentionally source-only."
+                "VS Code extension runtime files are staged without the tracked dist bundle. "
+                "Run `pnpm --dir editors/vscode run build`, "
+                "`pnpm --dir editors/vscode run check:contracts`, and "
+                "`pnpm --dir editors/vscode run lint`, then stage the generated dist files. "
+                "Set `SKIP_FALLOW_AGENT_GUARD=1` only if this commit is intentionally source-only."
             )
 
     return 0
@@ -191,7 +193,7 @@ def git_lines(repo: Path, args: list[str]) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def needs_vscode_dist(paths: list[str]) -> bool:
+def needs_vscode_dist(repo: Path, paths: list[str]) -> bool:
     runtime = [
         path
         for path in paths
@@ -204,8 +206,20 @@ def needs_vscode_dist(paths: list[str]) -> bool:
     if not runtime:
         return False
 
-    dist = {"editors/vscode/dist/extension.js", "editors/vscode/dist/extension.js.map"}
-    return not dist.intersection(paths)
+    tracked_dist = set(
+        git_lines(
+            repo,
+            [
+                "ls-files",
+                "editors/vscode/dist/extension.js",
+                "editors/vscode/dist/extension.js.map",
+            ],
+        )
+    )
+    if not tracked_dist:
+        return False
+
+    return not tracked_dist.intersection(paths)
 
 
 def deny(reason: str) -> None:
