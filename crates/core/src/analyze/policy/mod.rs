@@ -23,14 +23,15 @@ struct CompiledRule<'a> {
     /// Parsed callee patterns (`banned-call` rules only).
     callee_patterns: Vec<CalleePattern>,
     effects: FxHashSet<EffectKind>,
+    zones: FxHashSet<String>,
     files: Vec<globset::GlobMatcher>,
     exclude: Vec<globset::GlobMatcher>,
 }
 
 impl CompiledRule<'_> {
     /// Whether this rule applies to a project-root-relative file path.
-    fn applies_to(&self, relative: &str) -> bool {
-        compiled_scope_applies(&self.files, &self.exclude, relative)
+    fn applies_to(&self, relative: &str, zone: Option<&str>) -> bool {
+        compiled_scope_applies(&self.files, &self.exclude, &self.zones, relative, zone)
     }
 
     /// Per-rule severity overriding the file's effective master severity.
@@ -67,31 +68,36 @@ impl CompiledRule<'_> {
     }
 }
 
-/// Return rule-pack rules whose include/exclude file scope applies to a path.
+/// Return rule-pack rules whose file and zone scope applies to a path.
 #[must_use]
 pub fn rules_applying_to_path<'a>(
     rule_packs: &'a [RulePackDef],
     boundaries: &ResolvedBoundaryConfig,
     rel_path: &str,
 ) -> Vec<(&'a str, &'a RulePackRule)> {
-    // Zone-scoped rule packs are a future extension; Phase 2 only mirrors
-    // current file include/exclude semantics.
-    let _ = boundaries;
+    let zone = boundaries.classify_zone(rel_path);
     rule_packs
         .iter()
         .flat_map(|pack| {
             pack.rules
                 .iter()
-                .filter(move |rule| raw_rule_scope_applies(rule, rel_path))
+                .filter(move |rule| raw_rule_scope_applies(rule, boundaries, rel_path, zone))
                 .map(|rule| (pack.name.as_str(), rule))
         })
         .collect()
 }
 
-fn raw_rule_scope_applies(rule: &RulePackRule, relative: &str) -> bool {
+fn raw_rule_scope_applies(
+    rule: &RulePackRule,
+    boundaries: &ResolvedBoundaryConfig,
+    relative: &str,
+    zone: Option<&str>,
+) -> bool {
     let files = compile_scope_globs(&rule.files);
     let exclude = compile_scope_globs(&rule.exclude);
-    compiled_scope_applies(&files, &exclude, relative)
+    let zones = rule.zones.iter().cloned().collect();
+    let zone = zone.or_else(|| boundaries.classify_zone(relative));
+    compiled_scope_applies(&files, &exclude, &zones, relative, zone)
 }
 
 fn compile_scope_globs(patterns: &[String]) -> Vec<globset::GlobMatcher> {
@@ -107,10 +113,13 @@ fn compile_scope_globs(patterns: &[String]) -> Vec<globset::GlobMatcher> {
 fn compiled_scope_applies(
     files: &[globset::GlobMatcher],
     exclude: &[globset::GlobMatcher],
+    zones: &FxHashSet<String>,
     relative: &str,
+    zone: Option<&str>,
 ) -> bool {
     (files.is_empty() || files.iter().any(|m| m.is_match(relative)))
         && !exclude.iter().any(|m| m.is_match(relative))
+        && (zones.is_empty() || zone.is_some_and(|zone| zones.contains(zone)))
 }
 
 /// Detect banned calls, imports, and catalogue-derived effects declared by the
@@ -163,13 +172,21 @@ pub fn find_policy_violations(
     // whose globs match nothing warns instead of silently reporting zero
     // findings forever (mirrors the boundary zero-zone warn).
     let mut scoped_file_counts: Vec<usize> = vec![0; rules.len()];
+    let mut zones_by_file: FxHashMap<FileId, Option<&str>> = FxHashMap::default();
 
     let mut violations = Vec::new();
     for node in &graph.modules {
+        let zone = *zones_by_file.entry(node.file_id).or_insert_with(|| {
+            node.path.strip_prefix(&config.root).ok().and_then(|path| {
+                let relative = path.to_string_lossy().replace('\\', "/");
+                config.boundaries.classify_zone(&relative)
+            })
+        });
         collect_node_policy_violations(&mut PolicyNodeInput {
             node,
             config,
             rules: &rules,
+            zone,
             modules_by_id: &modules_by_id,
             declared_deps,
             suppressions,
@@ -199,6 +216,7 @@ struct PolicyNodeInput<'a> {
     node: &'a crate::graph::ModuleNode,
     config: &'a ResolvedConfig,
     rules: &'a [CompiledRule<'a>],
+    zone: Option<&'a str>,
     modules_by_id: &'a FxHashMap<FileId, &'a ModuleInfo>,
     declared_deps: &'a FxHashSet<String>,
     suppressions: &'a SuppressionContext<'a>,
@@ -212,9 +230,13 @@ struct PolicyNodeInput<'a> {
 /// findings. Off-master and out-of-scope nodes are skipped.
 fn collect_node_policy_violations(input: &mut PolicyNodeInput<'_>) {
     let node = input.node;
-    let Some(scope) =
-        scoped_policy_rules(node, input.config, input.rules, input.scoped_file_counts)
-    else {
+    let Some(scope) = scoped_policy_rules(
+        node,
+        input.config,
+        input.rules,
+        input.zone,
+        input.scoped_file_counts,
+    ) else {
         return;
     };
 
@@ -223,6 +245,16 @@ fn collect_node_policy_violations(input: &mut PolicyNodeInput<'_>) {
     };
 
     collect_banned_imports(&mut PolicyCollectionInput {
+        in_scope: &scope.in_scope,
+        module,
+        node,
+        master: scope.master,
+        declared_deps: input.declared_deps,
+        suppressions: input.suppressions,
+        line_offsets_by_file: input.line_offsets_by_file,
+        violations: input.violations,
+    });
+    collect_banned_exports(&mut PolicyCollectionInput {
         in_scope: &scope.in_scope,
         module,
         node,
@@ -263,6 +295,7 @@ fn scoped_policy_rules<'a>(
     node: &crate::graph::ModuleNode,
     config: &ResolvedConfig,
     rules: &'a [CompiledRule<'a>],
+    zone: Option<&str>,
     scoped_file_counts: &mut [usize],
 ) -> Option<ScopedPolicyRules<'a>> {
     if !node.is_reachable() && !node.is_entry_point() {
@@ -281,7 +314,7 @@ fn scoped_policy_rules<'a>(
     let in_scope: Vec<(usize, &CompiledRule<'_>)> = rules
         .iter()
         .enumerate()
-        .filter(|(_, rule)| rule.applies_to(&relative))
+        .filter(|(_, rule)| rule.applies_to(&relative, zone))
         .collect();
     if in_scope.is_empty() {
         return None;
@@ -310,11 +343,13 @@ fn compile_rules(config: &ResolvedConfig) -> Vec<CompiledRule<'_>> {
                 .filter_map(|raw| CalleePattern::parse(raw))
                 .collect();
             let effects = rule.effects.iter().copied().collect();
+            let zones = rule.zones.iter().cloned().collect();
             rules.push(CompiledRule {
                 pack: pack.name.as_str(),
                 rule,
                 callee_patterns,
                 effects,
+                zones,
                 files: compile_scope_globs(&rule.files),
                 exclude: compile_scope_globs(&rule.exclude),
             });
@@ -436,6 +471,56 @@ fn push_banned_import_if_matched(
         severity,
         message: rule.rule.message.clone(),
     });
+}
+
+/// Emit one finding per `banned-export` rule match over the module's direct
+/// exports. Re-exports are intentionally handled by `banned-import`.
+fn collect_banned_exports(input: &mut PolicyCollectionInput<'_>) {
+    for (_, rule) in input.in_scope {
+        if rule.rule.kind != RulePackRuleKind::BannedExport {
+            continue;
+        }
+        let Some(severity) = wire_severity(rule.effective_severity(input.master)) else {
+            continue;
+        };
+        for export in &input.module.exports {
+            if rule.rule.ignore_type_only && export.is_type_only {
+                continue;
+            }
+            if !rule
+                .rule
+                .exports
+                .iter()
+                .any(|pattern| export_pattern_matches(&export.name, pattern))
+            {
+                continue;
+            }
+            let (line, col) = byte_offset_to_line_col(
+                input.line_offsets_by_file,
+                input.node.file_id,
+                export.span.start,
+            );
+            if input.suppressions.is_policy_suppressed(
+                input.node.file_id,
+                line,
+                rule.pack,
+                &rule.rule.id,
+            ) {
+                continue;
+            }
+            input.violations.push(PolicyViolation {
+                path: input.node.path.clone(),
+                line,
+                col,
+                pack: rule.pack.to_owned(),
+                rule_id: rule.rule.id.clone(),
+                kind: PolicyRuleKind::BannedExport,
+                matched: export.name.to_string(),
+                severity,
+                message: rule.rule.message.clone(),
+            });
+        }
+    }
 }
 
 fn collect_banned_effects(input: &mut PolicyCollectionInput<'_>) {
@@ -606,10 +691,22 @@ fn import_source_matches(source: &str, spec: &str) -> bool {
 /// `/` boundary, so `moment` covers `moment/locale/nl` but never
 /// `moment-timezone`.
 fn specifier_matches(raw: &str, pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return raw
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'));
+    }
     raw == pattern
         || raw
             .strip_prefix(pattern)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn export_pattern_matches(name: &fallow_types::extract::ExportName, pattern: &str) -> bool {
+    pattern.strip_suffix('*').map_or_else(
+        || name.matches_str(pattern),
+        |prefix| name.to_string().starts_with(prefix),
+    )
 }
 
 /// Map an effective config severity onto the wire enum. `Off` yields `None`

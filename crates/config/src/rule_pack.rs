@@ -5,8 +5,8 @@ use rustc_hash::FxHashSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::Severity;
 use crate::config::glob_validation::compile_user_glob;
+use crate::config::{BoundaryConfig, ResolvedBoundaryConfig, Severity};
 
 /// Supported rule-pack file extensions. TOML is intentionally not supported:
 /// JSON Schema autocomplete is the headline authoring feature and TOML
@@ -27,6 +27,8 @@ pub enum RulePackRuleKind {
     BannedImport,
     /// Ban call sites whose catalogue-derived effect matches one of `effects`.
     BannedEffect,
+    /// Ban exported names that match one of `exports`.
+    BannedExport,
 }
 
 /// Internal side-effect taxonomy derived from security catalogue rows.
@@ -73,8 +75,10 @@ impl EffectKind {
 ///
 /// `callees` applies only to `banned-call` rules; `specifiers` and
 /// `ignoreTypeOnly` apply only to `banned-import` rules; `effects` applies
-/// only to `banned-effect` rules. Setting a field on the wrong kind is a load
-/// error (fail loud, never silently ignore policy).
+/// only to `banned-effect` rules; `exports` applies only to `banned-export`
+/// rules. `zones` can scope any rule kind to files classified into one of the
+/// named boundary zones. Setting a field on the wrong kind is a load error
+/// (fail loud, never silently ignore policy).
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RulePackRule {
@@ -93,8 +97,10 @@ pub struct RulePackRule {
     pub callees: Vec<String>,
     /// Import specifiers to ban (`banned-import` only). Matched segment-aware
     /// against the RAW specifier: `moment` covers `moment` and
-    /// `moment/locale/nl` but not `moment-timezone`. Aliased or rewritten
-    /// specifiers (e.g. `npm:moment`) are not matched.
+    /// `moment/locale/nl` but not `moment-timezone`. A trailing `/*` form,
+    /// such as `@org/ui/*`, matches subpaths only (`@org/ui/internal`) and
+    /// not the package root (`@org/ui`). Aliased or rewritten specifiers
+    /// (e.g. `npm:moment`) are not matched.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub specifiers: Vec<String>,
     /// Effect classes to ban (`banned-effect` only). Effects are derived from
@@ -102,9 +108,16 @@ pub struct RulePackRule {
     /// call sites after import-resolution canonicalization.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectKind>,
+    /// Export names to ban (`banned-export` only). `"default"` matches the
+    /// default export; any other entry matches an exported name exactly; a
+    /// single trailing `*` makes it a prefix match (`internal*`). No other
+    /// glob syntax is supported. Re-exports are out of scope for this rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<String>,
     /// When `true`, type-only imports (`import type ...` and type-only
-    /// re-exports) are ignored by this `banned-import` rule. Defaults to
-    /// `false`: type-only imports are flagged too.
+    /// re-exports) are ignored by `banned-import`; type-only exports are
+    /// ignored by `banned-export`. Defaults to `false`: type-only sites are
+    /// flagged too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ignore_type_only: bool,
     /// Optional include globs (project-root-relative). Empty or absent means
@@ -114,6 +127,11 @@ pub struct RulePackRule {
     /// Optional exclude globs (project-root-relative), applied after `files`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    /// Optional boundary zones this rule applies to. Empty or absent means the
+    /// rule applies regardless of zone; non-empty values require matching
+    /// configured boundaries and combine with `files`/`exclude` as AND.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<String>,
     /// Author-provided message naming the sanctioned alternative. Rendered
     /// next to each finding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +258,81 @@ pub fn load_rule_packs(
     } else {
         Err(errors)
     }
+}
+
+/// Resolve boundaries in the same shape used by analysis, without loading
+/// rule packs or running discovery.
+#[must_use]
+pub fn resolve_boundaries_for_rule_pack_validation(
+    mut boundaries: BoundaryConfig,
+    root: &Path,
+) -> ResolvedBoundaryConfig {
+    if boundaries.preset.is_some() {
+        let source_root = crate::workspace::parse_tsconfig_root_dir(root)
+            .filter(|r| r != "." && !r.starts_with("..") && !Path::new(r).is_absolute())
+            .unwrap_or_else(|| "src".to_owned());
+        boundaries.expand(&source_root);
+    }
+    let logical_groups = boundaries.expand_auto_discover(root);
+    let mut resolved = boundaries.resolve();
+    resolved.logical_groups = logical_groups;
+    resolved
+}
+
+/// Validate that rule-pack `zones` references point at resolved boundary zones.
+#[must_use]
+pub fn validate_rule_pack_zone_references(
+    root: &Path,
+    pack_paths: &[String],
+    packs: &[RulePackDef],
+    boundaries: &ResolvedBoundaryConfig,
+) -> Vec<RulePackError> {
+    let configured_zones: FxHashSet<&str> = boundaries
+        .zones
+        .iter()
+        .map(|zone| zone.name.as_str())
+        .collect();
+    let configured_zone_list = if configured_zones.is_empty() {
+        "none".to_owned()
+    } else {
+        let mut zones: Vec<&str> = configured_zones.iter().copied().collect();
+        zones.sort_unstable();
+        zones.join(", ")
+    };
+
+    let mut errors = Vec::new();
+    for (pack_index, pack) in packs.iter().enumerate() {
+        let path = pack_paths
+            .get(pack_index)
+            .map_or_else(|| root.to_path_buf(), |path| root.join(path));
+        for rule in &pack.rules {
+            if rule.zones.is_empty() {
+                continue;
+            }
+            if configured_zones.is_empty() {
+                errors.push(RulePackError {
+                    path: path.clone(),
+                    message: format!(
+                        "rule '{}': `zones` requires configured boundary zones, but none are configured",
+                        rule.id
+                    ),
+                });
+                continue;
+            }
+            for zone in &rule.zones {
+                if !configured_zones.contains(zone.as_str()) {
+                    errors.push(RulePackError {
+                        path: path.clone(),
+                        message: format!(
+                            "rule '{}': unknown zone '{}' in `zones`; configured zones: {}",
+                            rule.id, zone, configured_zone_list
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    errors
 }
 
 /// Load, validate, and stage a single listed rule pack, collecting any failure.
@@ -384,6 +477,7 @@ fn validate_rule(rule: &RulePackRule, path: &Path, errors: &mut Vec<RulePackErro
         RulePackRuleKind::BannedCall => validate_banned_call_rule(rule, &err, errors),
         RulePackRuleKind::BannedImport => validate_banned_import_rule(rule, &err, errors),
         RulePackRuleKind::BannedEffect => validate_banned_effect_rule(rule, &err, errors),
+        RulePackRuleKind::BannedExport => validate_banned_export_rule(rule, &err, errors),
     }
 
     validate_rule_file_globs(rule, &err, errors);
@@ -408,6 +502,11 @@ fn validate_banned_call_rule(
     if !rule.effects.is_empty() {
         errors.push(err(
             "`effects` applies only to banned-effect rules".to_owned()
+        ));
+    }
+    if !rule.exports.is_empty() {
+        errors.push(err(
+            "`exports` applies only to banned-export rules".to_owned()
         ));
     }
     if rule.ignore_type_only {
@@ -441,14 +540,26 @@ fn validate_banned_import_rule(
             "`effects` applies only to banned-effect rules".to_owned()
         ));
     }
+    if !rule.exports.is_empty() {
+        errors.push(err(
+            "`exports` applies only to banned-export rules".to_owned()
+        ));
+    }
     for specifier in &rule.specifiers {
         if specifier.trim().is_empty() {
             errors.push(err("specifier must not be empty".to_owned()));
+        } else if let Some(prefix) = specifier.strip_suffix("/*") {
+            if prefix.is_empty() || prefix.contains('*') {
+                errors.push(err(format!(
+                    "specifier `{specifier}` contains `*`; specifier matching is segment-aware, \
+                     not glob. Only a single trailing `/*` deep-import form is allowed"
+                )));
+            }
         } else if specifier.contains('*') {
             errors.push(err(format!(
                 "specifier `{specifier}` contains `*`; specifier matching is \
                  segment-aware, not glob. List the package or path prefix; subpaths are \
-                 covered automatically"
+                 covered automatically, or use a single trailing `/*` to match subpaths only"
             )));
         }
     }
@@ -473,10 +584,56 @@ fn validate_banned_effect_rule(
             "`specifiers` applies only to banned-import rules".to_owned()
         ));
     }
+    if !rule.exports.is_empty() {
+        errors.push(err(
+            "`exports` applies only to banned-export rules".to_owned()
+        ));
+    }
     if rule.ignore_type_only {
         errors.push(err(
-            "`ignoreTypeOnly` applies only to banned-import rules".to_owned()
+            "`ignoreTypeOnly` applies only to banned-import and banned-export rules".to_owned(),
         ));
+    }
+}
+
+/// Validate a `banned-export` rule's required and cross-kind fields.
+fn validate_banned_export_rule(
+    rule: &RulePackRule,
+    err: &impl Fn(String) -> RulePackError,
+    errors: &mut Vec<RulePackError>,
+) {
+    if rule.exports.is_empty() {
+        errors.push(err(
+            "banned-export rules must list at least one `exports` entry".to_owned(),
+        ));
+    }
+    if !rule.callees.is_empty() {
+        errors.push(err("`callees` applies only to banned-call rules".to_owned()));
+    }
+    if !rule.specifiers.is_empty() {
+        errors.push(err(
+            "`specifiers` applies only to banned-import rules".to_owned()
+        ));
+    }
+    if !rule.effects.is_empty() {
+        errors.push(err(
+            "`effects` applies only to banned-effect rules".to_owned()
+        ));
+    }
+    for export in &rule.exports {
+        if export.trim().is_empty() {
+            errors.push(err("export pattern must not be empty".to_owned()));
+        } else if let Some(stripped) = export.strip_suffix('*') {
+            if stripped.is_empty() || stripped.contains('*') {
+                errors.push(err(format!(
+                    "export pattern `{export}` may only use a single trailing `*` after a prefix"
+                )));
+            }
+        } else if export.contains('*') {
+            errors.push(err(format!(
+                "export pattern `{export}` may only use `*` as a single trailing prefix wildcard"
+            )));
+        }
     }
 }
 
@@ -593,6 +750,76 @@ mod tests {
     }
 
     #[test]
+    fn parses_zone_scoped_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "domain-network", "kind": "banned-effect",
+                  "effects": ["network"], "zones": ["domain"] }
+            ] }"#,
+        );
+        let packs = load_rule_packs(dir.path(), &[path]).unwrap();
+        assert_eq!(packs[0].rules[0].zones, vec!["domain"]);
+    }
+
+    #[test]
+    fn validates_rule_pack_zones_against_resolved_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "domain-network", "kind": "banned-effect",
+                  "effects": ["network"], "zones": ["unknown"] }
+            ] }"#,
+        );
+        let packs = load_rule_packs(dir.path(), std::slice::from_ref(&path)).unwrap();
+        let boundaries = BoundaryConfig {
+            zones: vec![crate::config::BoundaryZone {
+                name: "domain".to_owned(),
+                patterns: vec!["src/domain/**".to_owned()],
+                auto_discover: Vec::new(),
+                root: None,
+            }],
+            ..BoundaryConfig::default()
+        }
+        .resolve();
+
+        let errors = validate_rule_pack_zone_references(dir.path(), &[path], &packs, &boundaries);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("unknown zone 'unknown'"));
+        assert!(errors[0].message.contains("configured zones: domain"));
+    }
+
+    #[test]
+    fn rejects_rule_pack_zones_when_boundaries_are_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "domain-network", "kind": "banned-effect",
+                  "effects": ["network"], "zones": ["domain"] }
+            ] }"#,
+        );
+        let packs = load_rule_packs(dir.path(), std::slice::from_ref(&path)).unwrap();
+        let errors = validate_rule_pack_zone_references(
+            dir.path(),
+            &[path],
+            &packs,
+            &ResolvedBoundaryConfig::default(),
+        );
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .message
+                .contains("`zones` requires configured boundary zones")
+        );
+    }
+
+    #[test]
     fn rejects_unsupported_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_pack(
@@ -625,6 +852,7 @@ mod tests {
         assert!(errors[0].message.contains("banned-effect"));
         assert!(errors[0].message.contains("banned-call"));
         assert!(errors[0].message.contains("banned-import"));
+        assert!(errors[0].message.contains("banned-export"));
     }
 
     #[test]
@@ -733,11 +961,15 @@ mod tests {
             "policy.json",
             r#"{ "version": 1, "name": "p", "rules": [
                 { "id": "a", "kind": "banned-call", "callees": ["fetch"],
-                  "specifiers": ["moment"], "effects": ["network"], "ignoreTypeOnly": true },
+                  "specifiers": ["moment"], "effects": ["network"], "exports": ["default"],
+                  "ignoreTypeOnly": true },
                 { "id": "b", "kind": "banned-import", "specifiers": ["moment"],
-                  "callees": ["fetch"], "effects": ["network"] },
+                  "callees": ["fetch"], "effects": ["network"], "exports": ["default"] },
                 { "id": "c", "kind": "banned-effect", "effects": ["network"],
-                  "callees": ["fetch"], "specifiers": ["moment"], "ignoreTypeOnly": true }
+                  "callees": ["fetch"], "specifiers": ["moment"], "exports": ["default"],
+                  "ignoreTypeOnly": true },
+                { "id": "d", "kind": "banned-export", "exports": ["default"],
+                  "callees": ["fetch"], "specifiers": ["moment"], "effects": ["network"] }
             ] }"#,
         );
         let errors = load_rule_packs(dir.path(), &[path]).unwrap_err();
@@ -747,9 +979,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("`specifiers` applies only to banned-import"));
-        assert!(joined.contains("`ignoreTypeOnly` applies only to banned-import"));
+        assert!(
+            joined.contains("`ignoreTypeOnly` applies only to banned-import and banned-export")
+        );
         assert!(joined.contains("`callees` applies only to banned-call"));
         assert!(joined.contains("`effects` applies only to banned-effect"));
+        assert!(joined.contains("`exports` applies only to banned-export"));
     }
 
     #[test]
@@ -761,7 +996,8 @@ mod tests {
             r#"{ "version": 1, "name": "p", "rules": [
                 { "id": "a", "kind": "banned-call" },
                 { "id": "b", "kind": "banned-import" },
-                { "id": "c", "kind": "banned-effect" }
+                { "id": "c", "kind": "banned-effect" },
+                { "id": "d", "kind": "banned-export" }
             ] }"#,
         );
         let errors = load_rule_packs(dir.path(), &[path]).unwrap_err();
@@ -773,6 +1009,46 @@ mod tests {
         assert!(joined.contains("must list at least one `callees` pattern"));
         assert!(joined.contains("must list at least one `specifiers` entry"));
         assert!(joined.contains("must list at least one `effects` entry"));
+        assert!(joined.contains("must list at least one `exports` entry"));
+    }
+
+    #[test]
+    fn loads_banned_export_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "no-default", "kind": "banned-export",
+                  "exports": ["default", "internal*"], "ignoreTypeOnly": true }
+            ] }"#,
+        );
+        let packs = load_rule_packs(dir.path(), &[path]).unwrap();
+        assert_eq!(packs[0].rules[0].kind, RulePackRuleKind::BannedExport);
+        assert_eq!(packs[0].rules[0].exports, vec!["default", "internal*"]);
+        assert!(packs[0].rules[0].ignore_type_only);
+    }
+
+    #[test]
+    fn rejects_invalid_banned_export_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "bad", "kind": "banned-export",
+                  "exports": ["", "*", "a*b"] }
+            ] }"#,
+        );
+        let errors = load_rule_packs(dir.path(), &[path]).unwrap_err();
+        let joined = errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("export pattern must not be empty"));
+        assert!(joined.contains("may only use a single trailing `*` after a prefix"));
+        assert!(joined.contains("may only use `*` as a single trailing prefix wildcard"));
     }
 
     #[test]
@@ -802,6 +1078,36 @@ mod tests {
         );
         let errors = load_rule_packs(dir.path(), &[path]).unwrap_err();
         assert!(errors[0].message.contains("segment-aware, not glob"));
+    }
+
+    #[test]
+    fn accepts_trailing_star_deep_import_specifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "no-ui-deep-imports", "kind": "banned-import",
+                  "specifiers": ["@org/ui/*"] }
+            ] }"#,
+        );
+        let packs = load_rule_packs(dir.path(), &[path]).unwrap();
+        assert_eq!(packs[0].rules[0].specifiers, vec!["@org/ui/*"]);
+    }
+
+    #[test]
+    fn rejects_non_trailing_star_import_specifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_pack(
+            dir.path(),
+            "policy.json",
+            r#"{ "version": 1, "name": "p", "rules": [
+                { "id": "bad-deep-imports", "kind": "banned-import",
+                  "specifiers": ["@org/*/x"] }
+            ] }"#,
+        );
+        let errors = load_rule_packs(dir.path(), &[path]).unwrap_err();
+        assert!(errors[0].message.contains("single trailing `/*`"));
     }
 
     #[test]
