@@ -15,6 +15,14 @@ Fast PR shards:
   session reuse, warm parse-cache, and health-cache paths.
 - `fallow-benchmarks/representative_sources`: focused source-shape extraction
   probes.
+- `fallow-benchmarks/component_config`: config loading, resolution, workspace
+  discovery, and workspace diagnostics.
+- `fallow-benchmarks/component_engine`: typed engine session loading, parser
+  reuse, and project-analysis artifacts.
+- `fallow-benchmarks/component_graph`: project-state file, stable-key, and
+  workspace lookup operations.
+- `fallow-benchmarks/component_output`: output envelope serialization and CI
+  comment rendering.
 
 Full main/manual shards:
 
@@ -30,6 +38,7 @@ Use the smallest shard that matches the path being measured:
 
 - Add stable API/session/cache coverage to `programmatic_stable`.
 - Add source-shape extraction probes to `representative_sources`.
+- Add architecture-layer probes to the matching `component_*` shard.
 - Add broad parser, graph, cache, or duplication probes to `analysis`.
 - Add large synthetic or high-variance probes only to full shards.
 

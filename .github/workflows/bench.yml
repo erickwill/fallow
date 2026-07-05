@@ -74,6 +74,22 @@ jobs:
             cache_key: representative-sources
             package: fallow-benchmarks
             bench: representative_sources
+          - label: config component
+            cache_key: component-config
+            package: fallow-benchmarks
+            bench: component_config
+          - label: engine component
+            cache_key: component-engine
+            package: fallow-benchmarks
+            bench: component_engine
+          - label: graph component
+            cache_key: component-graph
+            package: fallow-benchmarks
+            bench: component_graph
+          - label: output component
+            cache_key: component-output
+            package: fallow-benchmarks
+            bench: component_output
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

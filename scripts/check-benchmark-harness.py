@@ -27,6 +27,19 @@ NOISY_FAST_TARGETS = {
     ("fallow-core", "scaling_analysis"),
     ("fallow-core", "large_analysis"),
 }
+REQUIRED_FAST_TARGETS = {
+    ("fallow-core", "analysis"),
+    ("fallow-benchmarks", "programmatic_stable"),
+    ("fallow-benchmarks", "representative_sources"),
+    ("fallow-benchmarks", "component_config"),
+    ("fallow-benchmarks", "component_engine"),
+    ("fallow-benchmarks", "component_graph"),
+    ("fallow-benchmarks", "component_output"),
+}
+REQUIRED_FULL_TARGETS = {
+    ("fallow-core", "scaling_analysis"),
+    ("fallow-core", "large_analysis"),
+}
 
 
 @dataclass(frozen=True)
@@ -190,6 +203,21 @@ def validate_targets(targets: list[BenchTarget]) -> list[str]:
     return errors
 
 
+def validate_required_targets(targets: list[BenchTarget]) -> list[str]:
+    fast_targets = {
+        (target.package, target.bench) for target in targets if target.job == FAST_JOB
+    }
+    full_targets = {
+        (target.package, target.bench) for target in targets if target.job == FULL_JOB
+    }
+    errors = []
+    for package, bench in sorted(REQUIRED_FAST_TARGETS - fast_targets):
+        errors.append(f"missing fast CodSpeed target: {package}/{bench}")
+    for package, bench in sorted(REQUIRED_FULL_TARGETS - full_targets):
+        errors.append(f"missing full CodSpeed target: {package}/{bench}")
+    return errors
+
+
 def validate_unique_names() -> list[str]:
     by_name: dict[str, list[Path]] = {}
     for path in sorted((REPO_ROOT / "crates").glob("*/benches/*.rs")):
@@ -215,6 +243,7 @@ def main() -> int:
     errors = []
     errors.extend(assert_codspeed_action_modes(text))
     errors.extend(validate_targets(targets))
+    errors.extend(validate_required_targets(targets))
     errors.extend(validate_unique_names())
 
     if not any(target.job == FAST_JOB for target in targets):

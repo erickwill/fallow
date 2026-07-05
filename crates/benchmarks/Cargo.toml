@@ -21,11 +21,33 @@ harness = false
 name = "representative_sources"
 harness = false
 
+[[bench]]
+name = "component_config"
+harness = false
+
+[[bench]]
+name = "component_engine"
+harness = false
+
+[[bench]]
+name = "component_graph"
+harness = false
+
+[[bench]]
+name = "component_output"
+harness = false
+
 [dev-dependencies]
 criterion2 = { workspace = true }
 fallow-api = { workspace = true }
+fallow-config = { workspace = true }
 fallow-core = { workspace = true }
+fallow-engine = { workspace = true }
+fallow-graph = { workspace = true }
+fallow-output = { workspace = true }
 fallow-types = { workspace = true }
+globset = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
