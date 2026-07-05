@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fallow_config::{OutputFormat, WorkspaceInfo};
-use globset::Glob;
-use rustc_hash::FxHashSet;
+use fallow_config::OutputFormat;
+use fallow_engine::workspace_scope::{WorkspaceScopeError, WorkspaceScopeMode};
 
 use crate::error::emit_error;
 
@@ -21,223 +20,8 @@ pub fn filter_to_workspaces(
     fallow_engine::dead_code::filter_to_workspaces(results, ws_roots);
 }
 
-/// Resolve `--workspace <patterns...>` to a set of workspace roots, or exit with
-/// an error.
-///
-/// Patterns support three forms:
-/// - Exact package name (`web`) or relative workspace path (`apps/web`)
-/// - Glob (`apps/*`, `@scope/*`), matched against BOTH `ws.name` AND the path
-///   relative to the repo root; either match counts
-/// - Negation (`!apps/legacy`), excludes matching workspaces from the result
-///
-/// Combination rules (gitignore-style):
-/// - Only positive patterns: include matches
-/// - Only negative patterns: include all workspaces then remove matches
-/// - Mixed: start from union of positive matches, then remove negative matches
-///
-/// Reserved prefixes for future pnpm-style graph selectors: `^`, `+`, `...`
-/// (not yet implemented; reject or repurpose only after panel review).
-pub fn resolve_workspace_filters(
-    root: &Path,
-    patterns: &[String],
-    output: OutputFormat,
-) -> Result<Vec<PathBuf>, ExitCode> {
-    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
-    if workspaces.is_empty() {
-        let joined = patterns
-            .iter()
-            .map(|p| format!("'{p}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let msg = format!(
-            "--workspace {joined} specified but no workspaces found. \
-             Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, \
-             or tsconfig.json has \"references\"."
-        );
-        return Err(emit_error(&msg, 2, output));
-    }
-
-    let rel_paths: Vec<String> = workspaces
-        .iter()
-        .map(|ws| relative_workspace_path(&ws.root, root))
-        .collect();
-
-    let (positive, negative) = split_patterns(patterns);
-
-    let mut matched = match_positive_patterns(&positive, &workspaces, &rel_paths, output)?;
-
-    for pat in &negative {
-        let hits = find_matches(pat, &workspaces, &rel_paths, output)?;
-        for idx in hits {
-            matched.remove(&idx);
-        }
-    }
-
-    if matched.is_empty() {
-        return Err(error_all_excluded(&positive, &negative, output));
-    }
-
-    let mut roots: Vec<PathBuf> = matched
-        .into_iter()
-        .map(|i| workspaces[i].root.clone())
-        .collect();
-    roots.sort();
-    Ok(roots)
-}
-
-/// Resolve the positive `--workspace` patterns to a set of workspace indices.
-/// An empty positive set matches every workspace. Errors (exit 2) if any
-/// pattern matched nothing.
-fn match_positive_patterns(
-    positive: &[&str],
-    workspaces: &[WorkspaceInfo],
-    rel_paths: &[String],
-    output: OutputFormat,
-) -> Result<FxHashSet<usize>, ExitCode> {
-    let mut matched: FxHashSet<usize> = FxHashSet::default();
-    let mut unmatched: Vec<String> = Vec::new();
-
-    if positive.is_empty() {
-        matched.extend(0..workspaces.len());
-    } else {
-        for pat in positive {
-            let hits = find_matches(pat, workspaces, rel_paths, output)?;
-            if hits.is_empty() {
-                unmatched.push((*pat).to_string());
-            }
-            matched.extend(hits);
-        }
-    }
-
-    if !unmatched.is_empty() {
-        let quoted: Vec<String> = unmatched.iter().map(|p| format!("'{p}'")).collect();
-        let available = format_available_workspaces(workspaces);
-        let msg = format!(
-            "--workspace: no workspaces matched pattern{}: {}. Available: {available}",
-            if unmatched.len() == 1 { "" } else { "s" },
-            quoted.join(", "),
-        );
-        return Err(emit_error(&msg, 2, output));
-    }
-
-    Ok(matched)
-}
-
-/// Build the exit-2 error for when every workspace was removed by negation,
-/// describing both the included and excluded patterns.
-fn error_all_excluded(positive: &[&str], negative: &[&str], output: OutputFormat) -> ExitCode {
-    let include_desc = if positive.is_empty() {
-        "<all>".to_owned()
-    } else {
-        positive
-            .iter()
-            .map(|p| format!("'{p}'"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let exclude_desc = negative
-        .iter()
-        .map(|p| format!("'{p}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let msg = format!(
-        "--workspace: all workspaces were excluded by the filter. \
-         Included: {include_desc}. Excluded: {exclude_desc}."
-    );
-    emit_error(&msg, 2, output)
-}
-
-/// Format the workspace list for inclusion in error messages. Caps the
-/// displayed names so large monorepos (30+ workspaces) don't produce an
-/// unreadable wall of text.
-fn format_available_workspaces(workspaces: &[WorkspaceInfo]) -> String {
-    const MAX_SHOWN: usize = 10;
-    let total = workspaces.len();
-    if total <= MAX_SHOWN {
-        return workspaces
-            .iter()
-            .map(|ws| ws.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
-    let shown: Vec<&str> = workspaces
-        .iter()
-        .take(MAX_SHOWN)
-        .map(|ws| ws.name.as_str())
-        .collect();
-    format!(
-        "{shown_list}, ... and {remaining} more ({total} total)",
-        shown_list = shown.join(", "),
-        remaining = total - MAX_SHOWN,
-    )
-}
-
-/// Compute the workspace path relative to the repo root, normalized to forward
-/// slashes so glob patterns written with `/` work on Windows.
-fn relative_workspace_path(ws_root: &Path, root: &Path) -> String {
-    ws_root
-        .strip_prefix(root)
-        .unwrap_or(ws_root)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-/// Split comma-separated patterns into (positive, negative). Whitespace-trimmed;
-/// empty entries ignored; leading `!` marks negation.
-fn split_patterns(patterns: &[String]) -> (Vec<&str>, Vec<&str>) {
-    let mut positive = Vec::new();
-    let mut negative = Vec::new();
-    for raw in patterns {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(neg) = trimmed.strip_prefix('!') {
-            let neg = neg.trim();
-            if !neg.is_empty() {
-                negative.push(neg);
-            }
-        } else {
-            positive.push(trimmed);
-        }
-    }
-    (positive, negative)
-}
-
-/// Find workspace indices matching `pattern`. Exact-name and exact-relative-path
-/// matches short-circuit before globbing, so literal names containing glob
-/// metacharacters (e.g. `web-[staging]`) still work.
-fn find_matches(
-    pattern: &str,
-    workspaces: &[WorkspaceInfo],
-    rel_paths: &[String],
-    output: OutputFormat,
-) -> Result<Vec<usize>, ExitCode> {
-    if let Some(idx) = workspaces.iter().position(|ws| ws.name == pattern) {
-        return Ok(vec![idx]);
-    }
-    if let Some(idx) = rel_paths.iter().position(|p| p == pattern) {
-        return Ok(vec![idx]);
-    }
-
-    let glob = Glob::new(pattern).map_err(|e| {
-        let msg = format!("--workspace: invalid pattern '{pattern}': {e}");
-        emit_error(&msg, 2, output)
-    })?;
-    let matcher = glob.compile_matcher();
-
-    let mut hits = Vec::new();
-    for (idx, ws) in workspaces.iter().enumerate() {
-        if matcher.is_match(&ws.name) || matcher.is_match(&rel_paths[idx]) {
-            hits.push(idx);
-        }
-    }
-    Ok(hits)
-}
-
 pub use fallow_engine::changed_files::{
     filter_results_by_changed_files as filter_changed_files, get_changed_files,
-    try_get_changed_files,
 };
 
 /// Drop findings whose source line is not inside an added hunk of the
@@ -507,68 +291,6 @@ pub fn retain_gate_new(
         .retain(|d| line_in_diff(&d.path, d.line));
 }
 
-/// Given a list of discovered workspaces and a set of changed file paths,
-/// return the indices of workspaces that contain any changed file.
-///
-/// Pure function, intentionally independent of git / filesystem so the mapping
-/// logic can be exercised without a repo. Files outside any workspace (e.g.
-/// root-level `package.json`, lockfiles, CI configs) are ignored; they map to
-/// zero workspaces, and the caller decides what to do with an empty result.
-fn workspaces_containing_any(
-    workspaces: &[WorkspaceInfo],
-    changed_files: &FxHashSet<std::path::PathBuf>,
-) -> Vec<usize> {
-    let mut hits: Vec<usize> = Vec::new();
-    for (idx, ws) in workspaces.iter().enumerate() {
-        if changed_files.iter().any(|f| f.starts_with(&ws.root)) {
-            hits.push(idx);
-        }
-    }
-    hits
-}
-
-/// Resolve `--changed-workspaces <REF>` to a set of workspace roots containing
-/// files changed since `git_ref`.
-///
-/// Unlike `--changed-since`, which silently falls back to full-scope analysis
-/// if git fails, this resolver treats any git failure as a hard error: the
-/// flag's entire purpose is to narrow CI scope, so silently widening back to
-/// the whole monorepo would defeat the optimization and surprise the user.
-///
-/// Returns `Ok(vec![])` when git succeeded but no tracked workspace files
-/// changed (normal CI outcome: a root-only lockfile bump, for example).
-pub fn resolve_changed_workspaces(
-    root: &Path,
-    git_ref: &str,
-    output: OutputFormat,
-) -> Result<Vec<PathBuf>, ExitCode> {
-    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
-    if workspaces.is_empty() {
-        let msg = format!(
-            "--changed-workspaces '{git_ref}' specified but no workspaces found. \
-             Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, \
-             or tsconfig.json has \"references\"."
-        );
-        return Err(emit_error(&msg, 2, output));
-    }
-
-    let changed_files = try_get_changed_files(root, git_ref).map_err(|err| {
-        let msg = format!(
-            "--changed-workspaces failed for ref '{git_ref}': {}",
-            err.describe()
-        );
-        emit_error(&msg, 2, output)
-    })?;
-
-    let hits = workspaces_containing_any(&workspaces, &changed_files);
-    let mut roots: Vec<PathBuf> = hits
-        .into_iter()
-        .map(|i| workspaces[i].root.clone())
-        .collect();
-    roots.sort();
-    Ok(roots)
-}
-
 /// Resolve whichever workspace scoping flag the user passed. Returns `None`
 /// when neither `--workspace` nor `--changed-workspaces` is set, so callers
 /// can leave analysis at full scope.
@@ -581,17 +303,72 @@ pub fn resolve_workspace_scope(
     changed_workspaces: Option<&str>,
     output: OutputFormat,
 ) -> Result<Option<Vec<PathBuf>>, ExitCode> {
-    match (workspace, changed_workspaces) {
-        (Some(patterns), None) => Ok(Some(resolve_workspace_filters(root, patterns, output)?)),
-        (None, Some(git_ref)) => Ok(Some(resolve_changed_workspaces(root, git_ref, output)?)),
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => {
-            let msg = "--workspace and --changed-workspaces are mutually exclusive. \
-                 Pick one: --workspace for explicit package names/globs, \
-                 --changed-workspaces for git-derived monorepo CI scoping.";
-            Err(emit_error(msg, 2, output))
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
+    fallow_engine::workspace_scope::resolve_workspace_scope_roots(
+        root,
+        workspace,
+        changed_workspaces,
+        &workspaces,
+    )
+    .map_err(|err| emit_workspace_scope_error(err, output))
+}
+
+fn emit_workspace_scope_error(err: WorkspaceScopeError, output: OutputFormat) -> ExitCode {
+    let msg = match err {
+        WorkspaceScopeError::NoWorkspaces {
+            mode,
+            patterns,
+            git_ref,
+        } => no_workspaces_message(mode, &patterns, git_ref.as_deref()),
+        WorkspaceScopeError::InvalidPattern { pattern, message } => {
+            format!("--workspace: invalid pattern '{pattern}': {message}")
+        }
+        WorkspaceScopeError::UnmatchedPatterns {
+            patterns,
+            available,
+        } => format!(
+            "--workspace: no workspaces matched pattern{}: {}. Available: {available}",
+            if patterns.len() == 1 { "" } else { "s" },
+            quote_owned_patterns(&patterns),
+        ),
+        WorkspaceScopeError::EmptyAfterExclusions { included, excluded } => format!(
+            "--workspace: all workspaces were excluded by the filter. Included: {included}. Excluded: {excluded}."
+        ),
+        WorkspaceScopeError::ChangedWorkspacesFailed { git_ref, message } => {
+            format!("--changed-workspaces failed for ref '{git_ref}': {message}")
+        }
+        WorkspaceScopeError::MutuallyExclusive => {
+            "--workspace and --changed-workspaces are mutually exclusive. Pick one: --workspace for explicit package names/globs, --changed-workspaces for git-derived monorepo CI scoping.".to_owned()
+        }
+    };
+    emit_error(&msg, 2, output)
+}
+
+fn no_workspaces_message(
+    mode: WorkspaceScopeMode,
+    patterns: &[String],
+    git_ref: Option<&str>,
+) -> String {
+    match mode {
+        WorkspaceScopeMode::Workspace => format!(
+            "--workspace {} specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\".",
+            quote_owned_patterns(patterns)
+        ),
+        WorkspaceScopeMode::ChangedWorkspaces => {
+            let git_ref = git_ref.unwrap_or_default();
+            format!(
+                "--changed-workspaces '{git_ref}' specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\"."
+            )
         }
     }
+}
+
+fn quote_owned_patterns(patterns: &[String]) -> String {
+    patterns
+        .iter()
+        .map(|pattern| format!("'{pattern}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -1622,110 +1399,6 @@ mod tests {
         assert_eq!(results.unresolved_imports[0].import.specifier, "./missing");
     }
 
-    fn ws(name: &str, rel: &str) -> fallow_config::WorkspaceInfo {
-        fallow_config::WorkspaceInfo {
-            root: PathBuf::from("/project").join(rel),
-            name: name.to_owned(),
-            is_internal_dependency: false,
-        }
-    }
-
-    fn rel(workspaces: &[fallow_config::WorkspaceInfo]) -> Vec<String> {
-        workspaces
-            .iter()
-            .map(|w| relative_workspace_path(&w.root, Path::new("/project")))
-            .collect()
-    }
-
-    #[test]
-    fn split_patterns_separates_positive_and_negative() {
-        let input = vec![
-            "web".to_owned(),
-            "apps/*".to_owned(),
-            "!apps/legacy".to_owned(),
-            "  ".to_owned(),
-            String::new(),
-            "!  ".to_owned(),
-        ];
-        let (pos, neg) = split_patterns(&input);
-        assert_eq!(pos, vec!["web", "apps/*"]);
-        assert_eq!(neg, vec!["apps/legacy"]);
-    }
-
-    #[test]
-    fn find_matches_exact_name_short_circuits_glob_metachars() {
-        let workspaces = vec![ws("web-[staging]", "apps/web-staging")];
-        let rels = rel(&workspaces);
-        let hits = find_matches(
-            "web-[staging]",
-            &workspaces,
-            &rels,
-            fallow_config::OutputFormat::Human,
-        )
-        .unwrap();
-        assert_eq!(hits, vec![0]);
-    }
-
-    #[test]
-    fn find_matches_glob_against_name_and_path() {
-        let workspaces = vec![
-            ws("@scope/ui", "packages/ui"),
-            ws("admin", "apps/admin"),
-            ws("web", "apps/web"),
-        ];
-        let rels = rel(&workspaces);
-
-        let hits = find_matches(
-            "@scope/*",
-            &workspaces,
-            &rels,
-            fallow_config::OutputFormat::Human,
-        )
-        .unwrap();
-        assert_eq!(hits, vec![0]);
-
-        let hits = find_matches(
-            "apps/*",
-            &workspaces,
-            &rels,
-            fallow_config::OutputFormat::Human,
-        )
-        .unwrap();
-        assert_eq!(hits, vec![1, 2]);
-    }
-
-    #[test]
-    fn find_matches_invalid_glob_after_no_literal_match_errors() {
-        let workspaces = vec![ws("web", "apps/web")];
-        let rels = rel(&workspaces);
-        assert!(
-            find_matches(
-                "web-[bad",
-                &workspaces,
-                &rels,
-                fallow_config::OutputFormat::Human,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn format_available_workspaces_truncates_when_above_cap() {
-        let workspaces: Vec<WorkspaceInfo> = (0..15)
-            .map(|i| ws(&format!("pkg-{i}"), &format!("packages/pkg-{i}")))
-            .collect();
-        let rendered = format_available_workspaces(&workspaces);
-        assert!(rendered.starts_with("pkg-0, pkg-1,"));
-        assert!(rendered.contains("and 5 more"));
-        assert!(rendered.contains("15 total"));
-    }
-
-    #[test]
-    fn format_available_workspaces_does_not_truncate_below_cap() {
-        let workspaces = vec![ws("a", "packages/a"), ws("b", "packages/b")];
-        assert_eq!(format_available_workspaces(&workspaces), "a, b");
-    }
-
     #[test]
     fn filter_to_workspaces_unions_multiple_roots() {
         let mut results = AnalysisResults::default();
@@ -1812,55 +1485,6 @@ mod tests {
             }));
         filter_to_workspaces(&mut results, &[]);
         assert_eq!(results.unused_files.len(), 0);
-    }
-
-    #[test]
-    fn workspaces_containing_any_returns_only_hits() {
-        let workspaces = vec![
-            ws("ui", "packages/ui"),
-            ws("api", "packages/api"),
-            ws("legacy", "packages/legacy"),
-        ];
-        let mut changed = FxHashSet::default();
-        changed.insert(PathBuf::from("/project/packages/ui/src/a.ts"));
-        changed.insert(PathBuf::from("/project/packages/api/src/b.ts"));
-
-        let hits = workspaces_containing_any(&workspaces, &changed);
-        assert_eq!(hits, vec![0, 1]);
-    }
-
-    #[test]
-    fn workspaces_containing_any_ignores_root_only_changes() {
-        let workspaces = vec![ws("ui", "packages/ui"), ws("api", "packages/api")];
-        let mut changed = FxHashSet::default();
-        changed.insert(PathBuf::from("/project/package.json"));
-        changed.insert(PathBuf::from("/project/pnpm-lock.yaml"));
-
-        let hits = workspaces_containing_any(&workspaces, &changed);
-        assert!(hits.is_empty());
-    }
-
-    #[test]
-    fn workspaces_containing_any_empty_changed_set_is_no_hits() {
-        let workspaces = vec![ws("ui", "packages/ui")];
-        let changed = FxHashSet::default();
-
-        let hits = workspaces_containing_any(&workspaces, &changed);
-        assert!(hits.is_empty());
-    }
-
-    #[test]
-    fn workspaces_containing_any_single_changed_file_maps_to_one_workspace() {
-        let workspaces = vec![
-            ws("ui", "packages/ui"),
-            ws("api", "packages/api"),
-            ws("cli", "packages/cli"),
-        ];
-        let mut changed = FxHashSet::default();
-        changed.insert(PathBuf::from("/project/packages/api/src/b.ts"));
-
-        let hits = workspaces_containing_any(&workspaces, &changed);
-        assert_eq!(hits, vec![1]);
     }
 
     #[test]

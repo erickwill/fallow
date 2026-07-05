@@ -1384,6 +1384,38 @@ fn cli_audit_uses_engine_graph_fact_helpers() {
     }
 }
 
+#[test]
+fn api_and_cli_workspace_scope_resolution_routes_through_engine() {
+    for source_path in [
+        "crates/api/src/analysis_context.rs",
+        "crates/cli/src/check/filtering.rs",
+    ] {
+        let source = read_source_without_line_comments(source_path)
+            .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
+        assert!(
+            source.contains("fallow_engine::workspace_scope"),
+            "{source_path} must route workspace-scope resolution through fallow-engine"
+        );
+        for forbidden in [
+            "globset::Glob",
+            "fn split_workspace_patterns",
+            "fn split_patterns",
+            "fn find_workspace_matches",
+            "fn find_matches",
+            "fn match_positive_workspace_patterns",
+            "fn match_positive_patterns",
+            "fn relative_workspace_path",
+            "fn format_available_workspaces",
+            "fn workspaces_containing_any",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must not own workspace-scope matching helper `{forbidden}`"
+            );
+        }
+    }
+}
+
 fn read_source_without_line_comments(path: &str) -> std::io::Result<String> {
     let source = std::fs::read_to_string(workspace_root().join(path))?;
     Ok(source

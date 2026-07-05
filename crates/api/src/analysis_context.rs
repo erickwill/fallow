@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use fallow_config::WorkspaceInfo;
+use fallow_engine::workspace_scope::{WorkspaceScopeError, WorkspaceScopeMode};
 use fallow_output::{DiffIndex, MAX_DIFF_BYTES};
 use fallow_types::path_util::is_absolute_path_any_platform;
-use globset::Glob;
 use rustc_hash::FxHashSet;
 
 use crate::{AnalysisOptions, ProgrammaticError};
@@ -315,17 +315,13 @@ fn resolve_workspace_scope(
     workspace: Option<&[String]>,
     changed_workspaces: Option<&str>,
 ) -> ProgrammaticResult<Option<Vec<PathBuf>>> {
-    match (workspace, changed_workspaces) {
-        (Some(patterns), None) => resolve_workspace_filters(root, patterns).map(Some),
-        (None, Some(git_ref)) => resolve_changed_workspaces(root, git_ref).map(Some),
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err(ProgrammaticError::new(
-            "`workspace` and `changed_workspaces` are mutually exclusive",
-            2,
-        )
-        .with_code("FALLOW_MUTUALLY_EXCLUSIVE_SCOPE")
-        .with_context("analysis.workspace")),
-    }
+    fallow_engine::workspace_scope::resolve_workspace_scope_roots(
+        root,
+        workspace,
+        changed_workspaces,
+        &fallow_engine::discover::discover_workspace_packages(root),
+    )
+    .map_err(map_workspace_scope_error)
 }
 
 fn resolve_workspace_scope_from_workspaces(
@@ -334,245 +330,105 @@ fn resolve_workspace_scope_from_workspaces(
     changed_workspaces: Option<&str>,
     workspaces: &[WorkspaceInfo],
 ) -> ProgrammaticResult<Option<Vec<PathBuf>>> {
-    match (workspace, changed_workspaces) {
-        (Some(patterns), None) => {
-            resolve_workspace_filters_from_workspaces(root, patterns, workspaces).map(Some)
-        }
-        (None, Some(git_ref)) => {
-            resolve_changed_workspaces_from_workspaces(root, git_ref, workspaces).map(Some)
-        }
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err(ProgrammaticError::new(
-            "`workspace` and `changed_workspaces` are mutually exclusive",
-            2,
-        )
-        .with_code("FALLOW_MUTUALLY_EXCLUSIVE_SCOPE")
-        .with_context("analysis.workspace")),
-    }
+    fallow_engine::workspace_scope::resolve_workspace_scope_roots(
+        root,
+        workspace,
+        changed_workspaces,
+        workspaces,
+    )
+    .map_err(map_workspace_scope_error)
 }
 
+#[cfg(test)]
 pub fn resolve_workspace_filters(
     root: &Path,
     patterns: &[String],
 ) -> ProgrammaticResult<Vec<PathBuf>> {
-    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
-    resolve_workspace_filters_from_workspaces(root, patterns, &workspaces)
+    fallow_engine::workspace_scope::resolve_workspace_filter_roots_for_project(root, patterns)
+        .map_err(map_workspace_scope_error)
 }
 
-fn resolve_workspace_filters_from_workspaces(
-    root: &Path,
-    patterns: &[String],
-    workspaces: &[WorkspaceInfo],
-) -> ProgrammaticResult<Vec<PathBuf>> {
-    if workspaces.is_empty() {
-        let joined = patterns
-            .iter()
-            .map(|pattern| format!("'{pattern}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(ProgrammaticError::new(
-            format!(
-                "`workspace` {joined} specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\"."
-            ),
+fn map_workspace_scope_error(err: WorkspaceScopeError) -> ProgrammaticError {
+    match err {
+        WorkspaceScopeError::NoWorkspaces {
+            mode,
+            patterns,
+            git_ref,
+        } => map_no_workspaces_error(mode, &patterns, git_ref.as_deref()),
+        WorkspaceScopeError::InvalidPattern { pattern, message } => ProgrammaticError::new(
+            format!("invalid `workspace` pattern '{pattern}': {message}"),
             2,
         )
-        .with_code("FALLOW_WORKSPACES_NOT_FOUND")
-        .with_context("analysis.workspace"));
-    }
-
-    let rel_paths = workspaces
-        .iter()
-        .map(|workspace| relative_workspace_path(&workspace.root, root))
-        .collect::<Vec<_>>();
-    let (positive, negative) = split_workspace_patterns(patterns);
-    let mut matched = match_positive_workspace_patterns(&positive, workspaces, &rel_paths)?;
-
-    for pattern in &negative {
-        for index in find_workspace_matches(pattern, workspaces, &rel_paths)? {
-            matched.remove(&index);
-        }
-    }
-
-    if matched.is_empty() {
-        return Err(
-            ProgrammaticError::new("`workspace` excluded every discovered workspace", 2)
-                .with_code("FALLOW_WORKSPACE_SCOPE_EMPTY")
-                .with_context("analysis.workspace"),
-        );
-    }
-
-    let mut roots = matched
-        .into_iter()
-        .map(|index| workspaces[index].root.clone())
-        .collect::<Vec<_>>();
-    roots.sort();
-    Ok(roots)
-}
-
-fn resolve_changed_workspaces(root: &Path, git_ref: &str) -> ProgrammaticResult<Vec<PathBuf>> {
-    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
-    resolve_changed_workspaces_from_workspaces(root, git_ref, &workspaces)
-}
-
-fn resolve_changed_workspaces_from_workspaces(
-    root: &Path,
-    git_ref: &str,
-    workspaces: &[WorkspaceInfo],
-) -> ProgrammaticResult<Vec<PathBuf>> {
-    if workspaces.is_empty() {
-        return Err(ProgrammaticError::new(
+        .with_code("FALLOW_INVALID_WORKSPACE_PATTERN")
+        .with_context("analysis.workspace"),
+        WorkspaceScopeError::UnmatchedPatterns {
+            patterns,
+            available,
+        } => ProgrammaticError::new(
             format!(
-                "`changed_workspaces` '{git_ref}' specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\"."
-            ),
-            2,
-        )
-        .with_code("FALLOW_WORKSPACES_NOT_FOUND")
-        .with_context("analysis.changedWorkspaces"));
-    }
-    let changed_files =
-        fallow_engine::changed_files::changed_files(root, git_ref).map_err(|err| {
-            ProgrammaticError::new(
-                format!(
-                    "failed to resolve changed workspaces for ref `{git_ref}`: {}",
-                    err.describe()
-                ),
-                2,
-            )
-            .with_code("FALLOW_CHANGED_WORKSPACES_FAILED")
-            .with_context("analysis.changedWorkspaces")
-        })?;
-    let mut roots = workspaces
-        .iter()
-        .filter(|workspace| {
-            changed_files
-                .iter()
-                .any(|file| file.starts_with(&workspace.root))
-        })
-        .map(|workspace| workspace.root.clone())
-        .collect::<Vec<_>>();
-    roots.sort();
-    Ok(roots)
-}
-
-fn match_positive_workspace_patterns(
-    positive: &[&str],
-    workspaces: &[WorkspaceInfo],
-    rel_paths: &[String],
-) -> ProgrammaticResult<FxHashSet<usize>> {
-    let mut matched = FxHashSet::default();
-    let mut unmatched = Vec::new();
-
-    if positive.is_empty() {
-        matched.extend(0..workspaces.len());
-    } else {
-        for pattern in positive {
-            let hits = find_workspace_matches(pattern, workspaces, rel_paths)?;
-            if hits.is_empty() {
-                unmatched.push((*pattern).to_string());
-            }
-            matched.extend(hits);
-        }
-    }
-
-    if !unmatched.is_empty() {
-        return Err(ProgrammaticError::new(
-            format!(
-                "`workspace` matched no workspace for pattern{}: {}. Available: {}",
-                if unmatched.len() == 1 { "" } else { "s" },
-                unmatched
-                    .iter()
-                    .map(|pattern| format!("'{pattern}'"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                format_available_workspaces(workspaces),
+                "`workspace` matched no workspace for pattern{}: {}. Available: {available}",
+                if patterns.len() == 1 { "" } else { "s" },
+                quote_owned_patterns(&patterns),
             ),
             2,
         )
         .with_code("FALLOW_WORKSPACE_PATTERN_UNMATCHED")
-        .with_context("analysis.workspace"));
-    }
-
-    Ok(matched)
-}
-
-fn find_workspace_matches(
-    pattern: &str,
-    workspaces: &[WorkspaceInfo],
-    rel_paths: &[String],
-) -> ProgrammaticResult<Vec<usize>> {
-    if let Some(index) = workspaces
-        .iter()
-        .position(|workspace| workspace.name == pattern)
-    {
-        return Ok(vec![index]);
-    }
-    if let Some(index) = rel_paths.iter().position(|path| path == pattern) {
-        return Ok(vec![index]);
-    }
-
-    let glob = Glob::new(pattern).map_err(|err| {
-        ProgrammaticError::new(format!("invalid `workspace` pattern '{pattern}': {err}"), 2)
-            .with_code("FALLOW_INVALID_WORKSPACE_PATTERN")
-            .with_context("analysis.workspace")
-    })?;
-    let matcher = glob.compile_matcher();
-    let hits = workspaces
-        .iter()
-        .enumerate()
-        .filter_map(|(index, workspace)| {
-            (matcher.is_match(&workspace.name) || matcher.is_match(&rel_paths[index]))
-                .then_some(index)
-        })
-        .collect();
-    Ok(hits)
-}
-
-fn split_workspace_patterns(patterns: &[String]) -> (Vec<&str>, Vec<&str>) {
-    let mut positive = Vec::new();
-    let mut negative = Vec::new();
-    for pattern in patterns {
-        let trimmed = pattern.trim();
-        if trimmed.is_empty() {
-            continue;
+        .with_context("analysis.workspace"),
+        WorkspaceScopeError::EmptyAfterExclusions { .. } => {
+            ProgrammaticError::new("`workspace` excluded every discovered workspace", 2)
+                .with_code("FALLOW_WORKSPACE_SCOPE_EMPTY")
+                .with_context("analysis.workspace")
         }
-        if let Some(negative_pattern) = trimmed.strip_prefix('!') {
-            let negative_pattern = negative_pattern.trim();
-            if !negative_pattern.is_empty() {
-                negative.push(negative_pattern);
-            }
-        } else {
-            positive.push(trimmed);
+        WorkspaceScopeError::ChangedWorkspacesFailed { git_ref, message } => {
+            ProgrammaticError::new(
+                format!("failed to resolve changed workspaces for ref `{git_ref}`: {message}"),
+                2,
+            )
+            .with_code("FALLOW_CHANGED_WORKSPACES_FAILED")
+            .with_context("analysis.changedWorkspaces")
+        }
+        WorkspaceScopeError::MutuallyExclusive => ProgrammaticError::new(
+            "`workspace` and `changed_workspaces` are mutually exclusive",
+            2,
+        )
+        .with_code("FALLOW_MUTUALLY_EXCLUSIVE_SCOPE")
+        .with_context("analysis.workspace"),
+    }
+}
+
+fn map_no_workspaces_error(
+    mode: WorkspaceScopeMode,
+    patterns: &[String],
+    git_ref: Option<&str>,
+) -> ProgrammaticError {
+    match mode {
+        WorkspaceScopeMode::Workspace => ProgrammaticError::new(
+            format!(
+                "`workspace` {} specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\".",
+                quote_owned_patterns(patterns)
+            ),
+            2,
+        )
+        .with_code("FALLOW_WORKSPACES_NOT_FOUND")
+        .with_context("analysis.workspace"),
+        WorkspaceScopeMode::ChangedWorkspaces => {
+            let git_ref = git_ref.unwrap_or_default();
+            ProgrammaticError::new(
+                format!(
+                    "`changed_workspaces` '{git_ref}' specified but no workspaces found. Ensure root package.json has a \"workspaces\" field, pnpm-workspace.yaml exists, or tsconfig.json has \"references\"."
+                ),
+                2,
+            )
+            .with_code("FALLOW_WORKSPACES_NOT_FOUND")
+            .with_context("analysis.changedWorkspaces")
         }
     }
-    (positive, negative)
 }
 
-fn format_available_workspaces(workspaces: &[WorkspaceInfo]) -> String {
-    const MAX_SHOWN: usize = 10;
-    let total = workspaces.len();
-    if total <= MAX_SHOWN {
-        return workspaces
-            .iter()
-            .map(|workspace| workspace.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
-    let shown = workspaces
+fn quote_owned_patterns(patterns: &[String]) -> String {
+    patterns
         .iter()
-        .take(MAX_SHOWN)
-        .map(|workspace| workspace.name.as_str())
+        .map(|pattern| format!("'{pattern}'"))
         .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{shown}, ... and {} more ({total} total)",
-        total - MAX_SHOWN
-    )
-}
-
-fn relative_workspace_path(workspace_root: &Path, root: &Path) -> String {
-    workspace_root
-        .strip_prefix(root)
-        .unwrap_or(workspace_root)
-        .to_string_lossy()
-        .replace('\\', "/")
+        .join(", ")
 }
