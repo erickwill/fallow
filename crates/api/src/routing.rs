@@ -64,7 +64,7 @@ pub fn compute_routing(
     // The current reviewer (git user) is excluded from routing: you do not "ask
     // yourself". On a solo repo every file routes to the author, so this is what
     // turns "ask: bart (bus-factor 1)" on every decision into silence.
-    let self_ids = current_user_identities(root);
+    let self_ids = fallow_engine::repo_refs::current_user_identities(root);
 
     let mut units: Vec<RoutingUnit> = changed_files
         .iter()
@@ -72,37 +72,6 @@ pub fn compute_routing(
         .collect();
     units.sort_by(|a, b| a.file.cmp(&b.file));
     RoutingFacts { units }
-}
-
-/// Identifiers for the current git user (the reviewer). Used to drop self-routing:
-/// the raw `user.email`, its handle (local-part, GitHub no-reply unwrapped), and
-/// `user.name`. Empty when git config is unreadable (best-effort, no exclusion).
-fn current_user_identities(root: &Path) -> Vec<String> {
-    let read = |key: &str| -> Option<String> {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(["config", "--get", key])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (!value.is_empty()).then_some(value)
-    };
-    let mut ids = Vec::new();
-    if let Some(email) = read("user.email") {
-        if let Some((local, _)) = email.split_once('@') {
-            // GitHub no-reply unwrap: `1234+handle@users.noreply.github.com` -> `handle`.
-            ids.push(local.rsplit('+').next().unwrap_or(local).to_string());
-        }
-        ids.push(email);
-    }
-    if let Some(name) = read("user.name") {
-        ids.push(name);
-    }
-    ids
 }
 
 /// True when `expert` names the current reviewer (case-insensitive, `@`-tolerant

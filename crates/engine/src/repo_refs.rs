@@ -44,6 +44,31 @@ pub fn default_workspace_ref_for_workspaces(
         .map(str::to_owned)
 }
 
+/// Git identities for the current user in forms useful for self-routing.
+///
+/// Includes `user.email`, its local-part handle, a GitHub no-reply unwrapped
+/// handle when applicable, and `user.name`. Missing config values are ignored.
+#[must_use]
+pub fn current_user_identities(root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(email) = read_git_config(root, "user.email") {
+        if let Some((local, _)) = email.split_once('@') {
+            ids.push(local.rsplit('+').next().unwrap_or(local).to_owned());
+        }
+        ids.push(email);
+    }
+    if let Some(name) = read_git_config(root, "user.name") {
+        ids.push(name);
+    }
+    ids
+}
+
+fn read_git_config(root: &Path, key: &str) -> Option<String> {
+    let value = run_git(root, &["config", "--get", key])?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 fn git_ref_exists(root: &Path, reference: &str) -> bool {
     run_git(root, &["rev-parse", "--verify", "--quiet", reference]).is_some()
 }
@@ -82,5 +107,10 @@ mod tests {
         };
 
         assert!(default_workspace_ref_for_workspaces(Path::new("/repo"), &[workspace]).is_none());
+    }
+
+    #[test]
+    fn current_user_identities_empty_when_git_config_is_unavailable() {
+        assert!(current_user_identities(Path::new("/repo")).is_empty());
     }
 }

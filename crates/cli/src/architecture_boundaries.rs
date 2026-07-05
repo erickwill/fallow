@@ -783,6 +783,28 @@ fn next_step_workspace_ref_probing_routes_through_engine() {
 }
 
 #[test]
+fn routing_self_identity_probe_routes_through_engine() {
+    let source_path = "crates/api/src/routing.rs";
+    let source = read_source_without_line_comments(source_path).expect("read routing source");
+    assert!(
+        source.contains("fallow_engine::repo_refs::current_user_identities"),
+        "routing must use engine-owned git identity probing"
+    );
+    for forbidden in [
+        "Command::new(\"git\")",
+        "std::process::Command::new(\"git\")",
+        "fn current_user_identities",
+        "user.email",
+        "user.name",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "{source_path} must not own git identity probing helper `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn combined_and_audit_share_project_analysis_artifacts() {
     for source_path in [
         "crates/api/src/runtime/combined.rs",
