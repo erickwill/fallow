@@ -11,7 +11,7 @@ use fallow_config::{
 pub use fallow_types::discover::{DiscoveredFile, EntryPoint, EntryPointSource, FileId};
 use rustc_hash::FxHashSet;
 
-use crate::core_backend;
+use crate::{EngineError, EngineResult, core_backend};
 
 const UNDECLARED_WORKSPACE_WARNING_PREVIEW: usize = 5;
 
@@ -42,6 +42,33 @@ pub const PRODUCTION_EXCLUDE_PATTERNS: &[&str] = &[
     "**/.*.mjs",
     "**/.*.cjs",
 ];
+
+/// Discover workspace packages through the engine boundary.
+///
+/// Use this for callers that only need workspace metadata and do not yet own an
+/// `AnalysisSession`. Session-backed flows should prefer
+/// [`AnalysisSession::workspaces`](crate::session::AnalysisSession::workspaces)
+/// so discovery is reused with the rest of the analysis context.
+#[must_use]
+pub fn discover_workspace_packages(root: &Path) -> Vec<WorkspaceInfo> {
+    discover_workspaces(root)
+}
+
+/// Discover workspace packages and diagnostics through the engine boundary.
+///
+/// This is for CLI/API surfaces that need to render workspace diagnostics but
+/// do not otherwise need a full [`AnalysisSession`](crate::session::AnalysisSession).
+///
+/// # Errors
+///
+/// Returns an engine error when workspace manifest loading fails.
+pub fn discover_workspace_packages_with_diagnostics(
+    root: &Path,
+    ignore_patterns: &globset::GlobSet,
+) -> EngineResult<(Vec<WorkspaceInfo>, Vec<WorkspaceDiagnostic>)> {
+    fallow_config::discover_workspaces_with_diagnostics(root, ignore_patterns)
+        .map_err(|err| EngineError::new(err.to_string()))
+}
 
 /// Entry points grouped by reachability role.
 #[derive(Debug, Clone, Default)]

@@ -95,7 +95,7 @@ pub fn due_impact_digest(root: &Path) -> Option<crate::impact::ImpactDigest> {
 }
 
 fn default_workspace_ref_for_next_step(root: &Path) -> Option<String> {
-    if fallow_config::discover_workspaces(root).is_empty() {
+    if fallow_engine::discover::discover_workspace_packages(root).is_empty() {
         return None;
     }
     resolve_default_workspace_ref(root)

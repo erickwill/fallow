@@ -355,7 +355,7 @@ pub fn resolve_workspace_filters(
     root: &Path,
     patterns: &[String],
 ) -> ProgrammaticResult<Vec<PathBuf>> {
-    let workspaces = fallow_config::discover_workspaces(root);
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
     resolve_workspace_filters_from_workspaces(root, patterns, &workspaces)
 }
 
@@ -410,7 +410,7 @@ fn resolve_workspace_filters_from_workspaces(
 }
 
 fn resolve_changed_workspaces(root: &Path, git_ref: &str) -> ProgrammaticResult<Vec<PathBuf>> {
-    let workspaces = fallow_config::discover_workspaces(root);
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
     resolve_changed_workspaces_from_workspaces(root, git_ref, &workspaces)
 }
 

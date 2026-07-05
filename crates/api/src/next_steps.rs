@@ -31,7 +31,7 @@ pub fn setup_pointer_applicable(root: &Path) -> bool {
 /// Resolve a concrete `--changed-workspaces` ref for the `scope-workspaces`
 /// next step, or `None` when no workspace or resolvable ref exists.
 pub fn default_workspace_ref(root: &Path) -> Option<String> {
-    let workspaces = fallow_config::discover_workspaces(root);
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
     default_workspace_ref_for_workspaces(root, &workspaces)
 }
 

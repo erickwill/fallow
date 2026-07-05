@@ -1272,6 +1272,28 @@ fn public_core_migration_messages_stay_self_contained() {
 }
 
 #[test]
+fn api_and_cli_workspace_discovery_routes_through_engine() {
+    for source_path in rust_sources_under(["crates/api/src", "crates/cli/src"]) {
+        if source_path == "crates/cli/src/architecture_boundaries.rs" {
+            continue;
+        }
+        let source = read_source_without_line_comments(&source_path)
+            .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
+        for forbidden in [
+            "fallow_config::discover_workspaces(",
+            "fallow_config::discover_workspaces_with_diagnostics(",
+            "use fallow_config::{discover_workspaces",
+            "use fallow_config::discover_workspaces",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must route workspace discovery through fallow_engine::discover or AnalysisSession"
+            );
+        }
+    }
+}
+
+#[test]
 fn engine_source_inventory_owns_public_contracts() {
     let source_path = "crates/engine/src/source.rs";
     let source = std::fs::read_to_string(workspace_root().join(source_path)).expect("read source");

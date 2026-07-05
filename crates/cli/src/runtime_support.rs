@@ -120,7 +120,7 @@ pub fn build_ownership_resolver_for_mode(
         },
         GroupByMode::Directory => Ok(Some(crate::report::OwnershipResolver::Directory)),
         GroupByMode::Package => {
-            let workspaces = fallow_config::discover_workspaces(root);
+            let workspaces = fallow_engine::discover::discover_workspace_packages(root);
             if workspaces.is_empty() {
                 Err(crate::error::emit_error(
                     "--group-by package requires a monorepo with workspace packages \
@@ -363,7 +363,10 @@ fn report_workspace_diagnostics(
     resolved: &ResolvedConfig,
     options: &ConfigLoadOptions,
 ) -> Result<(), ExitCode> {
-    match fallow_config::discover_workspaces_with_diagnostics(root, &resolved.ignore_patterns) {
+    match fallow_engine::discover::discover_workspace_packages_with_diagnostics(
+        root,
+        &resolved.ignore_patterns,
+    ) {
         Ok((_, diagnostics)) => {
             fallow_config::stash_workspace_diagnostics(root, diagnostics.clone());
             if !diagnostics.is_empty()
@@ -379,11 +382,7 @@ fn report_workspace_diagnostics(
             }
             Ok(())
         }
-        Err(err) => Err(crate::error::emit_error(
-            &err.to_string(),
-            2,
-            options.output,
-        )),
+        Err(err) => Err(crate::error::emit_error(err.message(), 2, options.output)),
     }
 }
 

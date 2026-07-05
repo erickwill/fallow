@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fallow_config::{OutputFormat, WorkspaceInfo, discover_workspaces};
+use fallow_config::{OutputFormat, WorkspaceInfo};
 use globset::Glob;
 use rustc_hash::FxHashSet;
 
@@ -42,7 +42,7 @@ pub fn resolve_workspace_filters(
     patterns: &[String],
     output: OutputFormat,
 ) -> Result<Vec<PathBuf>, ExitCode> {
-    let workspaces = discover_workspaces(root);
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
     if workspaces.is_empty() {
         let joined = patterns
             .iter()
@@ -542,7 +542,7 @@ pub fn resolve_changed_workspaces(
     git_ref: &str,
     output: OutputFormat,
 ) -> Result<Vec<PathBuf>, ExitCode> {
-    let workspaces = discover_workspaces(root);
+    let workspaces = fallow_engine::discover::discover_workspace_packages(root);
     if workspaces.is_empty() {
         let msg = format!(
             "--changed-workspaces '{git_ref}' specified but no workspaces found. \

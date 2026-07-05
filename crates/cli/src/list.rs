@@ -163,7 +163,7 @@ fn collect_list_entry_points(
             entries.extend(ws_entries);
         }
     } else {
-        let workspaces = fallow_config::discover_workspaces(opts.root);
+        let workspaces = fallow_engine::discover::discover_workspace_packages(opts.root);
         for ws in &workspaces {
             let ws_entries =
                 fallow_engine::discover::discover_workspace_entry_points(&ws.root, config, disc);
@@ -194,7 +194,10 @@ fn collect_list_workspace_data(
             diagnostics: workspace_diagnostics.unwrap_or(&[]).to_vec(),
         }));
     }
-    match fallow_config::discover_workspaces_with_diagnostics(opts.root, &config.ignore_patterns) {
+    match fallow_engine::discover::discover_workspace_packages_with_diagnostics(
+        opts.root,
+        &config.ignore_patterns,
+    ) {
         Ok((workspaces, mut diagnostics)) => {
             append_undeclared_workspace_diagnostics(
                 opts.root,
@@ -207,7 +210,7 @@ fn collect_list_workspace_data(
                 diagnostics,
             }))
         }
-        Err(err) => Err(crate::error::emit_error(&err.to_string(), 2, opts.output)),
+        Err(err) => Err(crate::error::emit_error(err.message(), 2, opts.output)),
     }
 }
 
@@ -324,7 +327,7 @@ fn merge_workspace_plugins(
         }
         return Ok(());
     }
-    for ws in &fallow_config::discover_workspaces(opts.root) {
+    for ws in &fallow_engine::discover::discover_workspace_packages(opts.root) {
         let Some(ws_result) = run_package_plugins(
             registry,
             &ws.root.join("package.json"),

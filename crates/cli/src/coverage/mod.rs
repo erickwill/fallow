@@ -19,7 +19,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use fallow_config::{OutputFormat, PackageJson, WorkspaceInfo, atomic_write, discover_workspaces};
+use fallow_config::{OutputFormat, PackageJson, WorkspaceInfo, atomic_write};
 use fallow_engine::changed_files::clear_ambient_git_env;
 use fallow_license::{DEFAULT_HARD_FAIL_DAYS, LicenseStatus};
 use fallow_types::serde_path;
@@ -1380,7 +1380,7 @@ fn detect_setup_context(root: &Path) -> CoverageSetupContext {
 fn detect_setup_members(root: &Path) -> Vec<CoverageSetupMember> {
     let root_package_manager = detect_package_manager(root);
     let root_package_json = PackageJson::load(&root.join("package.json")).ok();
-    let mut workspaces = discover_workspaces(root);
+    let mut workspaces = fallow_engine::discover::discover_workspace_packages(root);
     workspaces.sort_by(|a, b| a.root.cmp(&b.root));
     let has_workspaces = !workspaces.is_empty();
     let mut members = Vec::new();
