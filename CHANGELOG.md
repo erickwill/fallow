@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-05
+
 ### Added
 
 - **The `fallow health` JSON summary now reports the effective unit-size
@@ -4052,7 +4054,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/fallow-rs/fallow/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/fallow-rs/fallow/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/fallow-rs/fallow/compare/v2.104.0...v3.0.0
 [2.104.0]: https://github.com/fallow-rs/fallow/compare/v2.103.0...v2.104.0
