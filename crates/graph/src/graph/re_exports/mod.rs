@@ -23,9 +23,9 @@ use propagate::{
 ///
 /// The graph-layer mirror of `fallow_types::results::ReExportCycle`. Kept in
 /// the graph crate so the types crate does not need a dependency arrow back
-/// into graph for the conversion; `fallow_core::analyze::re_export_cycles`
-/// performs the `GraphReExportCycle` to `ReExportCycle` mapping by reading
-/// `is_self_loop` and routing to the matching `ReExportCycleKind` variant.
+/// into graph for the conversion. The analysis backend performs the
+/// `GraphReExportCycle` to `ReExportCycle` mapping by reading `is_self_loop`
+/// and routing to the matching `ReExportCycleKind` variant.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GraphReExportCycle {
     /// Member files participating in the cycle, sorted lexicographically by
@@ -250,9 +250,8 @@ impl ModuleGraph {
 ///
 /// The `tracing::warn!` emissions remain unchanged from #442 (RUST_LOG=warn
 /// operators still see them). The returned `Vec<GraphReExportCycle>` is the
-/// structured surface that `fallow_core::analyze::re_export_cycles` consumes
-/// and wraps in typed `ReExportCycleFinding`s for end-user output. See
-/// issue #515.
+/// structured surface that the analysis backend consumes and wraps in typed
+/// `ReExportCycleFinding`s for end-user output. See issue #515.
 fn find_re_export_cycles(
     modules: &[super::types::ModuleNode],
     re_export_info: &[ReExportTuple],

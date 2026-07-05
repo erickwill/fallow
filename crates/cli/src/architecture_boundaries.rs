@@ -3,6 +3,27 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 #[test]
+fn repo_architecture_north_star_stays_documented() {
+    let migration_doc =
+        std::fs::read_to_string(workspace_root().join("docs/fallow-core-migration.md"))
+            .expect("read core migration doc");
+    for required in [
+        "Architecture north star",
+        "deterministic repo-intelligence engine",
+        "Engine-first",
+        "Contracts-first",
+        "Session reuse before broad persistence",
+        "Repo-policy as code",
+        "Core stays backend-only",
+    ] {
+        assert!(
+            migration_doc.contains(required),
+            "core migration doc must keep the architecture north star: {required}"
+        );
+    }
+}
+
+#[test]
 fn api_consumers_depend_on_api_not_engine_cli_or_core() {
     for manifest in [
         "crates/lsp/Cargo.toml",

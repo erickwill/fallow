@@ -271,7 +271,7 @@ fn is_dev_glue_path(path: &Path) -> bool {
 }
 
 /// Strip `root` and forward-slash-normalize a module path for cross-platform
-/// JSON parity (mirrors `fallow_core::trace`'s relativization).
+/// JSON parity with the trace output path relativization.
 fn relativize(path: &Path, root: &Path) -> String {
     let rel: PathBuf = path.strip_prefix(root).unwrap_or(path).to_path_buf();
     rel.to_string_lossy().replace('\\', "/")

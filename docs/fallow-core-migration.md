@@ -19,6 +19,34 @@ It owns the migration boundary over the internal `fallow-core` backend and is
 where editor, API, and embedding surfaces should move before depending on
 typed `AnalysisResults`.
 
+## Architecture north star
+
+Fallow should be a deterministic repo-intelligence engine with thin integration
+surfaces, not a CLI with libraries arranged around it. That means new analysis
+flows should start in `fallow-engine`, expose typed contracts through
+`fallow-api`, and serialize only at CLI, LSP, MCP, NAPI, CI, or other protocol
+boundaries.
+
+Use these boundaries when adding new product flows:
+
+- **Engine-first**: config resolution, discovery, parsing, graph construction,
+  cache/fingerprint handling, and typed analysis results belong behind
+  `fallow-engine`.
+- **Contracts-first**: outward-facing issue metadata, root envelopes, JSON,
+  SARIF, CodeClimate, suppressions, docs anchors, LSP diagnostic metadata, and
+  TypeScript aliases must derive from typed contract registries instead of
+  scattered string tables.
+- **Session reuse before broad persistence**: grow `AnalysisSession` toward a
+  lightweight query model for shared discovery, parsed modules, graph state,
+  changed files, fingerprints, and production modes. Persisted cache expansion
+  should only follow when invalidation is covered by transparency tests.
+- **Repo-policy as code**: project-specific boundaries, zones, banned imports,
+  banned exports, banned calls, and framework-aware facts are the preferred
+  extension path before a general arbitrary-code plugin runtime.
+- **Core stays backend-only**: `fallow-core` may keep detector implementation
+  details while engine migration is in progress, but new public or product
+  surfaces should depend on `fallow-engine` or `fallow-api`, not `fallow-core`.
+
 ## Function mapping
 
 | Deprecated `fallow_core` function | Replacement |

@@ -38,8 +38,8 @@ pub use types::{ExportSymbol, ModuleNode, ReExportEdge, ReferenceKind, SymbolRef
 /// file (`.d.ts`, `.d.mts`, `.d.cts`). Used to seed declaration files as
 /// overall entry points so ambient `typeof import()` references stay alive.
 ///
-/// Keep in sync with `fallow_core::analyze::predicates::is_declaration_file`;
-/// the graph crate cannot depend on core, so the predicate is duplicated.
+/// Keep in sync with the analysis-layer declaration-file predicate. The graph
+/// crate cannot depend on the detector backend, so the predicate is duplicated.
 fn is_declaration_file_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -96,9 +96,8 @@ pub struct ModuleGraph {
     /// resolution. Each entry names the participating files (sorted
     /// lexicographically) and a `is_self_loop` flag distinguishing
     /// single-file self-re-exports from multi-node cycles. Populated by
-    /// `re_exports::find_re_export_cycles` and consumed by
-    /// `fallow_core::analyze::re_export_cycles::find_re_export_cycles` which
-    /// wraps each entry in a typed `ReExportCycleFinding`.
+    /// `re_exports::find_re_export_cycles` and consumed by the analysis
+    /// backend, which wraps each entry in a typed `ReExportCycleFinding`.
     pub re_export_cycles: Vec<GraphReExportCycle>,
 }
 
