@@ -17,7 +17,7 @@ use crate::{
     AuditProgrammaticOutput, AuditSummary, AuditVerdict, ComplexityOptions, DeadCodeFilters,
     DeadCodeOptions, DuplicationOptions, ProgrammaticError,
     analysis_context::{
-        ProgrammaticAnalysisContext, changed_files_for_run, resolve_programmatic_analysis_context,
+        ProgrammaticAnalysisContext, changed_files_for_run,
         resolve_programmatic_analysis_context_deferred_workspace,
     },
 };
@@ -39,7 +39,7 @@ pub fn run_audit(options: &AuditOptions) -> ProgrammaticResult<AuditProgrammatic
     let start = Instant::now();
     let resolved_base = resolve_audit_base_ref(options)?;
     let analysis = analysis_options_for_audit(options, &resolved_base.git_ref);
-    let resolved = resolve_programmatic_analysis_context(&analysis)?;
+    let resolved = resolve_programmatic_analysis_context_deferred_workspace(&analysis)?;
     let changed_files = changed_files_for_run(&resolved)?.unwrap_or_default();
     let changed_files_count = changed_files.len();
 
@@ -53,7 +53,8 @@ pub fn run_audit(options: &AuditOptions) -> ProgrammaticResult<AuditProgrammatic
         ));
     }
 
-    let head = run_audit_subanalyses(options, &analysis, Some(&changed_files))?;
+    let head =
+        run_audit_subanalyses_with_context(options, &analysis, &resolved, Some(&changed_files))?;
     let current_snapshot = snapshot_from_analyses(&head);
     let base_snapshot = if matches!(options.gate, AuditGate::NewOnly) {
         Some(compute_base_snapshot(options, &resolved_base.git_ref)?)
@@ -251,10 +252,19 @@ fn run_audit_subanalyses(
     analysis: &AnalysisOptions,
     changed_files: Option<&FxHashSet<PathBuf>>,
 ) -> ProgrammaticResult<AuditSubanalyses> {
-    let subanalysis_options = audit_subanalysis_options(options, analysis);
     let resolved = resolve_programmatic_analysis_context_deferred_workspace(analysis)?;
+    run_audit_subanalyses_with_context(options, analysis, &resolved, changed_files)
+}
+
+fn run_audit_subanalyses_with_context(
+    options: &AuditOptions,
+    analysis: &AnalysisOptions,
+    resolved: &ProgrammaticAnalysisContext,
+    changed_files: Option<&FxHashSet<PathBuf>>,
+) -> ProgrammaticResult<AuditSubanalyses> {
+    let subanalysis_options = audit_subanalysis_options(options, analysis);
     let production_modes = resolve_effective_production_modes(
-        &resolved,
+        resolved,
         options.production_dead_code,
         options.production_health,
         options.production_dupes,
@@ -263,17 +273,13 @@ fn run_audit_subanalyses(
     if production_modes.dead_code == production_modes.dupes
         && production_modes.dead_code == production_modes.health
     {
-        return run_shared_project_audit_subanalyses(
-            &subanalysis_options,
-            &resolved,
-            changed_files,
-        );
+        return run_shared_project_audit_subanalyses(&subanalysis_options, resolved, changed_files);
     }
 
     if production_modes.dead_code == production_modes.health {
         return run_shared_dead_code_health_audit_subanalyses(
             &subanalysis_options,
-            &resolved,
+            resolved,
             changed_files,
         );
     }
@@ -281,7 +287,7 @@ fn run_audit_subanalyses(
     if production_modes.dead_code == production_modes.dupes {
         return run_shared_dead_code_dupes_audit_subanalyses(
             &subanalysis_options,
-            &resolved,
+            resolved,
             changed_files,
         );
     }
