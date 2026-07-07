@@ -15,6 +15,7 @@ fn repo_architecture_north_star_stays_documented() {
         "Session reuse before broad persistence",
         "Repo-policy as code",
         "Core stays backend-only",
+        "adapter boundary over the internal `fallow-core` backend",
     ] {
         assert!(
             migration_doc.contains(required),
@@ -25,6 +26,18 @@ fn repo_architecture_north_star_stays_documented() {
         !migration_doc.contains("ADR-008"),
         "public core migration doc must stay self-contained instead of requiring private ADR context"
     );
+    for forbidden in [
+        "while engine migration is in progress",
+        "while `fallow-engine` still builds on it",
+        "owns the migration boundary",
+        "current exceptions",
+        "current migration exceptions",
+    ] {
+        assert!(
+            !migration_doc.contains(forbidden),
+            "core migration doc must describe final backend boundaries, not migration leftovers: {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -36,8 +49,9 @@ fn architecture_invariants_doc_tracks_guarded_boundaries() {
         "shared output-helper ownership",
         "manifest/docs drift",
         "drift-tested against `docs/output-schema.json`",
-        "reusable result,",
-        "snippet, and property assembly belongs in `fallow-output`",
+        "SARIF builders",
+        "Boundary Policy",
+        "`fallow-core` is a backend implementation crate",
     ] {
         assert!(
             doc.contains(required),
@@ -48,6 +62,21 @@ fn architecture_invariants_doc_tracks_guarded_boundaries() {
         !doc.contains("Broader layering rules still need human review"),
         "architecture invariants doc must not describe guarded boundaries as manual-only review"
     );
+    for forbidden in [
+        "Current Exceptions",
+        "current exceptions",
+        "current migration exceptions",
+        "migration exceptions",
+        "while engine migration continues",
+        "known migration states",
+        "still owns some CI",
+        "move toward `fallow-output`",
+    ] {
+        assert!(
+            !doc.contains(forbidden),
+            "architecture invariants doc must describe final boundaries, not known leftovers: {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -518,6 +547,66 @@ fn cli_audit_styling_rendering_uses_output_contract_helpers() {
         assert!(
             !source.contains(forbidden),
             "{source_path} must not re-own shared audit styling render fact `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn api_does_not_own_sarif_family_assembly() {
+    for source_path in [
+        "crates/api/src/dead_code_sarif.rs",
+        "crates/api/src/sarif_output.rs",
+    ] {
+        let source = read_source_without_line_comments(source_path)
+            .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
+        for forbidden in [
+            "SarifFindingFields",
+            "SarifSourceSnippetCache",
+            "SarifDocumentInput",
+            "build_sarif_document",
+            "build_sarif_result_with_snippet",
+            "append_sarif_findings",
+            "struct SarifCtx",
+            "type SarifRuleBuilder",
+            "fn sarif_",
+            "fn push_",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must delegate SARIF-family assembly to fallow-output instead of owning `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn output_owns_sarif_family_assembly() {
+    let dead_code = read_source_without_line_comments("crates/output/src/dead_code_sarif.rs")
+        .expect("read output dead-code SARIF module");
+    for required in [
+        "pub fn build_dead_code_sarif",
+        "SarifFindingFields",
+        "SarifSourceSnippetCache",
+        "append_sarif_findings",
+        "build_sarif_document",
+    ] {
+        assert!(
+            dead_code.contains(required),
+            "fallow-output must own dead-code SARIF assembly: {required}"
+        );
+    }
+
+    let analysis = read_source_without_line_comments("crates/output/src/analysis_sarif.rs")
+        .expect("read output analysis SARIF module");
+    for required in [
+        "pub fn build_duplication_sarif",
+        "pub fn build_grouped_duplication_sarif",
+        "pub fn build_health_sarif",
+        "pub fn annotate_sarif_results",
+    ] {
+        assert!(
+            analysis.contains(required),
+            "fallow-output must own analysis SARIF assembly: {required}"
         );
     }
 }
@@ -1210,6 +1299,163 @@ fn assert_engine_dead_code_facade_has_no_analysis_bypasses() {
     assert!(
         !project_config.contains("core_backend::config_for_project"),
         "engine project config must not route through the core backend adapter"
+    );
+}
+
+#[test]
+fn engine_owns_trace_without_core_adapter() {
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    for forbidden in [
+        "fallow_core::trace::",
+        "fallow_core::trace_chain::",
+        "pub fn trace_export(",
+        "pub fn trace_symbol_chain(",
+    ] {
+        assert!(
+            !core_backend.contains(forbidden),
+            "engine trace must stay owned by trace modules instead of core_backend adapter: {forbidden}"
+        );
+    }
+
+    for source_path in [
+        "crates/engine/src/trace.rs",
+        "crates/engine/src/trace_impl.rs",
+        "crates/engine/src/trace_chain.rs",
+        "crates/engine/src/trace_chain_impl.rs",
+    ] {
+        let source = read_source_without_line_comments(source_path)
+            .unwrap_or_else(|error| panic!("read {source_path}: {error}"));
+        for forbidden in ["core_backend::trace", "fallow_core::trace"] {
+            assert!(
+                !source.contains(forbidden),
+                "{source_path} must not route trace behavior through {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn engine_owns_duplication_pure_helpers_without_core_adapter() {
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    for forbidden in [
+        "fallow_core::duplicates::CloneFingerprintSet",
+        "fallow_core::duplicates::clone_fingerprint",
+        "fallow_core::duplicates::fingerprint_for_fragment",
+        "fallow_core::duplicates::dominant_identifier",
+        "fallow_core::duplicates::families::",
+        "fallow_core::duplicates::tokenize::tokenize_file",
+        "fallow_core::duplicates::find_duplicates",
+        "fallow_core::duplicates::find_duplicates_cached",
+        "fallow_core::duplicates::find_duplicates_cached_with_default_ignore_skips",
+        "fallow_core::duplicates::find_duplicates_with_default_ignore_skips",
+        "fallow_core::duplicates::find_duplicates_touching_files_cached_with_default_ignore_skips",
+        "fallow_core::duplicates::find_duplicates_touching_files_with_default_ignore_skips",
+        "pub struct BackendCloneFingerprintSet",
+    ] {
+        assert!(
+            !core_backend.contains(forbidden),
+            "duplication detector code must stay engine-owned instead of core_backend adapter: {forbidden}"
+        );
+    }
+
+    let duplicates =
+        read_source_without_line_comments("crates/engine/src/duplicates.rs").expect("read source");
+    for forbidden in [
+        "core_backend::clone_fingerprint",
+        "core_backend::fingerprint_for_fragment",
+        "core_backend::dominant_identifier",
+        "core_backend::refresh_clone_families",
+        "core_backend::source_token_kinds_equivalent",
+        "core_backend::find_duplicates",
+        "core_backend::find_duplicates_cached",
+        "core_backend::find_duplicates_with_defaults",
+        "core_backend::find_duplicates_touching_files_with_defaults",
+    ] {
+        assert!(
+            !duplicates.contains(forbidden),
+            "engine duplicates module must not route detector behavior through {forbidden}"
+        );
+    }
+
+    let detector =
+        read_source_without_line_comments("crates/engine/src/duplication_detector/mod.rs")
+            .expect("read engine duplication detector source");
+    assert!(
+        detector.contains("fn tokenize_corpus_for_duplicates")
+            && detector.contains("fn detect_and_postprocess")
+            && detector.contains("pub fn find_duplicates"),
+        "engine duplication detector must own tokenization and clone detection entry points"
+    );
+}
+
+#[test]
+fn core_backend_fallow_core_calls_are_explicitly_allowlisted() {
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    let allowed = [
+        "fallow_core::AnalysisDiscovery",
+        "fallow_core::DeadCodeBackendPrelude",
+        "fallow_core::DeadCodeEntryPoints",
+        "fallow_core::prepare_dead_code_backend_prelude",
+        "fallow_core::discover_dead_code_entry_points",
+        "fallow_core::try_load_dead_code_graph_cache",
+        "fallow_core::resolve_dead_code_imports",
+        "fallow_core::build_dead_code_graph",
+        "fallow_core::run_dead_code_detectors",
+        "fallow_core::plugins::AggregatedPluginResult",
+        "fallow_core::plugins::PluginRegistry",
+    ];
+
+    for line in core_backend.lines() {
+        if !line.contains("fallow_core::") {
+            continue;
+        }
+        assert!(
+            allowed.iter().any(|allowed| line.contains(allowed)),
+            "unexpected fallow-core adapter dependency in core_backend.rs: {line}"
+        );
+    }
+}
+
+#[test]
+fn engine_owns_churn_without_core_adapter() {
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    assert!(
+        !core_backend.contains("fallow_core::churn"),
+        "engine churn must stay owned by crates/engine/src/churn.rs"
+    );
+
+    let churn =
+        read_source_without_line_comments("crates/engine/src/churn.rs").expect("read churn source");
+    for forbidden in ["core_backend::", "crate::spawn::git", "fallow_core::churn"] {
+        assert!(
+            !churn.contains(forbidden),
+            "engine churn must not route through legacy backend path {forbidden}"
+        );
+    }
+    assert!(
+        churn.contains("crate::git_env::clear_ambient_git_env"),
+        "engine churn git subprocesses must clear ambient git environment"
+    );
+}
+
+#[test]
+fn engine_guard_owns_policy_scope_matching() {
+    let core_backend = read_source_without_line_comments("crates/engine/src/core_backend.rs")
+        .expect("read engine core backend source");
+    assert!(
+        !core_backend.contains("fallow_core::analyze::rules_applying_to_path"),
+        "guard policy scope matching must stay owned by fallow-engine"
+    );
+
+    let guard =
+        read_source_without_line_comments("crates/engine/src/guard.rs").expect("read guard source");
+    assert!(
+        !guard.contains("core_backend::rules_applying_to_path"),
+        "guard report assembly must not call core_backend for policy scope matching"
     );
 }
 

@@ -1135,6 +1135,7 @@ dependencies = [
 name = "fallow-engine"
 version = "3.2.0"
 dependencies = [
+ "bitcode",
  "colored 3.1.1",
  "dunce",
  "fallow-config",
@@ -1144,9 +1145,19 @@ dependencies = [
  "fallow-output",
  "fallow-security",
  "fallow-types",
+ "glob",
  "globset",
+ "ignore",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
  "oxc_coverage_instrument",
+ "oxc_parser",
  "oxc_span",
+ "oxc_syntax",
+ "proptest",
+ "rayon",
+ "regex",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
@@ -1263,6 +1274,7 @@ dependencies = [
 name = "fallow-output"
 version = "3.2.0"
 dependencies = [
+ "fallow-config",
  "fallow-types",
  "rustc-hash 2.1.2",
  "schemars",
