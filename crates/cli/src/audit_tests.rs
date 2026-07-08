@@ -2644,7 +2644,7 @@ fn tokens_equivalent_non_js_extension_is_false() {
 }
 
 /// KNOWN SOUNDNESS GAP: `TokenKind::TemplateLiteral` carries no payload
-/// (see `crates/core/src/duplicates/token_types.rs`), so a change to the
+/// (see `crates/engine/src/duplication_detector/token_types.rs`), so a change to the
 /// content of a template literal is invisible to the tokenizer and is
 /// treated as equivalent. This is safe for most template strings but
 /// unsound for dynamic `import(\`...\`)` patterns where the quasi prefix
