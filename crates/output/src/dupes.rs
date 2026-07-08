@@ -114,9 +114,9 @@ pub const DUPES_SUPPRESS_DESCRIPTION: &str =
     "Suppress with an inline comment above the duplicated code";
 
 /// Per-action wire shape attached to each `CloneGroupFinding` and
-/// `AttributedCloneGroupFinding`. Mirrors the action types previously
-/// emitted by `inject_dupes_actions::build_clone_group_actions` in
-/// `crates/cli/src/report/json.rs`: `extract-shared` plus `suppress-line`.
+/// `AttributedCloneGroupFinding` (see `crates/api/src/dupes_output.rs`):
+/// `extract-shared` plus `suppress-line`. The typed wrappers replaced the
+/// legacy JSON post-pass injection that used to live in the CLI report layer.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CloneGroupAction {

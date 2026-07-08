@@ -145,8 +145,9 @@ pub struct DuplicationGrouping {
 
 /// Wire-shape envelope for a [`CloneGroup`] finding. Flattens the bare
 /// group via `#[serde(flatten)]` and carries a typed `actions` array plus
-/// the optional audit-mode `introduced` flag. Replaces the legacy
-/// post-pass injection in `crates/cli/src/report/json.rs::inject_dupes_actions`.
+/// the optional audit-mode `introduced` flag. The typed envelope replaced
+/// the legacy JSON post-pass injection; a guard test in
+/// `crates/cli/src/report/json.rs` rejects any reintroduced post-pass.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CloneGroupFinding {
