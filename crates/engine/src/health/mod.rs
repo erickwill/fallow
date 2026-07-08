@@ -36,6 +36,7 @@ mod findings;
 mod findings_pipeline;
 mod framework_health;
 mod grouping;
+mod health_error;
 mod hotspots;
 mod ignore;
 mod large_functions;
@@ -71,6 +72,7 @@ use file_scores::{
     print_slow_churn_note,
 };
 use finding_sort::sort_findings;
+pub use health_error::HealthError;
 pub use pipeline::{HealthPipelineInputs, HealthScopeInputs};
 pub use runner::{
     run_ungrouped_health, run_ungrouped_health_with_session,
