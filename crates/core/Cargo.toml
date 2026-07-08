@@ -50,7 +50,6 @@ serde_yaml_ng = { workspace = true }
 toml = { workspace = true }
 
 # Hashing
-xxhash-rust = { workspace = true }
 rustc-hash = { workspace = true }
 
 # Progress
@@ -67,7 +66,6 @@ schema = ["fallow-types/schema"]
 criterion2 = { workspace = true }
 proptest = { workspace = true }
 dhat = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

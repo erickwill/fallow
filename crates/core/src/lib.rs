@@ -24,7 +24,6 @@ pub mod cache;
 pub mod churn;
 pub mod cross_reference;
 pub mod discover;
-pub mod duplicates;
 pub(crate) mod errors;
 mod external_style_usage;
 pub mod extract;
@@ -2512,6 +2511,13 @@ fn resolve_user_config(
 /// per-analysis variant and the production-mode rule overrides
 /// (`unused_dev_dependencies: off`, etc.) plus `resolved.production = true`
 /// are silently dropped.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "config resolution fallback is exercised by session tests"
+    )
+)]
 pub(crate) fn default_config(root: &Path) -> ResolvedConfig {
     config_for_project(root, None).map_or_else(
         |_| {
