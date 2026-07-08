@@ -3,21 +3,18 @@
     reason = "human stderr notes for slow churn and file-score failures are preserved from the health pipeline"
 )]
 
-use std::process::ExitCode;
 use std::time::Instant;
 
 use colored::Colorize;
 use fallow_config::ResolvedConfig;
 use fallow_output::FileHealthScore;
-use fallow_types::output_format::OutputFormat;
 
-use crate::error::emit_error;
 use crate::results::DeadCodeAnalysisArtifacts;
 
-use super::HealthExecutionOptions;
 use super::filters::filter_coverage_gaps;
 use super::hotspots;
 use super::scoring::{self, compute_file_scores};
+use super::{HealthError, HealthExecutionOptions};
 
 type FileScoreResult = (Option<scoring::FileScoreOutput>, Option<usize>, Option<f64>);
 type FileScoresAndChurn = (FileScoreResult, f64, Option<hotspots::ChurnFetchResult>);
@@ -39,7 +36,7 @@ pub struct FileScoresAndChurnInput<'a> {
 pub fn compute_file_scores_and_churn(
     input: FileScoresAndChurnInput<'_>,
     precomputed_for_scores: Option<DeadCodeAnalysisArtifacts>,
-) -> Result<FileScoresAndChurn, ExitCode> {
+) -> Result<FileScoresAndChurn, HealthError> {
     let needs_churn = input.opts.hotspots || input.opts.targets;
     if input.needs_file_scores && needs_churn {
         return std::thread::scope(|s| {
@@ -53,14 +50,13 @@ pub fn compute_file_scores_and_churn(
                 changed_files: input.changed_files,
                 ws_roots: input.ws_roots,
                 ignore_set: input.ignore_set,
-                output: input.opts.output,
                 istanbul_coverage: input.istanbul_coverage,
                 pre_computed: precomputed_for_scores,
             })?;
             let fs_ms = t.elapsed().as_secs_f64() * 1000.0;
             let churn = churn_handle
                 .join()
-                .map_err(|_| emit_error("churn thread panicked", 2, input.opts.output))?;
+                .map_err(|_| HealthError::message("churn thread panicked", 2))?;
             Ok((score_result, fs_ms, churn))
         });
     }
@@ -74,7 +70,6 @@ pub fn compute_file_scores_and_churn(
             changed_files: input.changed_files,
             ws_roots: input.ws_roots,
             ignore_set: input.ignore_set,
-            output: input.opts.output,
             istanbul_coverage: input.istanbul_coverage,
             pre_computed: precomputed_for_scores,
         })?
@@ -125,17 +120,16 @@ struct FileScoreInput<'a> {
     changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
     ws_roots: Option<&'a [std::path::PathBuf]>,
     ignore_set: &'a globset::GlobSet,
-    output: OutputFormat,
     istanbul_coverage: Option<&'a scoring::IstanbulCoverage>,
     pre_computed: Option<DeadCodeAnalysisArtifacts>,
 }
 
-fn compute_filtered_file_scores(input: FileScoreInput<'_>) -> Result<FileScoreResult, ExitCode> {
+fn compute_filtered_file_scores(input: FileScoreInput<'_>) -> Result<FileScoreResult, HealthError> {
     let analysis_output = if let Some(pre) = input.pre_computed {
         pre
     } else {
         crate::dead_code::analyze_with_parse_result(input.config, input.modules)
-            .map_err(|e| emit_error(&format!("analysis failed: {e}"), 2, input.output))?
+            .map_err(|e| HealthError::message(format!("analysis failed: {e}"), 2))?
     };
     match compute_file_scores(
         input.modules,

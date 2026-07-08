@@ -2995,6 +2995,46 @@ fn health_hotspots_invalid_since_emits_single_document() {
 }
 
 #[test]
+fn health_baseline_load_missing_file_emits_fatal_error_document() {
+    // The baseline_io fatal family (load/save failures) now flows through the
+    // typed HealthError and is rendered at the CLI boundary: a missing
+    // `--baseline` file is a loud exit-2 SINGLE JSON error document, byte-shape
+    // identical to the other fatal health inputs.
+    let dir = tempdir().unwrap();
+    write_file(
+        &dir.path().join("package.json"),
+        r#"{"name":"baseline-load-missing","type":"module"}"#,
+    );
+    write_file(
+        &dir.path().join("src/index.ts"),
+        "export const a = 1;\nexport function foo() { return a; }\n",
+    );
+    let missing = dir.path().join("missing-baseline.json");
+
+    let out = run_fallow_in_root(
+        "health",
+        dir.path(),
+        &["--baseline", missing.to_str().unwrap(), "--format", "json"],
+    );
+
+    assert_eq!(
+        out.code, 2,
+        "a missing baseline file should be a fatal exit 2: stdout={} stderr={}",
+        out.stdout, out.stderr
+    );
+    let json = parse_json(&out);
+    assert_eq!(json["error"], serde_json::json!(true));
+    assert_eq!(json["exit_code"], serde_json::json!(2));
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("failed to read health baseline")),
+        "error message should name the baseline read failure: {}",
+        out.stdout
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "test fixture; linear setup/assert, length is not a maintainability concern"

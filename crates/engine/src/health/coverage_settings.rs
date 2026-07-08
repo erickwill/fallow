@@ -5,13 +5,9 @@
     reason = "human stderr note for auto-detected coverage is part of the CLI health contract"
 )]
 
-use std::process::ExitCode;
-
 use fallow_config::ResolvedConfig;
 
-use crate::error::emit_error;
-
-use super::{HealthExecutionOptions, scoring};
+use super::{HealthError, HealthExecutionOptions, scoring};
 
 pub(super) struct HealthCoverageSettings {
     pub(super) report_coverage_gaps: bool,
@@ -22,7 +18,7 @@ pub(super) struct HealthCoverageSettings {
 pub(super) fn prepare_health_coverage_settings(
     opts: &HealthExecutionOptions<'_>,
     config: &ResolvedConfig,
-) -> Result<HealthCoverageSettings, ExitCode> {
+) -> Result<HealthCoverageSettings, HealthError> {
     let config_coverage_enabled = config.rules.coverage_gaps != fallow_config::Severity::Off;
     let report_coverage_gaps =
         opts.coverage_gaps || (opts.config_activates_coverage_gaps && config_coverage_enabled);
@@ -40,7 +36,7 @@ pub(super) fn prepare_health_coverage_settings(
 fn load_health_coverage(
     opts: &HealthExecutionOptions<'_>,
     config: &ResolvedConfig,
-) -> Result<Option<scoring::IstanbulCoverage>, ExitCode> {
+) -> Result<Option<scoring::IstanbulCoverage>, HealthError> {
     if let Some(coverage_path) = opts.coverage_inputs.coverage {
         return scoring::load_istanbul_coverage(
             coverage_path,
@@ -48,10 +44,7 @@ fn load_health_coverage(
             Some(&config.root),
         )
         .map(Some)
-        .map_err(|e| {
-            emit_error(&format!("coverage: {e}"), 2, opts.output);
-            ExitCode::from(2)
-        });
+        .map_err(|e| HealthError::message(format!("coverage: {e}"), 2));
     }
 
     let Some(auto_path) = scoring::auto_detect_coverage(&config.root) else {

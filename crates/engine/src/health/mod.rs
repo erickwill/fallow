@@ -1,7 +1,6 @@
 //! Command-neutral health execution options and runners.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use fallow_config::{EmailMode, WorkspaceInfo};
 use fallow_output::{
@@ -188,10 +187,12 @@ impl HealthGroupResolver for NoGroupResolver {
 /// (license verification, subprocess spawning), which stays in the CLI. The
 /// engine calls this callback only when [`HealthExecutionOptions::runtime_coverage`]
 /// is set, so the default and programmatic paths never touch it.
-pub type RuntimeCoverageAnalyzer<'a> = dyn Fn(
-        &RuntimeCoverageOptions,
-        RuntimeCoverageSeamInput<'_>,
-    ) -> Result<RuntimeCoverageReport, ExitCode>
+///
+/// The seam prints its own errors (license / sidecar diagnostics), so it returns
+/// the already-printed exit code as a bare `u8`. The engine wraps that code in
+/// [`HealthError::Printed`] so the CLI boundary honors the code without emitting
+/// a second error document.
+pub type RuntimeCoverageAnalyzer<'a> = dyn Fn(&RuntimeCoverageOptions, RuntimeCoverageSeamInput<'_>) -> Result<RuntimeCoverageReport, u8>
     + 'a;
 
 /// Inputs the runtime coverage seam needs from the analysis core.

@@ -7,10 +7,9 @@
 //! coverage sidecar, ownership-resolver construction, and error rendering) are
 //! threaded in through the [`HealthSeams`] carrier and the typed result.
 
-use std::process::ExitCode;
 use std::time::Instant;
 
-use super::{HealthExecutionOptions, HealthSeams};
+use super::{HealthError, HealthExecutionOptions, HealthSeams};
 
 use super::core_pipeline::{
     HealthCoreSectionsInput, HealthPreparedCore, prepare_health_core_sections,
@@ -38,13 +37,15 @@ pub type HealthResultGeneric<R> = super::HealthAnalysisResult<R>;
 ///
 /// # Errors
 ///
-/// Returns the CLI exit code emitted by a failing analysis or invalid input.
+/// Returns a typed [`HealthError`] for a failing analysis or invalid input. The
+/// CLI boundary renders `HealthError::Message` and honors the exit code of an
+/// already-printed `HealthError::Printed`.
 pub fn execute_health_inner<'a, R: super::HealthGroupResolver>(
     opts: &HealthOptions<'a>,
     input: HealthPipelineInputs,
     scope_inputs: HealthScopeInputs<'a, R>,
     seams: &HealthSeams<'_>,
-) -> Result<HealthResultGeneric<R>, ExitCode> {
+) -> Result<HealthResultGeneric<R>, HealthError> {
     let start = Instant::now();
     let HealthPipelineInputs {
         config,

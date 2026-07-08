@@ -32,7 +32,6 @@ pub mod discover;
 mod discover_walk;
 pub mod duplicates;
 mod entry_points;
-mod error;
 mod feature_flags;
 pub mod flags;
 pub(crate) mod graph {

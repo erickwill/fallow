@@ -5,12 +5,9 @@
     reason = "health baseline save/load preserves existing human stderr notes"
 )]
 
-use std::process::ExitCode;
-
-use fallow_types::output_format::OutputFormat;
-
 use crate::baseline::{HealthBaselineData, filter_new_health_findings};
-use crate::error::emit_error;
+
+use super::HealthError;
 
 pub(super) struct HealthBaselineSaveInput<'a> {
     pub(super) save_path: &'a std::path::Path,
@@ -19,11 +16,10 @@ pub(super) struct HealthBaselineSaveInput<'a> {
     pub(super) targets: &'a [fallow_output::RefactoringTarget],
     pub(super) config_root: &'a std::path::Path,
     pub(super) quiet: bool,
-    pub(super) output: OutputFormat,
 }
 
 /// Save health baseline to disk.
-pub(super) fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Result<(), ExitCode> {
+pub(super) fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Result<(), HealthError> {
     let HealthBaselineSaveInput {
         save_path,
         findings,
@@ -31,7 +27,6 @@ pub(super) fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Resul
         targets,
         config_root,
         quiet,
-        output,
     } = *input;
     let baseline = HealthBaselineData::from_findings(
         findings,
@@ -45,17 +40,15 @@ pub(super) fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Resul
                 && !parent.as_os_str().is_empty()
                 && let Err(e) = std::fs::create_dir_all(parent)
             {
-                return Err(emit_error(
-                    &format!("failed to create health baseline directory: {e}"),
+                return Err(HealthError::message(
+                    format!("failed to create health baseline directory: {e}"),
                     2,
-                    output,
                 ));
             }
             if let Err(e) = std::fs::write(save_path, json) {
-                return Err(emit_error(
-                    &format!("failed to save health baseline: {e}"),
+                return Err(HealthError::message(
+                    format!("failed to save health baseline: {e}"),
                     2,
-                    output,
                 ));
             }
             if !quiet {
@@ -63,10 +56,9 @@ pub(super) fn save_health_baseline(input: &HealthBaselineSaveInput<'_>) -> Resul
             }
             Ok(())
         }
-        Err(e) => Err(emit_error(
-            &format!("failed to serialize health baseline: {e}"),
+        Err(e) => Err(HealthError::message(
+            format!("failed to serialize health baseline: {e}"),
             2,
-            output,
         )),
     }
 }
@@ -77,12 +69,11 @@ pub(super) fn load_health_baseline(
     findings: &mut Vec<fallow_output::ComplexityViolation>,
     root: &std::path::Path,
     quiet: bool,
-    output: OutputFormat,
-) -> Result<HealthBaselineData, ExitCode> {
+) -> Result<HealthBaselineData, HealthError> {
     let json = std::fs::read_to_string(baseline_path)
-        .map_err(|e| emit_error(&format!("failed to read health baseline: {e}"), 2, output))?;
+        .map_err(|e| HealthError::message(format!("failed to read health baseline: {e}"), 2))?;
     let baseline: HealthBaselineData = serde_json::from_str(&json)
-        .map_err(|e| emit_error(&format!("failed to parse health baseline: {e}"), 2, output))?;
+        .map_err(|e| HealthError::message(format!("failed to parse health baseline: {e}"), 2))?;
     let baseline_entries = baseline.finding_entry_count();
     let before = findings.len();
     let overlap_entries = baseline.overlap_entry_count(findings, root);

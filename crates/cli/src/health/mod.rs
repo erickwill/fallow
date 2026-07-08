@@ -20,9 +20,9 @@ use std::time::Instant;
 use colored::Colorize;
 use fallow_config::OutputFormat;
 use fallow_engine::health::{
-    HealthExecutionOptions, HealthGateOptions, HealthGroupResolver, HealthPipelineInputs,
-    HealthScopeInputs, HealthSeams, HealthSharedParseData, HealthSort, RuntimeCoverageSeamInput,
-    execute_health_inner, validate_health_churn_file,
+    HealthError, HealthExecutionOptions, HealthGateOptions, HealthGroupResolver,
+    HealthPipelineInputs, HealthScopeInputs, HealthSeams, HealthSharedParseData, HealthSort,
+    RuntimeCoverageSeamInput, execute_health_inner, validate_health_churn_file,
 };
 
 use crate::check::{get_changed_files, resolve_workspace_scope};
@@ -125,7 +125,7 @@ fn health_seams<'a>() -> HealthSeams<'a> {
 fn runtime_coverage_seam(
     options: &fallow_engine::health::RuntimeCoverageOptions,
     input: RuntimeCoverageSeamInput<'_>,
-) -> Result<fallow_output::RuntimeCoverageReport, ExitCode> {
+) -> Result<fallow_output::RuntimeCoverageReport, u8> {
     coverage::analyze(
         options,
         &coverage::RuntimeCoverageAnalysisInput {
@@ -170,6 +170,17 @@ fn build_health_scope_inputs<'a>(
     })
 }
 
+/// Translate an engine [`HealthError`] into a CLI exit code at the command
+/// boundary. `Message` is rendered here (the engine no longer prints fatal
+/// errors); `Printed` was already emitted by a lower layer (the runtime-coverage
+/// seam), so its exit code is honored without a second error document.
+fn health_err_to_exit(error: HealthError, output: OutputFormat) -> ExitCode {
+    match error {
+        HealthError::Message { message, exit_code } => emit_error(&message, exit_code, output),
+        HealthError::Printed(code) => ExitCode::from(code),
+    }
+}
+
 /// Load config for a health run, validating coverage-root and churn-file inputs
 /// up front (loud exit 2 on a malformed input).
 fn load_health_config(
@@ -177,7 +188,7 @@ fn load_health_config(
 ) -> Result<(fallow_config::ResolvedConfig, f64), ExitCode> {
     fallow_engine::health::validate_coverage_root_absolute(opts.coverage_inputs.coverage_root)
         .map_err(|e| emit_error(&e, 2, opts.output))?;
-    validate_health_churn_file(opts)?;
+    validate_health_churn_file(opts).map_err(|e| health_err_to_exit(e, opts.output))?;
     let t = Instant::now();
     let config = crate::load_config_for_analysis(
         opts.root,
@@ -229,7 +240,8 @@ pub fn execute_health_with_shared_parse(
         },
         scope_inputs,
         &seams,
-    )?;
+    )
+    .map_err(|e| health_err_to_exit(e, opts.output))?;
     record_health_telemetry(&result.report, result.coverage_gaps_has_findings);
     Ok(result)
 }
@@ -276,7 +288,8 @@ pub fn execute_health(opts: &HealthOptions<'_>) -> Result<HealthResult, ExitCode
         },
         scope_inputs,
         &seams,
-    )?;
+    )
+    .map_err(|e| health_err_to_exit(e, opts.output))?;
     record_health_telemetry(&result.report, result.coverage_gaps_has_findings);
     Ok(result)
 }

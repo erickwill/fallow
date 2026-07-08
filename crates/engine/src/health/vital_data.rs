@@ -3,12 +3,9 @@
     reason = "human stderr notes for snapshots and trends are preserved from the health pipeline"
 )]
 
-use std::process::ExitCode;
-
 use fallow_config::ResolvedConfig;
 use fallow_output::{FileHealthScore, HealthScore, HotspotEntry, HotspotSummary};
 
-use crate::error::emit_error;
 use crate::vital_signs;
 
 use super::actions::active_health_coverage_model;
@@ -16,8 +13,8 @@ use super::filters::filter_large_functions_by_diff;
 use super::large_functions::{LargeFunctionInput, collect_large_functions};
 use super::scoring;
 use super::{
-    HealthExecutionOptions, SubsetFilter, VitalSignsAndCountsInput, apply_duplication_metrics,
-    compute_vital_signs_and_counts,
+    HealthError, HealthExecutionOptions, SubsetFilter, VitalSignsAndCountsInput,
+    apply_duplication_metrics, compute_vital_signs_and_counts,
 };
 
 pub struct HealthVitalData {
@@ -157,7 +154,7 @@ fn maybe_save_health_snapshot(
     vital_signs: &fallow_output::VitalSigns,
     counts: &fallow_output::VitalSignsCounts,
     health_score: Option<&HealthScore>,
-) -> Result<(), ExitCode> {
+) -> Result<(), HealthError> {
     if let Some(ref snapshot_path) = input.opts.save_snapshot {
         save_snapshot(SnapshotInput {
             opts: input.opts,
@@ -174,7 +171,7 @@ fn maybe_save_health_snapshot(
 
 pub fn prepare_health_vital_data(
     input: &HealthVitalDataInput<'_>,
-) -> Result<HealthVitalData, ExitCode> {
+) -> Result<HealthVitalData, HealthError> {
     let project_subset = if input.candidate_paths.len() == input.total_files {
         SubsetFilter::Full
     } else {
@@ -281,7 +278,7 @@ struct SnapshotInput<'a> {
     coverage_model: Option<fallow_output::CoverageModel>,
 }
 
-fn save_snapshot(input: SnapshotInput<'_>) -> Result<(), ExitCode> {
+fn save_snapshot(input: SnapshotInput<'_>) -> Result<(), HealthError> {
     let shallow = input.hotspot_summary.is_some_and(|s| s.shallow_clone);
     let snapshot = vital_signs::build_snapshot(
         input.vital_signs.clone(),
@@ -303,7 +300,7 @@ fn save_snapshot(input: SnapshotInput<'_>) -> Result<(), ExitCode> {
             }
             Ok(())
         }
-        Err(e) => Err(emit_error(&e, 2, input.opts.output)),
+        Err(e) => Err(HealthError::message(e, 2)),
     }
 }
 

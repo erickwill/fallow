@@ -1,6 +1,5 @@
 //! Health findings pipeline assembly.
 
-use std::process::ExitCode;
 use std::time::Instant;
 
 use fallow_config::ResolvedConfig;
@@ -18,7 +17,7 @@ use super::findings::{
 use super::threshold_overrides::{
     GlobalHealthThresholds, ThresholdOverrideResolver, ThresholdOverrideStateTracker,
 };
-use super::{HealthOptions, scoring, sort_findings};
+use super::{HealthError, HealthOptions, scoring, sort_findings};
 
 pub(super) struct HealthFindingsData {
     pub(super) findings: Vec<ComplexityViolation>,
@@ -60,7 +59,7 @@ pub(super) struct HealthFindingsInput<'a> {
 
 pub(super) fn prepare_health_findings(
     input: HealthFindingsInput<'_>,
-) -> Result<HealthFindingsData, ExitCode> {
+) -> Result<HealthFindingsData, HealthError> {
     let t = Instant::now();
     let global_thresholds = GlobalHealthThresholds {
         cyclomatic: input.max_cyclomatic,
@@ -218,7 +217,7 @@ fn finalize_health_findings(
     config: &ResolvedConfig,
     findings: &mut Vec<ComplexityViolation>,
     diff_index: Option<&fallow_output::DiffIndex>,
-) -> Result<HealthFindingFinalizeResult, ExitCode> {
+) -> Result<HealthFindingFinalizeResult, HealthError> {
     if let Some(diff_index) = diff_index {
         filter_complexity_findings_by_diff(findings, diff_index, &config.root);
     }
@@ -251,14 +250,13 @@ fn apply_health_baseline_and_top(
     opts: &HealthOptions<'_>,
     config: &ResolvedConfig,
     findings: &mut Vec<ComplexityViolation>,
-) -> Result<Option<HealthBaselineData>, ExitCode> {
+) -> Result<Option<HealthBaselineData>, HealthError> {
     let loaded_baseline = if let Some(load_path) = opts.baseline {
         Some(load_health_baseline(
             load_path,
             findings,
             &config.root,
             opts.quiet,
-            opts.output,
         )?)
     } else {
         None
@@ -275,7 +273,7 @@ pub(super) fn save_health_baseline_if_requested(
     findings: &[ComplexityViolation],
     runtime_coverage: Option<&fallow_output::RuntimeCoverageReport>,
     targets: &[RefactoringTarget],
-) -> Result<(), ExitCode> {
+) -> Result<(), HealthError> {
     if let Some(save_path) = opts.save_baseline {
         save_health_baseline(&HealthBaselineSaveInput {
             save_path,
@@ -285,7 +283,6 @@ pub(super) fn save_health_baseline_if_requested(
             targets,
             config_root: &config.root,
             quiet: opts.quiet,
-            output: opts.output,
         })?;
     }
     Ok(())

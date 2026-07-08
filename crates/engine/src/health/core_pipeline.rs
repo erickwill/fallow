@@ -1,7 +1,5 @@
 //! Health core pipeline preparation.
 
-use std::process::ExitCode;
-
 use fallow_config::ResolvedConfig;
 
 use crate::{duplicates::DuplicationReport, results::DeadCodeAnalysisArtifacts};
@@ -15,7 +13,9 @@ use super::pipeline::HealthScope;
 use super::runtime_sections::{
     HealthRuntimeSections, HealthRuntimeSectionsInput, prepare_health_runtime_sections,
 };
-use super::{HealthDerivedSections, HealthOptions, HealthSeams, HealthVitalData, scoring};
+use super::{
+    HealthDerivedSections, HealthError, HealthOptions, HealthSeams, HealthVitalData, scoring,
+};
 
 pub(super) struct HealthCoreSectionsInput<'a, R> {
     pub(super) opts: &'a HealthOptions<'a>,
@@ -66,7 +66,7 @@ pub(super) struct HealthPreparedCore {
 
 pub(super) fn prepare_health_core_sections<R>(
     input: HealthCoreSectionsInput<'_, R>,
-) -> Result<HealthPreparedCore, ExitCode> {
+) -> Result<HealthPreparedCore, HealthError> {
     let HealthCoreSectionsInput {
         opts,
         config,
@@ -139,7 +139,7 @@ pub(super) fn prepare_health_core_sections<R>(
 
 fn prepare_health_analysis_prelude<R>(
     input: HealthAnalysisPreludeInput<'_, R>,
-) -> Result<HealthAnalysisPrelude, ExitCode> {
+) -> Result<HealthAnalysisPrelude, HealthError> {
     let HealthCoverageSettings {
         report_coverage_gaps,
         enforce_coverage_gaps,
@@ -177,7 +177,7 @@ fn prepare_health_analysis_prelude<R>(
 
 fn prepare_health_scoped_findings<R>(
     input: &HealthScopedFindingsInput<'_, R>,
-) -> Result<HealthFindingsData, ExitCode> {
+) -> Result<HealthFindingsData, HealthError> {
     prepare_health_findings(HealthFindingsInput {
         opts: input.opts,
         config: input.config,

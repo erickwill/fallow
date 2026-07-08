@@ -1,14 +1,13 @@
 //! Health analysis data preparation.
 
-use std::process::ExitCode;
-
 use fallow_config::ResolvedConfig;
 
-use crate::error::emit_error;
 use crate::results::DeadCodeAnalysisArtifacts;
 
 use super::framework_health::FrameworkHealthFacts;
-use super::{FileScoresAndChurnInput, HealthOptions, HealthSeams, RuntimeCoverageSeamInput};
+use super::{
+    FileScoresAndChurnInput, HealthError, HealthOptions, HealthSeams, RuntimeCoverageSeamInput,
+};
 use super::{compute_file_scores_and_churn, hotspots, print_slow_churn_note, scoring};
 
 pub(super) struct HealthAnalysisData {
@@ -40,7 +39,7 @@ pub(super) struct HealthAnalysisDataInput<'a> {
 
 pub(super) fn prepare_health_analysis_data(
     input: HealthAnalysisDataInput<'_>,
-) -> Result<HealthAnalysisData, ExitCode> {
+) -> Result<HealthAnalysisData, HealthError> {
     let mut input = input;
     let needs_analysis_output = input.needs_file_scores || input.opts.runtime_coverage.is_some();
     let seams = input.seams;
@@ -99,12 +98,11 @@ pub(super) fn prepare_health_analysis_data(
 }
 
 fn prepare_shared_analysis_output(
-    opts: &HealthOptions<'_>,
     config: &ResolvedConfig,
     modules: &[crate::source::ModuleInfo],
     pre_computed: Option<DeadCodeAnalysisArtifacts>,
     needed: bool,
-) -> Result<Option<DeadCodeAnalysisArtifacts>, ExitCode> {
+) -> Result<Option<DeadCodeAnalysisArtifacts>, HealthError> {
     if !needed {
         return Ok(None);
     }
@@ -113,7 +111,7 @@ fn prepare_shared_analysis_output(
     }
     crate::dead_code::analyze_with_parse_result(config, modules)
         .map(Some)
-        .map_err(|e| emit_error(&format!("analysis failed: {e}"), 2, opts.output))
+        .map_err(|e| HealthError::message(format!("analysis failed: {e}"), 2))
 }
 
 #[derive(Clone, Copy)]
@@ -132,15 +130,14 @@ struct RuntimeCoverageAnalysisScope<'a> {
 fn analyze_runtime_coverage(
     input: RuntimeCoverageAnalysisScope<'_>,
     seams: &HealthSeams<'_>,
-) -> Result<Option<fallow_output::RuntimeCoverageReport>, ExitCode> {
+) -> Result<Option<fallow_output::RuntimeCoverageReport>, HealthError> {
     let Some(production_options) = input.opts.runtime_coverage.as_ref() else {
         return Ok(None);
     };
     let Some(analysis_output) = input.shared_analysis_output else {
-        return Err(emit_error(
+        return Err(HealthError::message(
             "runtime coverage requires analysis output",
             2,
-            input.opts.output,
         ));
     };
     (seams.runtime_coverage_analyzer)(
@@ -161,6 +158,7 @@ fn analyze_runtime_coverage(
         },
     )
     .map(Some)
+    .map_err(HealthError::Printed)
 }
 
 struct PreparedSharedHealthAnalysis {
@@ -185,9 +183,8 @@ fn prepare_shared_health_analysis(
     input: &mut HealthAnalysisDataInput<'_>,
     needs_analysis_output: bool,
     seams: &HealthSeams<'_>,
-) -> Result<PreparedSharedHealthAnalysis, ExitCode> {
+) -> Result<PreparedSharedHealthAnalysis, HealthError> {
     let output = prepare_shared_analysis_output(
-        input.opts,
         input.config,
         input.modules,
         input.pre_computed_analysis.take(),

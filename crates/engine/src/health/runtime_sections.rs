@@ -1,7 +1,5 @@
 //! Health runtime section assembly.
 
-use std::process::ExitCode;
-
 use fallow_config::ResolvedConfig;
 use fallow_output::{ComplexityViolation, FileHealthScore, RefactoringTarget};
 
@@ -12,7 +10,7 @@ use super::analysis_data::HealthAnalysisData;
 use super::findings_pipeline::save_health_baseline_if_requested;
 use super::runtime_filter::{RuntimeCoverageFilterContext, apply_runtime_coverage_filters};
 use super::{
-    HealthDerivedSectionInput, HealthDerivedSections, HealthOptions, HealthVitalData,
+    HealthDerivedSectionInput, HealthDerivedSections, HealthError, HealthOptions, HealthVitalData,
     HealthVitalDataInput, health_file_scores_slice, prepare_health_derived_sections,
     prepare_health_vital_data,
 };
@@ -44,7 +42,7 @@ pub(super) struct HealthRuntimeSections {
 pub(super) fn prepare_health_runtime_sections(
     opts: &HealthOptions<'_>,
     mut input: HealthRuntimeSectionsInput<'_>,
-) -> Result<HealthRuntimeSections, ExitCode> {
+) -> Result<HealthRuntimeSections, HealthError> {
     let file_scores_slice = health_file_scores_slice(input.analysis_data.score_output.as_ref());
     let derived_sections = prepare_health_derived_sections(
         opts,
@@ -97,7 +95,7 @@ fn prepare_health_vital_data_from_sections(
     input: &HealthRuntimeSectionsInput<'_>,
     derived_sections: &HealthDerivedSections,
     file_scores_slice: &[FileHealthScore],
-) -> Result<HealthVitalData, ExitCode> {
+) -> Result<HealthVitalData, HealthError> {
     prepare_health_vital_data(&HealthVitalDataInput {
         opts,
         modules: input.modules,
@@ -150,7 +148,7 @@ struct HealthRuntimeFinalizeInput<'a> {
 fn finalize_health_runtime_outputs(
     opts: &HealthOptions<'_>,
     input: HealthRuntimeFinalizeInput<'_>,
-) -> Result<(), ExitCode> {
+) -> Result<(), HealthError> {
     let HealthRuntimeFinalizeInput {
         config,
         runtime_coverage,

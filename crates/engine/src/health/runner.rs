@@ -1,7 +1,6 @@
 //! Engine-owned health runners for non-CLI callers.
 
 use std::path::PathBuf;
-use std::process::ExitCode;
 use std::time::Instant;
 
 use fallow_config::ProductionAnalysis;
@@ -16,9 +15,9 @@ use crate::{
 };
 
 use super::{
-    HealthAnalysisResult, HealthExecutionOptions, HealthPipelineInputs, HealthScopeInputs,
-    HealthSeams, NoGroupResolver, RuntimeCoverageOptions, RuntimeCoverageSeamInput,
-    validate_health_churn_file,
+    HealthAnalysisResult, HealthError, HealthExecutionOptions, HealthPipelineInputs,
+    HealthScopeInputs, HealthSeams, NoGroupResolver, RuntimeCoverageOptions,
+    RuntimeCoverageSeamInput, validate_health_churn_file,
 };
 
 /// Run health analysis without a presentation grouping resolver.
@@ -34,8 +33,8 @@ use super::{
 pub fn run_ungrouped_health(
     options: &HealthExecutionOptions<'_>,
     ws_roots: Option<Vec<PathBuf>>,
-) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
-    validate_health_churn_file(options).map_err(|_| ExitCode::from(2))?;
+) -> Result<HealthAnalysisResult<NoGroupResolver>, HealthError> {
+    validate_health_churn_file(options)?;
 
     let start = Instant::now();
     let project_config = config_for_project_analysis(
@@ -50,7 +49,7 @@ pub fn run_ungrouped_health(
             analysis: ProductionAnalysis::Health,
         },
     )
-    .map_err(|_| ExitCode::from(2))?;
+    .map_err(|_| HealthError::message("failed to load health project config", 2))?;
     let config_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let session = AnalysisSession::from_config(project_config);
@@ -62,7 +61,7 @@ pub fn run_ungrouped_health(
         super::should_precompute_dead_code_analysis(options, session.config())
             .then(|| session.analyze_dead_code_with_parsed_modules(&parts.modules))
             .transpose()
-            .map_err(|_| ExitCode::from(2))?;
+            .map_err(|_| HealthError::message("analysis failed", 2))?;
 
     run_ungrouped_health_from_parts(HealthRunPartsInput {
         options,
@@ -90,7 +89,7 @@ pub fn run_ungrouped_health_with_session(
     ws_roots: Option<Vec<PathBuf>>,
     session: &AnalysisSession,
     changed_files: Option<Vec<PathBuf>>,
-) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
+) -> Result<HealthAnalysisResult<NoGroupResolver>, HealthError> {
     run_ungrouped_health_with_session_artifacts(
         options,
         ws_roots,
@@ -114,8 +113,8 @@ pub fn run_ungrouped_health_with_session_artifacts(
     changed_files: Option<Vec<PathBuf>>,
     pre_computed_analysis: Option<DeadCodeAnalysisArtifacts>,
     pre_computed_duplication: Option<DuplicationReport>,
-) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
-    validate_health_churn_file(options).map_err(|_| ExitCode::from(2))?;
+) -> Result<HealthAnalysisResult<NoGroupResolver>, HealthError> {
+    validate_health_churn_file(options)?;
 
     let changed_files = changed_files.map(FxHashSet::from_iter).or_else(|| {
         options
@@ -153,7 +152,7 @@ struct HealthRunPartsInput<'a> {
 
 fn run_ungrouped_health_from_parts(
     input: HealthRunPartsInput<'_>,
-) -> Result<HealthAnalysisResult<NoGroupResolver>, ExitCode> {
+) -> Result<HealthAnalysisResult<NoGroupResolver>, HealthError> {
     let HealthRunPartsInput {
         options,
         ws_roots,
@@ -210,6 +209,6 @@ fn run_ungrouped_health_from_parts(
 fn programmatic_runtime_coverage_seam(
     _options: &RuntimeCoverageOptions,
     _input: RuntimeCoverageSeamInput<'_>,
-) -> Result<fallow_output::RuntimeCoverageReport, ExitCode> {
-    Err(ExitCode::from(2))
+) -> Result<fallow_output::RuntimeCoverageReport, u8> {
+    Err(2)
 }

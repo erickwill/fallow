@@ -257,17 +257,25 @@ pub(super) struct RuntimeCoverageAnalysisInput<'a> {
     pub output: OutputFormat,
 }
 
+/// Emit the CLI error document (byte-identical to [`emit_error`]) and return the
+/// raw exit code so the engine can wrap it in `HealthError::Printed` without
+/// re-printing at the CLI boundary.
+fn emit_printed(message: &str, code: u8, output: OutputFormat) -> u8 {
+    emit_error(message, code, output);
+    code
+}
+
 pub(super) fn analyze(
     options: &RuntimeCoverageOptions,
     input: &RuntimeCoverageAnalysisInput<'_>,
-) -> Result<RuntimeCoverageReport, ExitCode> {
+) -> Result<RuntimeCoverageReport, u8> {
     let sidecar = discover_sidecar(Some(input.root))
-        .map_err(|message| emit_error(&message, 4, input.output))?;
+        .map_err(|message| emit_printed(&message, 4, input.output))?;
     let prepared_sources = prepare_coverage_sources(&options.path)
-        .map_err(|message| emit_error(&message, 5, input.output))?;
+        .map_err(|message| emit_printed(&message, 5, input.output))?;
     let static_signals =
         build_static_signal_index(input.modules, input.analysis_output, input.file_paths)
-            .map_err(|message| emit_error(&message, 2, input.output))?;
+            .map_err(|message| emit_printed(&message, 2, input.output))?;
     let (request, locations) =
         build_request(options, input, &static_signals, prepared_sources.sources);
     let response = run_sidecar(&sidecar, &request, input.quiet, input.output)?;
@@ -1708,8 +1716,8 @@ fn run_sidecar(
     request: &Request,
     quiet: bool,
     output: OutputFormat,
-) -> Result<Response, ExitCode> {
-    verify_sidecar_signature(sidecar).map_err(|message| emit_error(&message, 4, output))?;
+) -> Result<Response, u8> {
+    verify_sidecar_signature(sidecar).map_err(|message| emit_printed(&message, 4, output))?;
 
     let mut command = Command::new(sidecar);
     command
@@ -1717,7 +1725,7 @@ fn run_sidecar(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = crate::signal::ScopedChild::spawn(&mut command).map_err(|err| {
-        emit_error(
+        emit_printed(
             &format!("failed to spawn {}: {err}", sidecar.display()),
             4,
             output,
@@ -1730,7 +1738,7 @@ fn run_sidecar(
 
     let output_data = child
         .wait_with_output()
-        .map_err(|err| emit_error(&format!("failed to wait for sidecar: {err}"), 4, output))?;
+        .map_err(|err| emit_printed(&format!("failed to wait for sidecar: {err}"), 4, output))?;
 
     if !output_data.stderr.is_empty() && !quiet {
         let stderr = String::from_utf8_lossy(&output_data.stderr);
@@ -1740,7 +1748,7 @@ fn run_sidecar(
     check_sidecar_exit_status(&output_data, output)?;
 
     let response: Response = serde_json::from_slice(&output_data.stdout).map_err(|err| {
-        emit_error(
+        emit_printed(
             &format!("failed to parse sidecar response: {err}"),
             4,
             output,
@@ -1757,16 +1765,16 @@ fn write_sidecar_request(
     mut stdin: impl Write,
     request: &Request,
     output: OutputFormat,
-) -> Result<(), ExitCode> {
+) -> Result<(), u8> {
     if let Err(err) = serde_json::to_writer(&mut stdin, request) {
-        return Err(emit_error(
+        return Err(emit_printed(
             &format!("failed to serialize sidecar request: {err}"),
             4,
             output,
         ));
     }
     if let Err(err) = stdin.flush() {
-        return Err(emit_error(
+        return Err(emit_printed(
             &format!("failed to flush sidecar request: {err}"),
             4,
             output,
@@ -1779,15 +1787,15 @@ fn write_sidecar_request(
 fn check_sidecar_exit_status(
     output_data: &std::process::Output,
     output: OutputFormat,
-) -> Result<(), ExitCode> {
+) -> Result<(), u8> {
     match output_data.status.code() {
         Some(0) => Ok(()),
-        Some(4) => Err(emit_error(
+        Some(4) => Err(emit_printed(
             &stderr_message(&output_data.stderr, "sidecar protocol mismatch"),
             4,
             output,
         )),
-        Some(5) => Err(emit_error(
+        Some(5) => Err(emit_printed(
             &stderr_message(
                 &output_data.stderr,
                 "failed to parse runtime coverage input",
@@ -1795,22 +1803,22 @@ fn check_sidecar_exit_status(
             5,
             output,
         )),
-        Some(6) => Err(emit_error(
+        Some(6) => Err(emit_printed(
             &stderr_message(&output_data.stderr, "sidecar internal error"),
             6,
             output,
         )),
-        Some(code) => Err(emit_error(
+        Some(code) => Err(emit_printed(
             &stderr_message(&output_data.stderr, "sidecar execution failed"),
             u8::try_from(code).unwrap_or(4),
             output,
         )),
-        None => Err(emit_error("sidecar terminated by signal", 4, output)),
+        None => Err(emit_printed("sidecar terminated by signal", 4, output)),
     }
 }
 
 /// Reject responses whose protocol major version does not match this build.
-fn check_response_protocol(response: &Response, output: OutputFormat) -> Result<(), ExitCode> {
+fn check_response_protocol(response: &Response, output: OutputFormat) -> Result<(), u8> {
     let supported_major = PROTOCOL_VERSION.split('.').next().unwrap_or("0");
     let response_major = response.protocol_version.split('.').next().unwrap_or("0");
     if response_major != supported_major {
@@ -1825,7 +1833,7 @@ fn check_response_protocol(response: &Response, output: OutputFormat) -> Result<
                 response.protocol_version, PROTOCOL_VERSION
             )
         };
-        return Err(emit_error(&message, 4, output));
+        return Err(emit_printed(&message, 4, output));
     }
     Ok(())
 }
