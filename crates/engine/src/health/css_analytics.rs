@@ -2560,13 +2560,12 @@ fn scan_near_duplicate_theme_tokens(
 }
 
 struct NearDuplicateCssInJsTokenScanInput<'a> {
-    files: &'a [fallow_types::discover::DiscoveredFile],
-    modules: &'a [fallow_types::extract::ModuleInfo],
     config: &'a ResolvedConfig,
     changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
     output_changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
     ws_roots: Option<&'a [std::path::PathBuf]>,
     summary: &'a mut fallow_output::CssAnalyticsSummary,
+    css_in_js_definers: Option<&'a CssInJsDefiners>,
 }
 
 fn scan_near_duplicate_css_in_js_tokens(
@@ -2578,8 +2577,7 @@ fn scan_near_duplicate_css_in_js_tokens(
         return Vec::new();
     }
 
-    let mut candidates =
-        comparable_css_in_js_token_candidates(input.files, input.modules, input.config);
+    let mut candidates = comparable_css_in_js_token_candidates(input.css_in_js_definers);
     candidates.sort_by(|a, b| theme_token_sort_key(a).cmp(&theme_token_sort_key(b)));
     if candidates.len() < 2 {
         return Vec::new();
@@ -2698,33 +2696,28 @@ fn raw_style_value_counts(
 }
 
 fn comparable_css_in_js_token_candidates(
-    files: &[fallow_types::discover::DiscoveredFile],
-    modules: &[fallow_types::extract::ModuleInfo],
-    config: &ResolvedConfig,
+    definers: Option<&CssInJsDefiners>,
 ) -> Vec<ComparableThemeTokenCandidate> {
-    if !project_uses_css_in_js(&config.root) {
+    let Some(definers) = definers else {
         return Vec::new();
-    }
-    let path_by_id: rustc_hash::FxHashMap<fallow_types::discover::FileId, &std::path::Path> =
-        files.iter().map(|f| (f.id, f.path.as_path())).collect();
-    let definers = collect_css_in_js_definers(modules, &path_by_id, config);
+    };
     let mut candidates = Vec::new();
-    for definer in definers.entries {
-        for leaf in definer.leaves {
-            let Some(value) = leaf.value else {
+    for definer in &definers.entries {
+        for leaf in &definer.leaves {
+            let Some(value) = leaf.value.as_deref() else {
                 continue;
             };
             let Some(namespace) = css_in_js_token_namespace(definer.origin, &leaf.path) else {
                 continue;
             };
-            let Some(metric) = parse_theme_token_metric(namespace, &value) else {
+            let Some(metric) = parse_theme_token_metric(namespace, value) else {
                 continue;
             };
             candidates.push(ComparableThemeTokenCandidate {
                 token: format!("{}.{}", definer.binding, leaf.path),
                 namespace: namespace.to_string(),
-                name: leaf.path,
-                value: normalize_theme_token_value(&value),
+                name: leaf.path.clone(),
+                value: normalize_theme_token_value(value),
                 path: definer.rel_path.clone(),
                 line: leaf.def_line,
                 metric,
@@ -3597,12 +3590,32 @@ fn collect_css_in_js_consumers(
     definers: &CssInJsDefiners,
     resolved_targets: &ResolvedCssInJsImportTargets,
 ) -> CssInJsConsumerHits {
-    use fallow_output::ConsumerKind;
     let mut hits: CssInJsConsumerHits = rustc_hash::FxHashMap::default();
-    let has_theme_definers = definers
+
+    // Precompute per-definer data ONCE. The old pass rebuilt a leaf_set per
+    // (definer, alias) pair and re-parsed each consumer source once per definer
+    // (and once per theme definer for EVERY module). Here every consumer file is
+    // parsed exactly once and all its queries run against that single parse.
+    let leaf_sets: Vec<rustc_hash::FxHashSet<String>> = definers
         .entries
         .iter()
-        .any(|definer| definer.origin == fallow_extract::CssInJsTokenOrigin::Theme);
+        .map(|definer| definer.leaves.iter().map(|t| t.path.clone()).collect())
+        .collect();
+    let theme_definer_indices: Vec<usize> = definers
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, definer)| definer.origin == fallow_extract::CssInJsTokenOrigin::Theme)
+        .map(|(idx, _)| idx)
+        .collect();
+    let panda_definer_indices: Vec<usize> = definers
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, definer)| definer.origin == fallow_extract::CssInJsTokenOrigin::Panda)
+        .map(|(idx, _)| idx)
+        .collect();
+    let has_theme_definers = !theme_definer_indices.is_empty();
 
     for module in modules {
         let Some(consumer_abs) = path_by_id.get(&module.file_id).copied() else {
@@ -3620,31 +3633,24 @@ fn collect_css_in_js_consumers(
         let Some(consumer_rel) = relative_to_root(consumer_abs, &config.root) else {
             continue;
         };
-        for (idx, alias) in matches {
-            let leaf_set: rustc_hash::FxHashSet<String> = definers.entries[idx]
-                .leaves
-                .iter()
-                .map(|t| t.path.clone())
-                .collect();
-            for hit in
-                fallow_extract::css_in_js_token_consumers(&source, consumer_abs, alias, &leaf_set)
-            {
-                hits.entry((idx, hit.token_path)).or_default().insert((
-                    consumer_rel.clone(),
-                    hit.line,
-                    ConsumerKind::JsMember,
-                ));
-            }
-        }
-        collect_panda_token_call_consumers(
-            module,
-            consumer_abs,
-            &source,
-            &consumer_rel,
-            definers,
-            &mut hits,
+        let token_aliases = module_panda_token_aliases(module);
+        let style_aliases = module_panda_style_aliases(module);
+        let (queries, attribution) = build_module_consumer_queries(
+            &matches,
+            &leaf_sets,
+            &theme_definer_indices,
+            &panda_definer_indices,
+            &token_aliases,
+            &style_aliases,
         );
-        collect_theme_member_consumers(&source, consumer_abs, &consumer_rel, definers, &mut hits);
+        for (query_pos, hit) in
+            fallow_extract::css_in_js_consumer_scan(&source, consumer_abs, &queries)
+        {
+            let (definer_idx, kind) = attribution[query_pos];
+            hits.entry((definer_idx, hit.token_path))
+                .or_default()
+                .insert((consumer_rel.clone(), hit.line, kind));
+        }
     }
     hits
 }
@@ -3690,43 +3696,12 @@ fn has_panda_generated_alias(module: &fallow_types::extract::ModuleInfo) -> bool
     })
 }
 
-fn collect_theme_member_consumers(
-    source: &str,
-    consumer_abs: &std::path::Path,
-    consumer_rel: &str,
-    definers: &CssInJsDefiners,
-    hits: &mut CssInJsConsumerHits,
-) {
-    use fallow_output::ConsumerKind;
-
-    for (idx, definer) in definers.entries.iter().enumerate() {
-        if definer.origin != fallow_extract::CssInJsTokenOrigin::Theme {
-            continue;
-        }
-        let leaf_set: rustc_hash::FxHashSet<String> =
-            definer.leaves.iter().map(|t| t.path.clone()).collect();
-        for hit in fallow_extract::css_in_js_theme_consumers(source, consumer_abs, &leaf_set) {
-            hits.entry((idx, hit.token_path)).or_default().insert((
-                consumer_rel.to_owned(),
-                hit.line,
-                ConsumerKind::JsMember,
-            ));
-        }
-    }
-}
-
-fn collect_panda_token_call_consumers(
-    module: &fallow_types::extract::ModuleInfo,
-    consumer_abs: &std::path::Path,
-    source: &str,
-    consumer_rel: &str,
-    definers: &CssInJsDefiners,
-    hits: &mut CssInJsConsumerHits,
-) {
-    use fallow_output::ConsumerKind;
+/// The local aliases a module imports PandaCSS's generated `token` helper under
+/// (from a `styled-system` specifier). Borrows the module's import strings.
+fn module_panda_token_aliases(module: &fallow_types::extract::ModuleInfo) -> Vec<&str> {
     use fallow_types::extract::ImportedName;
 
-    let token_aliases: Vec<&str> = module
+    module
         .imports
         .iter()
         .filter(|import| {
@@ -3735,8 +3710,17 @@ fn collect_panda_token_call_consumers(
                 && matches!(&import.imported_name, ImportedName::Named(name) if name == "token")
         })
         .map(|import| import.local_name.as_str())
-        .collect();
-    let style_aliases: rustc_hash::FxHashSet<String> = module
+        .collect()
+}
+
+/// The local aliases a module imports PandaCSS style functions (`css`, `cva`, ...)
+/// under from a `styled-system` specifier.
+fn module_panda_style_aliases(
+    module: &fallow_types::extract::ModuleInfo,
+) -> rustc_hash::FxHashSet<String> {
+    use fallow_types::extract::ImportedName;
+
+    module
         .imports
         .iter()
         .filter(|import| {
@@ -3745,40 +3729,74 @@ fn collect_panda_token_call_consumers(
                 && matches!(&import.imported_name, ImportedName::Named(name) if is_panda_style_function(name))
         })
         .map(|import| import.local_name.clone())
-        .collect();
-    if token_aliases.is_empty() && style_aliases.is_empty() {
-        return;
+        .collect()
+}
+
+type ConsumerQueryPlan<'a> = (
+    Vec<fallow_extract::ConsumerQuery<'a>>,
+    Vec<(usize, fallow_output::ConsumerKind)>,
+);
+
+/// Build the per-module `ConsumerQuery` list plus a parallel attribution vector
+/// mapping each query position to its `(definer index, ConsumerKind)`. The single
+/// scan of the consumer source returns `(query_index, hit)` pairs the caller folds
+/// back through this attribution, preserving the old per-definer kinds exactly.
+fn build_module_consumer_queries<'a>(
+    matches: &[(usize, &'a str)],
+    leaf_sets: &'a [rustc_hash::FxHashSet<String>],
+    theme_definer_indices: &[usize],
+    panda_definer_indices: &[usize],
+    token_aliases: &[&'a str],
+    style_aliases: &'a rustc_hash::FxHashSet<String>,
+) -> ConsumerQueryPlan<'a> {
+    use fallow_extract::ConsumerQuery;
+    use fallow_output::ConsumerKind;
+
+    let mut queries: Vec<ConsumerQuery<'a>> = Vec::new();
+    let mut attribution: Vec<(usize, ConsumerKind)> = Vec::new();
+
+    // Named-import member reads (`vars.color.primary`): one query per matched
+    // (definer, alias) pair.
+    for &(idx, alias) in matches {
+        queries.push(ConsumerQuery::MemberBinding {
+            alias,
+            leaf_paths: &leaf_sets[idx],
+        });
+        attribution.push((idx, ConsumerKind::JsMember));
     }
-    for (idx, definer) in definers.entries.iter().enumerate() {
-        if definer.origin != fallow_extract::CssInJsTokenOrigin::Panda {
-            continue;
-        }
-        let leaf_set: rustc_hash::FxHashSet<String> =
-            definer.leaves.iter().map(|t| t.path.clone()).collect();
-        for alias in &token_aliases {
-            for hit in
-                fallow_extract::panda_token_call_consumers(source, consumer_abs, alias, &leaf_set)
-            {
-                hits.entry((idx, hit.token_path)).or_default().insert((
-                    consumer_rel.to_owned(),
-                    hit.line,
-                    ConsumerKind::JsCall,
-                ));
+
+    // PandaCSS generated-token consumers: `token('a.b')` calls and style-object
+    // values, scanned against every Panda definer (matching the old pass, which
+    // ran once per Panda definer when the module had any Panda alias).
+    if !token_aliases.is_empty() || !style_aliases.is_empty() {
+        for &idx in panda_definer_indices {
+            for &alias in token_aliases {
+                queries.push(ConsumerQuery::PandaTokenCall {
+                    alias,
+                    leaf_paths: &leaf_sets[idx],
+                });
+                attribution.push((idx, ConsumerKind::JsCall));
+            }
+            if !style_aliases.is_empty() {
+                queries.push(ConsumerQuery::PandaStyleValues {
+                    aliases: style_aliases,
+                    leaf_paths: &leaf_sets[idx],
+                });
+                attribution.push((idx, ConsumerKind::JsCall));
             }
         }
-        for hit in fallow_extract::panda_style_value_consumers(
-            source,
-            consumer_abs,
-            &style_aliases,
-            &leaf_set,
-        ) {
-            hits.entry((idx, hit.token_path)).or_default().insert((
-                consumer_rel.to_owned(),
-                hit.line,
-                ConsumerKind::JsCall,
-            ));
-        }
     }
+
+    // styled-components / Emotion theme reads (`theme.colors.x`): unconditional
+    // per theme definer for every surviving module (matching the old pass).
+    for &idx in theme_definer_indices {
+        queries.push(ConsumerQuery::ThemeReads {
+            leaf_paths: &leaf_sets[idx],
+        });
+        attribution.push((idx, ConsumerKind::JsMember));
+    }
+
+    (queries, attribution)
 }
 
 /// Build the CSS-in-JS design-token blast-radius: StyleX `defineVars`,
@@ -3790,22 +3808,21 @@ fn build_css_in_js_token_consumers(
     files: &[fallow_types::discover::DiscoveredFile],
     modules: &[fallow_types::extract::ModuleInfo],
     config: &ResolvedConfig,
+    definers: Option<&CssInJsDefiners>,
 ) -> Vec<fallow_output::TokenConsumers> {
     use fallow_output::{TOKEN_CONSUMER_SAMPLE_CAP, TokenConsumerLocation, TokenConsumers};
 
-    if !project_uses_css_in_js(&config.root) {
+    let Some(definers) = definers else {
+        return Vec::new();
+    };
+    if definers.entries.is_empty() {
         return Vec::new();
     }
     let path_by_id: rustc_hash::FxHashMap<fallow_types::discover::FileId, &std::path::Path> =
         files.iter().map(|f| (f.id, f.path.as_path())).collect();
-
-    let definers = collect_css_in_js_definers(modules, &path_by_id, config);
-    if definers.entries.is_empty() {
-        return Vec::new();
-    }
     let resolved_targets = resolve_css_in_js_import_targets(files, modules, config);
     let hits =
-        collect_css_in_js_consumers(modules, &path_by_id, config, &definers, &resolved_targets);
+        collect_css_in_js_consumers(modules, &path_by_id, config, definers, &resolved_targets);
 
     let mut out: Vec<TokenConsumers> = Vec::new();
     for (idx, definer) in definers.entries.iter().enumerate() {
@@ -3896,7 +3913,7 @@ struct ThemeTokenCandidates {
 struct MarkupCssCandidateInput<'a> {
     tokens: &'a CssTokenSets,
     files: &'a [fallow_types::discover::DiscoveredFile],
-    modules: &'a [fallow_types::extract::ModuleInfo],
+    css_in_js_definers: Option<&'a CssInJsDefiners>,
     config: &'a ResolvedConfig,
     ignore_set: &'a globset::GlobSet,
     changed_files: Option<&'a rustc_hash::FxHashSet<std::path::PathBuf>>,
@@ -3993,13 +4010,12 @@ fn scan_theme_token_candidates(input: &mut MarkupCssCandidateInput<'_>) -> Theme
     };
     let near_duplicate_css_in_js_tokens = if input.css_deep {
         scan_near_duplicate_css_in_js_tokens(&mut NearDuplicateCssInJsTokenScanInput {
-            files: input.files,
-            modules: input.modules,
             config: input.config,
             changed_files: input.changed_files,
             output_changed_files: input.output_changed_files,
             ws_roots: input.ws_roots,
             summary: input.summary,
+            css_in_js_definers: input.css_in_js_definers,
         })
     } else {
         Vec::new()
@@ -4712,9 +4728,19 @@ pub(super) fn compute_css_analytics_report_with_artifacts(
     } = ctx;
     let css_deep = output_changed_files.is_some();
 
+    // Collect CSS-in-JS token definers ONCE per run (parsing every candidate
+    // definer file from disk). Both the comparable-token candidate pass and the
+    // consumer blast-radius pass borrow this, instead of each recomputing it.
+    // `None` mirrors the old `!project_uses_css_in_js` short-circuit exactly.
+    let css_in_js_definers = project_uses_css_in_js(&config.root).then(|| {
+        let path_by_id: rustc_hash::FxHashMap<fallow_types::discover::FileId, &std::path::Path> =
+            files.iter().map(|f| (f.id, f.path.as_path())).collect();
+        collect_css_in_js_definers(modules, &path_by_id, config)
+    });
+
     let mut walk = css_report_walk(files, ctx, styling_artifacts);
     let styling_token_candidates =
-        css_report_token_candidates(&walk.tokens, files, modules, config);
+        css_report_token_candidates(&walk.tokens, config, css_in_js_definers.as_ref());
     annotate_raw_style_value_nearest_tokens(&mut walk.tokens, &styling_token_candidates);
     let metrics = finalize_css_token_metrics(
         &mut walk.tokens,
@@ -4726,7 +4752,7 @@ pub(super) fn compute_css_analytics_report_with_artifacts(
     let candidates = scan_markup_css_candidates(&mut MarkupCssCandidateInput {
         tokens: &walk.tokens,
         files,
-        modules,
+        css_in_js_definers: css_in_js_definers.as_ref(),
         config,
         ignore_set,
         changed_files,
@@ -4747,6 +4773,7 @@ pub(super) fn compute_css_analytics_report_with_artifacts(
             ws_roots,
         },
         modules,
+        css_in_js_definers.as_ref(),
     );
     let scoring_inputs = css_report_scoring_inputs(&walk);
     let report = assemble_css_report(CssReportAssemblyInput {
@@ -4795,15 +4822,12 @@ fn css_report_scoring_inputs(walk: &CssWalkAccum) -> super::styling_score::Styli
 
 fn css_report_token_candidates(
     tokens: &CssTokenSets,
-    files: &[fallow_types::discover::DiscoveredFile],
-    modules: &[fallow_types::extract::ModuleInfo],
     config: &ResolvedConfig,
+    css_in_js_definers: Option<&CssInJsDefiners>,
 ) -> Vec<ComparableThemeTokenCandidate> {
     let mut candidates = comparable_theme_token_candidates(tokens, config);
     candidates.extend(comparable_custom_property_token_candidates(tokens));
-    candidates.extend(comparable_css_in_js_token_candidates(
-        files, modules, config,
-    ));
+    candidates.extend(comparable_css_in_js_token_candidates(css_in_js_definers));
     candidates.extend(comparable_project_vocabulary_candidates(tokens));
     candidates.sort_by(|a, b| theme_token_sort_key(a).cmp(&theme_token_sort_key(b)));
     candidates
@@ -4812,12 +4836,14 @@ fn css_report_token_candidates(
 fn css_report_token_consumers(
     input: &TokenConsumersInput<'_>,
     modules: &[fallow_types::extract::ModuleInfo],
+    css_in_js_definers: Option<&CssInJsDefiners>,
 ) -> Vec<fallow_output::TokenConsumers> {
     let mut consumers = build_token_consumers(input);
     consumers.extend(build_css_in_js_token_consumers(
         input.files,
         modules,
         input.config,
+        css_in_js_definers,
     ));
     consumers.sort_by(|a, b| {
         a.token
