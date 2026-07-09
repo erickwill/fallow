@@ -100,7 +100,34 @@ fn print_machine_combined_report(
         OutputFormat::ReviewGitlab => {
             print_combined_review(check_result, dupes_result, health_result, false)
         }
+        OutputFormat::GithubAnnotations => {
+            let code = print_combined_github_annotations(CombinedJsonPrintInput {
+                check_result,
+                dupes_result,
+                health_result,
+                root: opts.root,
+                elapsed: total_elapsed,
+                explain: opts.explain,
+                config_fixable: opts.config_path.is_some()
+                    || fallow_config::FallowConfig::find_config_path(opts.root).is_some(),
+            });
+            combined_machine_success(code)
+        }
         _ => Ok(None),
+    }
+}
+
+/// Render the combined run as GitHub workflow-command annotations from the
+/// same combined JSON envelope `--format json` serializes.
+fn print_combined_github_annotations(input: CombinedJsonPrintInput<'_>) -> ExitCode {
+    let root = input.root;
+    match build_combined_json_output(input) {
+        Ok(envelope) => report::github_annotations::print_annotations(
+            report::github_annotations::EnvelopeKind::Combined,
+            &envelope,
+            root,
+        ),
+        Err(code) => code,
     }
 }
 

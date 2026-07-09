@@ -234,6 +234,9 @@ fn emit_empty_fix_output(opts: &FixOptions<'_>) -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    } else if matches!(opts.output, OutputFormat::GithubAnnotations) {
+        // The jq layer emits no annotations for `fix` (annotate.sh's `fix)`
+        // case is empty); keep the annotation stream empty.
     } else if !opts.quiet {
         eprintln!("No issues to fix.");
     }
@@ -443,6 +446,9 @@ fn emit_fix_output(input: &FixOutputInput<'_>) -> Result<(), ExitCode> {
                 return Err(ExitCode::from(2));
             }
         }
+    } else if matches!(input.output, OutputFormat::GithubAnnotations) {
+        // The jq layer emits no annotations for `fix` (annotate.sh's `fix)`
+        // case is empty); keep the annotation stream empty.
     } else if !input.quiet {
         emit_human_summary(&HumanSummaryInput {
             dry_run: input.dry_run,

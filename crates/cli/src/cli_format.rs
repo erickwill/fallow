@@ -24,6 +24,13 @@ pub enum Format {
     #[value(name = "review-gitlab")]
     ReviewGitlab,
     Badge,
+    // Naming rationale (do not "fix" later): `github-annotations` PREFIXES the
+    // provider, unlike `review-github`, because workflow-command annotations
+    // are a GitHub-only concept with no GitLab twin (the `codeclimate` format
+    // covers GitLab Code Quality).
+    /// GitHub workflow-command annotations. Log-based `::warning` annotations render on fork PRs without a write token, unlike the PR-comment/review formats.
+    #[value(name = "github-annotations")]
+    GithubAnnotations,
 }
 
 impl From<Format> for OutputFormat {
@@ -40,6 +47,7 @@ impl From<Format> for OutputFormat {
             Format::ReviewGithub => Self::ReviewGithub,
             Format::ReviewGitlab => Self::ReviewGitlab,
             Format::Badge => Self::Badge,
+            Format::GithubAnnotations => Self::GithubAnnotations,
         }
     }
 }
@@ -69,6 +77,7 @@ pub fn parse_format_arg(value: &str) -> Option<Format> {
         "review-github" => Some(Format::ReviewGithub),
         "review-gitlab" => Some(Format::ReviewGitlab),
         "badge" => Some(Format::Badge),
+        "github-annotations" => Some(Format::GithubAnnotations),
         _ => None,
     }
 }

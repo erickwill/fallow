@@ -212,7 +212,12 @@ pub fn run(opts: &SecurityOptions<'_>) -> ExitCode {
         return code;
     }
 
-    outln!("{}", render_security_output(opts, &output));
+    let rendered = render_security_output(opts, &output);
+    // The annotation stream is legitimately empty on a clean run; other
+    // formats always render at least a headline.
+    if !rendered.is_empty() || !matches!(opts.output, OutputFormat::GithubAnnotations) {
+        outln!("{rendered}");
+    }
     security_exit_code(opts, &output, effective_severities)
 }
 
@@ -301,12 +306,15 @@ struct SecurityOutputInput<'a, 'b> {
 fn validate_security_output(output: OutputFormat) -> Result<(), ExitCode> {
     if matches!(
         output,
-        OutputFormat::Human | OutputFormat::Json | OutputFormat::Sarif
+        OutputFormat::Human
+            | OutputFormat::Json
+            | OutputFormat::Sarif
+            | OutputFormat::GithubAnnotations
     ) {
         Ok(())
     } else {
         Err(emit_error(
-            "fallow security supports --format human, json, or sarif only.",
+            "fallow security supports --format human, json, sarif, or github-annotations only.",
             2,
             output,
         ))
@@ -558,9 +566,32 @@ fn render_security_output(opts: &SecurityOptions<'_>, output: &SecurityOutput) -
         OutputFormat::Json if opts.summary => render_json_summary(output),
         OutputFormat::Json => render_json(output),
         OutputFormat::Sarif => render_sarif(output),
+        OutputFormat::GithubAnnotations => render_security_github_annotations(opts, output),
         _ if opts.summary => render_human_summary(output),
         _ => render_human(output),
     }
+}
+
+/// Render security candidates as `::notice` workflow-command annotations from
+/// the same JSON envelope `--format json` serializes (net-new surface: the
+/// bundled action's jq layer has no security annotations).
+fn render_security_github_annotations(
+    opts: &SecurityOptions<'_>,
+    output: &SecurityOutput,
+) -> String {
+    let Ok(envelope) = fallow_output::serialize_security_json_output(
+        output.clone(),
+        crate::output_runtime::current_root_envelope_mode(),
+        crate::output_runtime::telemetry_analysis_run_id().as_deref(),
+    ) else {
+        return String::new();
+    };
+    let options = crate::report::github::resolve_render_options(opts.root);
+    crate::report::github_annotations::render_annotations(
+        crate::report::github_annotations::EnvelopeKind::Security,
+        &envelope,
+        &options,
+    )
 }
 
 fn security_exit_code(

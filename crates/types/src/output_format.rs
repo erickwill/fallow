@@ -30,13 +30,17 @@ pub enum OutputFormat {
     ReviewGitlab,
     /// Shields.io-compatible SVG badge (health command only).
     Badge,
+    /// GitHub Actions workflow-command annotations (`::error` / `::warning` /
+    /// `::notice` lines). Provider-prefixed name because workflow-command
+    /// annotations are a GitHub-only concept with no GitLab twin.
+    GithubAnnotations,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const VARIANTS: [OutputFormat; 11] = [
+    const VARIANTS: [OutputFormat; 12] = [
         OutputFormat::Human,
         OutputFormat::Json,
         OutputFormat::Sarif,
@@ -48,6 +52,7 @@ mod tests {
         OutputFormat::ReviewGithub,
         OutputFormat::ReviewGitlab,
         OutputFormat::Badge,
+        OutputFormat::GithubAnnotations,
     ];
 
     #[test]
@@ -75,6 +80,7 @@ mod tests {
                 "ReviewGithub",
                 "ReviewGitlab",
                 "Badge",
+                "GithubAnnotations",
             ]
         );
     }

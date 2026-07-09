@@ -124,6 +124,7 @@ fn validate_flags_output(output: OutputFormat) -> Result<(), ExitCode> {
             | OutputFormat::ReviewGithub
             | OutputFormat::ReviewGitlab
             | OutputFormat::Badge
+            | OutputFormat::GithubAnnotations
     ) {
         return Err(emit_error(
             "flags supports human, json, compact, sarif, markdown, and codeclimate output",
@@ -153,7 +154,8 @@ fn print_flags_result(
         | OutputFormat::PrCommentGitlab
         | OutputFormat::ReviewGithub
         | OutputFormat::ReviewGitlab
-        | OutputFormat::Badge => unreachable!("handled above"),
+        | OutputFormat::Badge
+        | OutputFormat::GithubAnnotations => unreachable!("handled above"),
     }
 }
 

@@ -318,6 +318,19 @@ pub fn run_pre_dispatch_checks(
         return Err(fail(code, telemetry::FailureReason::Validation));
     }
 
+    if cli.annotations_path_prefix.is_some()
+        && !matches!(output, fallow_config::OutputFormat::GithubAnnotations)
+    {
+        let code = emit_known_failure(
+            "--annotations-path-prefix is only valid with --format github-annotations",
+            2,
+            output,
+            telemetry::FailureReason::Validation,
+        );
+        return Err(fail(code, telemetry::FailureReason::Validation));
+    }
+    report::github::set_annotations_path_prefix(cli.annotations_path_prefix.clone());
+
     parse_cli_tolerance(cli, output)
         .map_err(|code| fail(code, telemetry::FailureReason::Validation))
 }

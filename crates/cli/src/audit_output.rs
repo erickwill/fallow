@@ -67,11 +67,43 @@ fn print_audit_format(result: &AuditResult, quiet: bool, explain: bool) -> ExitC
         OutputFormat::ReviewGitlab => {
             print_audit_review(result, report::ci::pr_comment::Provider::Gitlab)
         }
+        OutputFormat::GithubAnnotations => print_audit_github_annotations(result),
         OutputFormat::Badge => {
             eprintln!("Error: badge format is not supported for the audit command");
             ExitCode::from(2)
         }
     }
+}
+
+/// Render the audit result as GitHub workflow-command annotations from the
+/// same audit JSON envelope `--format json` serializes.
+fn print_audit_github_annotations(result: &AuditResult) -> ExitCode {
+    let envelope = match build_audit_json_output(result) {
+        Ok(envelope) => envelope,
+        Err(code) => return code,
+    };
+    report::github_annotations::print_annotations(
+        report::github_annotations::EnvelopeKind::Audit,
+        &envelope,
+        &audit_render_root(result),
+    )
+}
+
+/// The analysis root for path rebasing: audit results carry it on the
+/// per-analysis configs (all three share one root when present).
+fn audit_render_root(result: &AuditResult) -> std::path::PathBuf {
+    result
+        .check
+        .as_ref()
+        .map(|check| check.config.root.clone())
+        .or_else(|| {
+            result
+                .health
+                .as_ref()
+                .map(|health| health.config.root.clone())
+        })
+        .or_else(|| result.dupes.as_ref().map(|dupes| dupes.config.root.clone()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 fn print_audit_pr_comment(

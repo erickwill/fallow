@@ -2266,6 +2266,7 @@ fn output_format_label(output: OutputFormat) -> &'static str {
         OutputFormat::ReviewGithub => "review_github",
         OutputFormat::ReviewGitlab => "review_gitlab",
         OutputFormat::Badge => "badge",
+        OutputFormat::GithubAnnotations => "github_annotations",
     }
 }
 
@@ -4400,6 +4401,7 @@ mod tests {
             (OutputFormat::ReviewGithub, "review_github"),
             (OutputFormat::ReviewGitlab, "review_gitlab"),
             (OutputFormat::Badge, "badge"),
+            (OutputFormat::GithubAnnotations, "github_annotations"),
         ];
         for (format, expected) in pairs {
             assert_eq!(
