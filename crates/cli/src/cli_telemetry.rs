@@ -132,7 +132,11 @@ fn telemetry_run_scope_for_command(cli: &Cli, command: Option<&Command>) -> tele
 fn command_is_file_scoped(command: Option<&Command>) -> bool {
     matches!(
         command,
-        Some(Command::Check { file, .. } | Command::Security { file, .. }) if !file.is_empty()
+        Some(
+            Command::Check { file, .. }
+                | Command::Security { file, .. }
+                | Command::Suppressions { file, .. }
+        ) if !file.is_empty()
     )
 }
 
@@ -144,6 +148,7 @@ fn command_runs_full_project_analysis(command: Option<&Command>) -> bool {
                 | Command::Dupes { .. }
                 | Command::Health { .. }
                 | Command::Flags { .. }
+                | Command::Suppressions { .. }
                 | Command::Security { .. }
                 | Command::Fix { .. }
                 | Command::Watch { .. },
@@ -207,6 +212,7 @@ fn telemetry_analysis_mode_for_command(command: Option<&Command>) -> telemetry::
             | Command::Health { .. }
             | Command::Audit { .. }
             | Command::Flags { .. }
+            | Command::Suppressions { .. }
             | Command::Watch { .. },
         ) => telemetry::AnalysisMode::Static,
         _ => telemetry::AnalysisMode::Unknown,
@@ -242,6 +248,7 @@ pub fn telemetry_workflow_for_command(
             | Command::Trace { .. }
             | Command::List { .. }
             | Command::Workspaces
+            | Command::Suppressions { .. }
             | Command::Schema,
         ) => telemetry::Workflow::ProjectInventory,
         Some(Command::License { .. }) => telemetry::Workflow::License,

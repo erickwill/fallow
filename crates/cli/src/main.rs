@@ -67,6 +67,7 @@ mod security;
 mod security_help;
 mod setup_hooks;
 mod signal;
+mod suppressions;
 mod task_matrix;
 mod telemetry;
 mod trace_chain;
@@ -131,6 +132,7 @@ Project inspection:
   inspect        Inspect one file or exported symbol as a bundled evidence query
   workspaces     Show monorepo workspace discovery diagnostics
   explain        Explain one issue type without running analysis
+  suppressions   List active fallow-ignore suppression markers
   impact         Show what fallow has done for you (opt-in, local-only)
 
 Setup and configuration:
@@ -1099,6 +1101,21 @@ enum Command {
         /// Show only the top N flags
         #[arg(long)]
         top: Option<usize>,
+    },
+
+    /// List active fallow-ignore suppression markers (read-only inventory)
+    ///
+    /// Shows every `fallow-ignore-next-line` and `fallow-ignore-file` marker
+    /// present in analyzed files, grouped per file with line, kind, level,
+    /// and reason, plus project totals and a stale cross-reference against
+    /// this run's stale-suppression findings. A governance surface, not a
+    /// detector: always exits 0. Honors `--root`, `--format {human,json}`,
+    /// `--workspace`, `--changed-workspaces`, `--changed-since`, and
+    /// `--quiet`.
+    Suppressions {
+        /// Only list suppressions in the specified files. Accepts multiple values.
+        #[arg(long, value_name = "PATH")]
+        file: Vec<std::path::PathBuf>,
     },
 
     /// Explain one fallow issue type without running an analysis.
@@ -2768,6 +2785,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
         dupes @ Command::Dupes { .. } => dispatch_dupes_command(dupes, dispatch),
         health @ Command::Health { .. } => dispatch_health_command(health, dispatch),
         Command::Flags { top } => dispatch_flags_command(dispatch, top),
+        Command::Suppressions { file } => dispatch_suppressions_command(dispatch, &file),
         Command::Explain { issue_type } => explain::run_explain(&issue_type.join(" "), output),
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
         Command::DecisionSurface { max_decisions } => {
@@ -3577,6 +3595,32 @@ fn dispatch_flags_command(dispatch: &DispatchContext<'_>, top: Option<usize>) ->
         changed_since: cli.changed_since.as_deref(),
         explain: cli.explain,
         top,
+    })
+}
+
+fn dispatch_suppressions_command(
+    dispatch: &DispatchContext<'_>,
+    file: &[std::path::PathBuf],
+) -> ExitCode {
+    let cli = dispatch.cli;
+    let root = dispatch.root;
+    let output = dispatch.output;
+    let production = match resolve_production_modes(cli, root, output, false, false, false) {
+        Ok(modes) => modes.for_analysis(fallow_config::ProductionAnalysis::DeadCode),
+        Err(code) => return code,
+    };
+    suppressions::run_suppressions(&suppressions::SuppressionsOptions {
+        root,
+        config_path: &cli.config,
+        output,
+        no_cache: cli.no_cache,
+        threads: dispatch.threads,
+        quiet: dispatch.quiet,
+        production,
+        workspace: cli.workspace.as_deref(),
+        changed_workspaces: cli.changed_workspaces.as_deref(),
+        changed_since: cli.changed_since.as_deref(),
+        file,
     })
 }
 
