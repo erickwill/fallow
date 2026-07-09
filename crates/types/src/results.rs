@@ -3488,6 +3488,8 @@ pub struct ActiveSuppression {
     pub is_file_level: bool,
     /// Human-authored reason after `--`, when present.
     pub reason: Option<String>,
+    /// 1-based line of the suppression comment itself; 0 only if unknown.
+    pub comment_line: u32,
 }
 
 /// The detection method used to identify a feature flag.

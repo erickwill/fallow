@@ -2571,6 +2571,7 @@ mod tests {
             kind: Some(kind.to_owned()),
             is_file_level: false,
             reason: None,
+            comment_line: 3,
         }
     }
 
@@ -3262,6 +3263,7 @@ mod tests {
             kind: None,
             is_file_level: true,
             reason: None,
+            comment_line: 1,
         };
         run(root, &[&a], vec![], vec![], &[blanket], "t1");
         let store = load(root);
@@ -4442,6 +4444,7 @@ mod tests {
             kind: None,
             is_file_level: true,
             reason: None,
+            comment_line: 1,
         };
         run(root, &[&a, &b], vec![], vec![], &[blanket], "t1");
         let store = load(root);

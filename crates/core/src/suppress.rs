@@ -356,6 +356,7 @@ impl<'a> SuppressionContext<'a> {
                     kind: s.target_token(),
                     is_file_level: s.line == 0,
                     reason: s.reason.clone(),
+                    comment_line: s.comment_line,
                 });
             }
         }
