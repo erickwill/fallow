@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-07-09
+
 ### Added
 
 - **`fallow plugin-check`: a read-only dry-run that makes external-plugin
@@ -109,6 +111,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface. All additive; the default-severity table has a single source of truth
   shared with the analyzer's suppression gating, so the manifest can never drift
   from the real defaults.
+- **`impact_closure` MCP tool: the pre-edit blast radius as a one-call
+  primitive.** "What breaks if I change this file?" was computable only by
+  paying for the full `inspect_target` bundle (dead code, duplication,
+  complexity, security, trace in sequence). The new read-only tool wraps
+  `fallow dead-code --impact-closure <path> --format json` (reverse
+  dependencies, re-export chains, and coordination gaps for one file), takes
+  the same scoping parameters as the other trace tools, and is registered in
+  the tool manifest, Code Mode, and the agent docs. It reports review-planning
+  evidence for a file's contract, not proof that affected files are wrong; the
+  existing `impact` tool (the local value report) is unrelated.
+- **React Router and Remix route loaders now feed `unused-load-data-key`.**
+  Route-loader data key harvesting is framework-scoped for React Router and
+  Remix while SvelteKit load data stays isolated: the extractor records the
+  correct producer mode per framework, and a SvelteKit whole-object abstain no
+  longer suppresses route-loader findings from the other frameworks.
+- **CSS-in-JS near-duplicate token reporting.** `fallow health --css` now
+  surfaces `near_duplicate_css_in_js_tokens` alongside the existing
+  `near_duplicate_theme_tokens` in the CSS analytics contract, human health
+  output, schema, and generated TypeScript contracts. Partial-scope scans
+  (changed files, workspace) abstain from the whole-project comparison so
+  scoped output stays conservative.
 
 ### Changed
 
@@ -158,6 +181,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the manifest now resolves their `default_severity` / `opt_in` from that
   gating rule. `config_key` stays null for them (they are not individually
   configurable), but they now read `off / true` consistently.
+- **`fallow audit` computes its focus-map signals in one graph pass.** The
+  dynamic-import and re-export participation signals were re-scanning the
+  whole module graph per changed file; they are now precomputed alongside the
+  existing target-direction sets, removing an O(changed files x references)
+  hot-path cost on large PRs. Output is unchanged.
+- **`fallow health --css` parses each CSS-in-JS consumer once per run.** The
+  design-token blast-radius scan re-parsed every consumer file once per token
+  definer; a single-parse multi-query scan now collects all definers' consumers
+  in one pass.
+- **The MCP server migrated to rmcp 2.x.** Internal dependency migration; tool
+  contracts and wire behavior are unchanged. (Closes [#1773](https://github.com/fallow-rs/fallow/issues/1773))
+- **The duplication detector, trace, churn, and cross-reference engines are now
+  owned solely by `fallow-engine`.** The transitional copies inside
+  `fallow-core` were deleted (about 20k lines across two cleanups); their tests
+  and benchmarks moved to the engine crate. This only affects direct consumers
+  of the `fallow-core` crate API; the CLI, JSON contracts, LSP, and MCP
+  surfaces are unchanged.
 
 ### Fixed
 
@@ -248,6 +288,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two stay in lock-step. For configs already written with the old key,
   `workspaces.packages` is now accepted as a back-compat alias for `patterns`, so
   an existing `fallow.toml` keeps scoping correctly without a manual edit.
+- **The npm wrapper now exits non-zero when the fallow binary dies by a
+  signal.** A SIGSEGV, OOM kill, or abort previously fell through
+  `process.exit(null)` and read as exit 0 to CI gates, git hooks, and scripts;
+  the wrapper now maps signal deaths to the shell convention (128 plus the
+  signal number) and prints the signal name to stderr. The Linux fallback also
+  now prefers the statically linked musl build when the libc family cannot be
+  detected, matching the existing missing-detector fallback.
+- **A panic inside the `@fallow/node` addon no longer aborts the host Node
+  process.** The shipped cdylib previously inherited `panic = "abort"` from the
+  release profile, so any engine panic killed the embedding process outright.
+  It now builds with a dedicated `napi-release` profile (unwinding enabled) and
+  catches panics at the FFI boundary, surfacing them as a structured
+  `FallowNodeError` with code `FALLOW_PANIC`.
+- **The LSP emits UTF-16 column positions, as the protocol negotiates.**
+  Diagnostics, hover ranges, and code lenses were publishing byte columns, so
+  squiggles landed on the wrong characters on any line containing non-ASCII
+  text; columns now convert at the protocol boundary and the server advertises
+  `positionEncoding: utf-16`. The remove-export quick fix also no longer
+  corrupts lines that use Unicode whitespace indentation.
+- **`fallow health --hotspots` reports a churn-fetch failure on stderr instead
+  of emitting a second JSON document.** A failing `git log` under `--format
+  json` no longer breaks JSON consumers with two concatenated documents.
+- **Iteration bindings credit class members in three more shapes.** Vue `v-for`
+  over a `ref.value` or `store.<field>` source, Angular `@for` / `*ngFor`
+  blocks in an external `templateUrl`, and iteration over a function-local
+  array receiver no longer produce `unused-class-member` false positives.
+  (Fixes [#1716](https://github.com/fallow-rs/fallow/issues/1716),
+  [#1717](https://github.com/fallow-rs/fallow/issues/1717),
+  [#1718](https://github.com/fallow-rs/fallow/issues/1718))
 
 ## [3.2.0] - 2026-07-05
 
@@ -4306,7 +4375,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/fallow-rs/fallow/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/fallow-rs/fallow/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/fallow-rs/fallow/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/fallow-rs/fallow/compare/v2.104.0...v3.0.0
