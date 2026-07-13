@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-07-13
+
 ### Added
 
 - **`fallow suppressions`: a read-only inventory of every active suppression
@@ -43,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `::notice` total so GitHub's 10-per-type display cap never hides the worst
   findings silently. `file=` paths are rebased onto the git repository root
   when the analysis root is a subdirectory (override with
-  `--annotations-path-prefix`), and dependency fix commands honor
+  `--report-path-prefix`), and dependency fix commands honor
   `PKG_MANAGER` before lockfile sniffing (npm, pnpm, yarn, bun).
   `github-summary` renders the job-summary markdown for
   `>> "$GITHUB_STEP_SUMMARY"`. Both are log-based, so they render on fork PRs
@@ -54,21 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary from the same file; output is byte-identical to the direct
   `--format` run. v1 renders the two GitHub formats and dispatches on the
   envelope's `kind` (dead-code, dupes, health, audit, security, combined).
-
-### Fixed
-
-- **`fallow init`, `fallow recommend`, and `fallow migrate` no longer point
-  `$schema` at a domain that fails to resolve, or a URL VS Code refuses to
-  load without a manual trust grant.** The generated config's `$schema`
-  previously hardcoded the remote `raw.githubusercontent.com` URL, which VS
-  Code treats as an untrusted remote schema location and silently declines to
-  load, and the schema's own doc comment separately recommended
-  `https://fallow.dev/schema.json`, a domain that has never resolved in DNS.
-  When a local, version-aligned `node_modules/fallow/schema.json` is present
-  (any npm install), generated configs now point `$schema` at it: offline, no
-  trust prompt, and always in sync with the installed version. Non-npm
-  installs (cargo, homebrew, a bare binary) keep falling back to the remote
-  URL. (Closes [#1794](https://github.com/fallow-rs/fallow/issues/1794))
 
 ### Changed
 
@@ -104,11 +91,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cohort the old paths were rejected by their only consumers, and one flag
   restores the previous shape.
 
+- **The repository Dockerfile's pinned `FALLOW_VERSION` and checksums now
+  track releases automatically.** A post-release job downloads the published
+  musl binaries, refreshes the pins, sanity-builds the image, and opens a PR,
+  so `docker build` from the repo defaults to the current release instead of
+  drifting. (Closes [#1817](https://github.com/fallow-rs/fallow/issues/1817))
+
 - **`--annotations-path-prefix` is now `--report-path-prefix`.** It governs
   every CI-facing format rather than only the GitHub-native ones. The old name
   keeps working as an alias. An explicit empty value disables rebasing.
 
 ### Fixed
+
+- **`unused-class-members` no longer reports members reached through
+  `#`-private class fields, same-named fields on sibling classes, local
+  subclasses, or unbound factory results.** Four extraction gaps produced
+  false positives on dependency-injection-style code: a `this.#dep.method()`
+  receiver recorded no member access at all; two classes in one module with a
+  same-named field collided on a module-flat binding key (last-write-wins), so
+  only the class declared last credited its dependency's members and reversing
+  declaration order flipped the flagging; members reached only through a local
+  (non-exported) subclass went uncredited; and a factory result read without a
+  named binding (`f().member`, `const { member } = f()`) or through an opaque
+  destructure dropped its accesses. Thanks
+  [@Jerc92](https://github.com/Jerc92) for the subclass and factory fixes in
+  [#1811](https://github.com/fallow-rs/fallow/pull/1811) and
+  [@martijnwalraven](https://github.com/martijnwalraven) for the private-field
+  report with its isolation matrix.
+  (Closes [#1821](https://github.com/fallow-rs/fallow/issues/1821))
+
+- **Playwright page-object methods used through a `mergeTests(...)`-wrapping
+  helper are credited.** A helper returning `mergeTests(...)`, wrapping an
+  imported `<base>.extend(...)` const, or returning a locally-bound
+  `const merged = mergeTests(...)` never emitted fixture-alias facts, so POM
+  methods consumed only through such a helper were reported as
+  `unused-class-member`. Thanks
+  [@committedpazz](https://github.com/committedpazz) for the follow-up report.
+  (Closes [#1795](https://github.com/fallow-rs/fallow/issues/1795))
+
+- **Iteration over array-typed parameters and `Promise.all` results credits
+  class members.** An array-typed formal parameter (`items: Item[]`) and a
+  `const xs = await Promise.all(arr.map(cb))` declarator did not type their
+  iteration variable, so `for...of` and `.map`/`.forEach` member accesses on
+  the element never credited the class. Thanks
+  [@vethman](https://github.com/vethman) for the report.
+  (Closes [#1793](https://github.com/fallow-rs/fallow/issues/1793))
+
+- **`fallow audit`'s base-snapshot cache no longer appears in
+  `git worktree list` or IDE repo views.** The persistent cache registered one
+  detached-HEAD git worktree per (worktree, base) pair for up to 30 days,
+  cluttering repo views in exactly the workflows fallow promotes (pre-commit
+  hooks, agent gates). Snapshots are now unregistered immediately after
+  materialization, with reuse and age-based sweeping intact; entries
+  registered by earlier fallow versions deregister automatically on the next
+  audit with warm caches preserved. Thanks
+  [@AlonMiz](https://github.com/AlonMiz) for the report.
+  (Closes [#1815](https://github.com/fallow-rs/fallow/issues/1815))
+
+- **Every suppress hint in the human footer names a token fallow actually
+  parses.** The "To suppress:" hints for eight sections printed tokens the
+  suppression parser does not recognize (config keys or plurals such as
+  `unused-exports`), so following the printed hint suppressed nothing and then
+  surfaced a stale-suppression finding on top. Hint tokens now derive from the
+  issue registry, the dependency sections print no hint (their findings live
+  in `package.json`, where inline comments cannot exist), and a roundtrip
+  guard test keeps every emitted token parseable. Thanks
+  [@slyeargin](https://github.com/slyeargin) for catching the unused-files
+  case in [#1820](https://github.com/fallow-rs/fallow/pull/1820).
+  (Closes [#1828](https://github.com/fallow-rs/fallow/issues/1828))
+
+- **`fallow init`, `fallow recommend`, and `fallow migrate` no longer point
+  `$schema` at a domain that fails to resolve, or a URL VS Code refuses to
+  load without a manual trust grant.** The generated config's `$schema`
+  previously hardcoded the remote `raw.githubusercontent.com` URL, which VS
+  Code treats as an untrusted remote schema location and silently declines to
+  load, and the schema's own doc comment separately recommended
+  `https://fallow.dev/schema.json`, a domain that has never resolved in DNS.
+  When a local, version-aligned `node_modules/fallow/schema.json` is present
+  (any npm install), generated configs now point `$schema` at it: offline, no
+  trust prompt, and always in sync with the installed version. Non-npm
+  installs (cargo, homebrew, a bare binary) keep falling back to the remote
+  URL. Thanks [@vethman](https://github.com/vethman) for the report.
+  (Closes [#1794](https://github.com/fallow-rs/fallow/issues/1794))
 
 - **`--diff-file` no longer silently discards every source-anchored finding
   when `--root` is a subdirectory.** `git diff` names paths relative to the
@@ -4514,7 +4578,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--changed-since` and `--fail-on-issues` for CI
 - Cross-workspace resolution for npm/yarn/pnpm workspaces
 
-[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/fallow-rs/fallow/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/fallow-rs/fallow/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/fallow-rs/fallow/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/fallow-rs/fallow/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/fallow-rs/fallow/compare/v3.0.0...v3.1.0
