@@ -1,23 +1,14 @@
-# Test fixtures must have deterministic bytes across platforms so snapshot
-# tests produce identical output on Windows (CRLF) and Unix (LF) checkouts.
-# Without this, a Windows checkout with core.autocrlf converts fixture line
-# endings to CRLF, which shifts content-derived hashes (e.g. clone fingerprints)
-# and breaks byte-exact snapshot assertions.
-tests/fixtures/** text eol=lf
+# Every text file checks out with LF bytes on every platform. The repository
+# contains no intentionally-CRLF files (verified: zero CRLF blobs, no
+# .bat/.cmd/.ps1), while three surfaces byte-compare checked-out files against
+# LF-writing generators or content-derived hashes: contract surfaces
+# (scripts/generate-all.mjs --check and the staged subgenerator tests, run on
+# Windows in release.yml), copy-through generator INPUTS (crates/napi/types/),
+# and test fixtures (clone fingerprints, snapshot assertions). Enumerating
+# those surfaces missed inputs twice (v3.4.0 failed on the committed side
+# being CRLF, v3.4.1 on a generator input being CRLF); the repo-wide default
+# closes the class. Binary files are auto-detected and unaffected.
+* text=auto eol=lf
 
-# Generated contract surfaces are byte-compared against freshly staged
-# generator output (scripts/generate-all.mjs --check and the staged
-# subgenerator tests, both run on Windows in release.yml). Generators write
-# LF; a Windows checkout with core.autocrlf would convert the committed
-# copies to CRLF and fail the byte comparison. Keep every surface LF on disk.
-crates/napi/index.d.ts text eol=lf
-docs/output-schema.json text eol=lf
-editors/vscode/package.json text eol=lf
-editors/vscode/src/generated/** text eol=lf
-npm/fallow/capabilities.json text eol=lf
-npm/fallow/issue-registry.json text eol=lf
-npm/fallow/skills/** text eol=lf
-npm/fallow/types/** text eol=lf
-plugin-schema.json text eol=lf
-rule-pack-schema.json text eol=lf
-schema.json text eol=lf
+# Kept for emphasis: fixture bytes feed content-derived hashes.
+tests/fixtures/** text eol=lf
