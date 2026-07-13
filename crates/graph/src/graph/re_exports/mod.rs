@@ -15,8 +15,8 @@ use crate::resolve::ResolvedModule;
 use super::ModuleGraph;
 
 use propagate::{
-    NamedReExportPropagation, StarReExportPropagation, propagate_named_re_export,
-    propagate_star_re_export,
+    NamedImportOriginIndex, NamedReExportPropagation, StarReExportPropagation,
+    propagate_named_re_export, propagate_star_re_export,
 };
 
 /// A re-export cycle or self-loop detected during Phase 4 chain resolution.
@@ -62,6 +62,7 @@ struct ReExportTuple {
 struct ReExportContext<'a> {
     entry_star_targets: &'a FxHashSet<FileId>,
     edges_by_target: &'a FxHashMap<FileId, Vec<usize>>,
+    named_import_origin_index: &'a NamedImportOriginIndex,
     module_by_id: &'a FxHashMap<FileId, &'a ResolvedModule>,
     existing_refs: &'a mut FxHashSet<FileId>,
     synthetic_stubs: &'a mut FxHashSet<(FileId, String, bool)>,
@@ -90,11 +91,18 @@ impl ModuleGraph {
 
         let entry_star_targets = self.collect_entry_star_targets();
         let edges_by_target = self.build_edges_by_target();
+        let named_import_origin_index =
+            if self.needs_named_import_origin_index(&re_export_info, &entry_star_targets) {
+                NamedImportOriginIndex::from_edges(&self.edges)
+            } else {
+                NamedImportOriginIndex::default()
+            };
 
         self.run_re_export_fixpoint(
             &re_export_info,
             &entry_star_targets,
             &edges_by_target,
+            &named_import_origin_index,
             module_by_id,
         );
 
@@ -160,12 +168,29 @@ impl ModuleGraph {
         edges_by_target
     }
 
+    fn needs_named_import_origin_index(
+        &self,
+        re_export_info: &[ReExportTuple],
+        entry_star_targets: &FxHashSet<FileId>,
+    ) -> bool {
+        re_export_info.iter().any(|entry| {
+            if entry.exported_name != "*" || entry_star_targets.contains(&entry.barrel) {
+                return false;
+            }
+
+            self.modules
+                .get(entry.barrel.0 as usize)
+                .is_some_and(|barrel| !barrel.is_entry_point())
+        })
+    }
+
     /// Run the monotone fixpoint that propagates references through every chain.
     fn run_re_export_fixpoint(
         &mut self,
         re_export_info: &[ReExportTuple],
         entry_star_targets: &FxHashSet<FileId>,
         edges_by_target: &FxHashMap<FileId, Vec<usize>>,
+        named_import_origin_index: &NamedImportOriginIndex,
         module_by_id: &FxHashMap<FileId, &ResolvedModule>,
     ) {
         let safety_cap = re_export_info.len().saturating_add(1);
@@ -181,6 +206,7 @@ impl ModuleGraph {
             let mut context = ReExportContext {
                 entry_star_targets,
                 edges_by_target,
+                named_import_origin_index,
                 module_by_id,
                 existing_refs: &mut existing_refs,
                 synthetic_stubs: &mut synthetic_stubs,
@@ -221,6 +247,7 @@ impl ModuleGraph {
                 modules: &mut self.modules,
                 edges: &self.edges,
                 edges_by_target: context.edges_by_target,
+                named_import_origin_index: context.named_import_origin_index,
                 module_by_id: context.module_by_id,
                 barrel_id: entry.barrel,
                 barrel_idx,

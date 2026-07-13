@@ -1,5 +1,6 @@
 use rustc_hash::FxHashSet;
 
+use super::propagate::{count_named_import_origin_index_builds, count_star_reference_set_rebuilds};
 use crate::graph::ModuleGraph;
 use crate::resolve::{ResolveResult, ResolvedImport, ResolvedModule, ResolvedReExport};
 use fallow_types::discover::{DiscoveredFile, EntryPoint, EntryPointSource, FileId};
@@ -183,7 +184,14 @@ fn barrel_re_export_creates_export_symbol() {
         },
     ];
 
-    let graph = ModuleGraph::build(&resolved_modules, &entry_points, &files);
+    let (graph, origin_index_builds) = count_named_import_origin_index_builds(|| {
+        ModuleGraph::build(&resolved_modules, &entry_points, &files)
+    });
+
+    assert_eq!(
+        origin_index_builds, 0,
+        "named re-exports should not build the star-import origin index"
+    );
 
     let barrel = &graph.modules[1];
     let foo_export = barrel.exports.iter().find(|e| e.name.to_string() == "foo");
@@ -877,7 +885,14 @@ fn entry_point_star_re_export_propagates_to_source() {
         },
     ];
 
-    let graph = ModuleGraph::build(&resolved_modules, &entry_points, &files);
+    let (graph, origin_index_builds) = count_named_import_origin_index_builds(|| {
+        ModuleGraph::build(&resolved_modules, &entry_points, &files)
+    });
+
+    assert_eq!(
+        origin_index_builds, 0,
+        "entry-point star re-exports should use the fast path without an origin index"
+    );
 
     let utils_module = &graph.modules[1];
     let foo = utils_module
@@ -2213,7 +2228,14 @@ fn star_re_export_many_consumers_no_quadratic_blowup() {
         ..Default::default()
     });
 
-    let graph = ModuleGraph::build(&resolved_modules, &entry_points, &files);
+    let (graph, reference_set_rebuilds) = count_star_reference_set_rebuilds(|| {
+        ModuleGraph::build(&resolved_modules, &entry_points, &files)
+    });
+
+    assert!(
+        (1..=2).contains(&reference_set_rebuilds),
+        "the reference set should be built at most once per fixpoint iteration"
+    );
 
     let source = &graph.modules[source_id.0 as usize];
     let shared = source
@@ -3116,6 +3138,19 @@ fn star_re_export_duplicate_name_value_import_credits_value_export() {
         !value_export.references.is_empty(),
         "value use through a star barrel should credit the value export"
     );
+}
+
+#[test]
+fn star_re_export_origin_index_is_built_once_per_graph() {
+    let (_, builds) = count_named_import_origin_index_builds(|| {
+        graph_for_merged_star_chain_import(
+            vec![named_import("Merged", "Local", false)],
+            vec![],
+            vec!["Local"],
+        )
+    });
+
+    assert_eq!(builds, 1, "the whole-edge origin index must be shared");
 }
 
 #[test]
