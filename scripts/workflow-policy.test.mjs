@@ -212,7 +212,7 @@ test("coverage path filter contains the complete CI Rust contract", () => {
   const ciChangesJob = indentedBlock(ciWorkflow, "changes", 2);
   const ciRustPaths = listedPaths(indentedBlock(ciChangesJob, "rust", 12));
 
-  assert.match(coverageJob, /dorny\/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d/);
+  assert.match(coverageJob, /dorny\/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706/);
   for (const path of ciRustPaths) {
     assert.ok(coveragePaths.includes(path), `coverage filter is missing CI Rust path ${path}`);
   }
