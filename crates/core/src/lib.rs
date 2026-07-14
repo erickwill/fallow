@@ -2918,26 +2918,23 @@ mod tests {
         let unmatched = root.join("tools/build.ts");
         let files = vec![nested_first.clone(), unmatched, nested_second.clone()];
 
+        // The relative path preserves the input path's original separators, which
+        // are mixed on Windows when the fixture is built via multiple `join` calls
+        // (`web\src/first.ts`). Normalize separators before comparing so the
+        // assertion checks bucketing + ordering, not host path formatting.
+        let normalize = |bucket: &[(PathBuf, String)]| -> Vec<(PathBuf, String)> {
+            bucket
+                .iter()
+                .map(|(path, rel)| (path.clone(), rel.replace('\\', "/")))
+                .collect()
+        };
+
         let parent_first = bucket_files_by_workspace_roots(&[&parent, &child, &child], &files);
         assert_eq!(
-            parent_first[0],
+            normalize(&parent_first[0]),
             vec![
-                (
-                    nested_first.clone(),
-                    PathBuf::from("web")
-                        .join("src")
-                        .join("first.ts")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                (
-                    nested_second.clone(),
-                    PathBuf::from("web")
-                        .join("src")
-                        .join("second.ts")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
+                (nested_first.clone(), "web/src/first.ts".to_string()),
+                (nested_second.clone(), "web/src/second.ts".to_string()),
             ]
         );
         assert!(parent_first[1].is_empty());
@@ -2945,22 +2942,10 @@ mod tests {
 
         let child_first = bucket_files_by_workspace_roots(&[&child, &parent], &files);
         assert_eq!(
-            child_first[0],
+            normalize(&child_first[0]),
             vec![
-                (
-                    nested_first,
-                    PathBuf::from("src")
-                        .join("first.ts")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                (
-                    nested_second,
-                    PathBuf::from("src")
-                        .join("second.ts")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
+                (nested_first, "src/first.ts".to_string()),
+                (nested_second, "src/second.ts".to_string()),
             ]
         );
         assert!(child_first[1].is_empty());
