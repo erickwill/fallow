@@ -1053,6 +1053,16 @@ struct GraphCacheHit {
     elapsed_ms: f64,
 }
 
+#[derive(Clone, Copy)]
+struct DiscoverAllEntryPointsInput<'a> {
+    config: &'a ResolvedConfig,
+    files: &'a [discover::DiscoveredFile],
+    workspaces: &'a [fallow_config::WorkspaceInfo],
+    root_pkg: Option<&'a PackageJson>,
+    workspace_pkgs: &'a [LoadedWorkspacePackage],
+    plugin_result: &'a plugins::AggregatedPluginResult,
+}
+
 struct TimedAnalysis {
     result: AnalysisResults,
     elapsed_ms: f64,
@@ -1060,14 +1070,14 @@ struct TimedAnalysis {
 
 fn discover_analysis_entry_points(input: &AnalysisCoreSharedInput<'_>) -> TimedEntryPoints {
     let t = Instant::now();
-    let entry_points = discover_all_entry_points(
-        input.config,
-        input.files,
-        input.workspaces,
-        input.root_pkg,
-        input.workspace_pkgs,
-        input.plugin_result,
-    );
+    let entry_points = discover_all_entry_points(DiscoverAllEntryPointsInput {
+        config: input.config,
+        files: input.files,
+        workspaces: input.workspaces,
+        root_pkg: input.root_pkg,
+        workspace_pkgs: input.workspace_pkgs,
+        plugin_result: input.plugin_result,
+    });
     let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
     let summary = summarize_entry_points(&entry_points.all);
     let count = entry_points.all.len();
@@ -2010,32 +2020,32 @@ fn analyze_ci_scripts(
 
 /// Discover all entry points from static patterns, workspaces, plugins, and infrastructure.
 fn discover_all_entry_points(
-    config: &ResolvedConfig,
-    files: &[discover::DiscoveredFile],
-    workspaces: &[fallow_config::WorkspaceInfo],
-    root_pkg: Option<&PackageJson>,
-    workspace_pkgs: &[LoadedWorkspacePackage],
-    plugin_result: &plugins::AggregatedPluginResult,
+    input: DiscoverAllEntryPointsInput<'_>,
 ) -> discover::CategorizedEntryPoints {
     let mut entry_points = discover::CategorizedEntryPoints::default();
     let root_discovery = discover::discover_entry_points_with_warnings_from_pkg(
-        config,
-        files,
-        root_pkg,
-        workspaces.is_empty(),
+        input.config,
+        input.files,
+        input.root_pkg,
+        input.workspaces.is_empty(),
     );
 
-    let workspace_pkg_by_root: rustc_hash::FxHashMap<std::path::PathBuf, &PackageJson> =
-        workspace_pkgs
-            .iter()
-            .map(|(ws, pkg)| (ws.root.clone(), pkg))
-            .collect();
+    let workspace_pkg_by_root: rustc_hash::FxHashMap<std::path::PathBuf, &PackageJson> = input
+        .workspace_pkgs
+        .iter()
+        .map(|(ws, pkg)| (ws.root.clone(), pkg))
+        .collect();
 
-    let workspace_discovery: Vec<discover::EntryPointDiscovery> = workspaces
+    let workspace_discovery: Vec<discover::EntryPointDiscovery> = input
+        .workspaces
         .par_iter()
         .map(|ws| {
             let pkg = workspace_pkg_by_root.get(&ws.root).copied();
-            discover::discover_workspace_entry_points_with_warnings_from_pkg(&ws.root, files, pkg)
+            discover::discover_workspace_entry_points_with_warnings_from_pkg(
+                &ws.root,
+                input.files,
+                pkg,
+            )
         })
         .collect();
     let mut skipped_entries = rustc_hash::FxHashMap::default();
@@ -2053,14 +2063,16 @@ fn discover_all_entry_points(
     discover::warn_skipped_entry_summary(&skipped_entries);
     entry_points.extend_runtime(ws_entries);
 
-    let plugin_entries = discover::discover_plugin_entry_point_sets(plugin_result, config, files);
+    let plugin_entries =
+        discover::discover_plugin_entry_point_sets(input.plugin_result, input.config, input.files);
     entry_points.extend(plugin_entries);
 
-    let infra_entries = discover::discover_infrastructure_entry_points(&config.root);
+    let infra_entries = discover::discover_infrastructure_entry_points(&input.config.root);
     entry_points.extend_runtime(infra_entries);
 
-    if !config.dynamically_loaded.is_empty() {
-        let dynamic_entries = discover::discover_dynamically_loaded_entry_points(config, files);
+    if !input.config.dynamically_loaded.is_empty() {
+        let dynamic_entries =
+            discover::discover_dynamically_loaded_entry_points(input.config, input.files);
         entry_points.extend_runtime(dynamic_entries);
     }
 
