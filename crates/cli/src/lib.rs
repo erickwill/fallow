@@ -12,6 +12,7 @@
     )
 )]
 
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -142,6 +143,7 @@ Project inspection:
 
 Setup and configuration:
   init              Create a fallow config, optionally with a Git hook
+  audit-cache       Maintain reusable audit base-snapshot caches
   recommend         Recommend a project-tailored config for an agent to author
   migrate           Migrate knip, jscpd, or stylelint config to fallow
   config            Show the resolved config and loaded config file
@@ -1351,6 +1353,12 @@ enum Command {
         show_deprioritized: bool,
     },
 
+    /// Maintain reusable audit base-snapshot caches.
+    AuditCache {
+        #[command(subcommand)]
+        subcommand: AuditCacheCli,
+    },
+
     /// Surface the consequential structural DECISIONS a change embeds (the apex
     /// of the review brief), each framed as a judgment question with the routed
     /// expert to ask.
@@ -1605,6 +1613,20 @@ enum SecuritySubcommand {
         /// Scope diagnostics to selected files.
         #[arg(long, value_name = "PATH")]
         file: Vec<PathBuf>,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum AuditCacheCli {
+    /// Remove reusable audit caches owned by an explicit project root.
+    Remove {
+        /// Print what would be removed without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Confirm removal in non-interactive environments.
+        #[arg(long, alias = "force")]
+        yes: bool,
     },
 }
 
@@ -2874,6 +2896,7 @@ fn dispatch_subcommand(command: Command, dispatch: &DispatchContext<'_>) -> Exit
             explain::run_explain(&issue_type.join(" "), output, dispatch.json_style)
         }
         audit @ Command::Audit { .. } => dispatch_audit_command(audit, dispatch),
+        Command::AuditCache { subcommand } => dispatch_audit_cache_command(dispatch, &subcommand),
         Command::DecisionSurface { max_decisions } => {
             dispatch_decision_surface(dispatch, max_decisions)
         }
@@ -3698,6 +3721,70 @@ fn dispatch_audit_command(command: Command, dispatch: &DispatchContext<'_>) -> E
             show_deprioritized,
         },
     )
+}
+
+fn dispatch_audit_cache_command(
+    dispatch: &DispatchContext<'_>,
+    subcommand: &AuditCacheCli,
+) -> ExitCode {
+    match subcommand {
+        AuditCacheCli::Remove { dry_run, yes } => {
+            if !*dry_run && !*yes && !std::io::stdin().is_terminal() {
+                return emit_error(
+                    "audit-cache remove requires --yes (or --force) in non-interactive environments. Use --dry-run to preview removal first, then pass --yes to confirm.",
+                    2,
+                    dispatch.output,
+                );
+            }
+            match base_worktree::remove_reusable_audit_caches(dispatch.root, *dry_run) {
+                Ok(report) => {
+                    let action = if *dry_run { "would remove" } else { "removed" };
+                    if matches!(dispatch.output, fallow_config::OutputFormat::Json) {
+                        let value = serde_json::json!({
+                            "kind": "audit-cache-remove",
+                            "schema_version": 1,
+                            "command": "audit-cache remove",
+                            "root": dispatch.root,
+                            "dry_run": report.dry_run,
+                            "found": report.found,
+                            "would_remove": report.found.saturating_sub(report.skipped),
+                            "removed": report.removed,
+                            "skipped": report.skipped,
+                            "complete": report.skipped == 0,
+                        });
+                        let output_code = report::emit_json(&value, "audit cache removal");
+                        if output_code != ExitCode::SUCCESS {
+                            return output_code;
+                        }
+                    } else if !dispatch.quiet {
+                        println!(
+                            "audit cache: {action} {}, skipped {} for {}",
+                            if *dry_run {
+                                report.found.saturating_sub(report.skipped)
+                            } else {
+                                report.removed
+                            },
+                            report.skipped,
+                            dispatch.root.display(),
+                        );
+                    }
+                    if report.skipped == 0 {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(2)
+                    }
+                }
+                Err(error) => emit_error(
+                    &format!(
+                        "failed to remove audit caches for {}: {error}",
+                        dispatch.root.display()
+                    ),
+                    2,
+                    dispatch.output,
+                ),
+            }
+        }
+    }
 }
 
 fn dispatch_flags_command(dispatch: &DispatchContext<'_>, top: Option<usize>) -> ExitCode {
@@ -5040,6 +5127,10 @@ mod tests {
                 telemetry::Workflow::Setup,
             ),
             (vec!["fallow", "setup-hooks"], telemetry::Workflow::Setup),
+            (
+                vec!["fallow", "audit-cache", "remove", "--root", "."],
+                telemetry::Workflow::Setup,
+            ),
             (
                 vec!["fallow", "license", "status"],
                 telemetry::Workflow::License,
