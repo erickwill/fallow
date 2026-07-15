@@ -456,6 +456,101 @@ fn unused_workspace_dependency_reports_other_workspace_usage() {
 }
 
 #[test]
+fn nested_workspace_dependency_usage_belongs_to_deepest_workspace() {
+    let root = fixture_path("nested-workspace-dependency-ownership");
+    let config = create_config(root.clone());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    let parent_path = root.join("packages/parent/package.json");
+    let child_path = root.join("packages/parent/packages/child/package.json");
+    let shared_lib_findings: Vec<_> = results
+        .unused_dependencies
+        .iter()
+        .filter(|dep| dep.dep.package_name == "shared-lib")
+        .collect();
+
+    assert_eq!(
+        shared_lib_findings.len(),
+        1,
+        "only the parent declaration should be unused: {shared_lib_findings:?}"
+    );
+    assert_eq!(shared_lib_findings[0].dep.path, parent_path);
+    assert_eq!(
+        shared_lib_findings[0].dep.used_in_workspaces,
+        vec![root.join("packages/parent/packages/child")],
+        "the parent finding should identify the nested child as the owner of usage"
+    );
+    assert!(
+        results
+            .unused_dependencies
+            .iter()
+            .all(|dep| dep.dep.path != child_path || dep.dep.package_name != "shared-lib"),
+        "the nested child declaration should be credited for its import"
+    );
+}
+
+#[test]
+fn package_less_tsconfig_reference_credits_nearest_package_workspace() {
+    let project = tempfile::tempdir().expect("create temp dir");
+    let root = project.path();
+    let parent = root.join("packages/parent");
+    let referenced = parent.join("referenced");
+    std::fs::create_dir_all(referenced.join("src")).expect("create referenced source dir");
+
+    std::fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "package-less-tsconfig-reference",
+  "private": true,
+  "workspaces": ["packages/*"]
+}"#,
+    )
+    .expect("write root package.json");
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+  "files": [],
+  "references": [{"path": "./packages/parent/referenced"}]
+}"#,
+    )
+    .expect("write root tsconfig.json");
+    std::fs::write(
+        parent.join("package.json"),
+        r#"{
+  "name": "parent",
+  "version": "1.0.0",
+  "dependencies": {
+    "shared-lib": "1.0.0"
+  }
+}"#,
+    )
+    .expect("write parent package.json");
+    std::fs::write(
+        referenced.join("tsconfig.json"),
+        r#"{"compilerOptions":{"composite":true},"include":["src"]}"#,
+    )
+    .expect("write referenced tsconfig.json");
+    std::fs::write(
+        referenced.join("src/index.ts"),
+        "import { value } from \"shared-lib\";\nexport const referenced = value;\n",
+    )
+    .expect("write referenced source");
+
+    let config = create_config(root.to_path_buf());
+    let results = fallow_core::analyze(&config).expect("analysis should succeed");
+
+    assert!(
+        results
+            .unused_dependencies
+            .iter()
+            .all(|dep| dep.dep.path != parent.join("package.json")
+                || dep.dep.package_name != "shared-lib"),
+        "a package-less project reference must credit dependency usage to its nearest package-owning workspace: {:?}",
+        results.unused_dependencies
+    );
+}
+
+#[test]
 fn peer_dependency_of_used_installed_package_is_not_unused() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let root = tmp.path();

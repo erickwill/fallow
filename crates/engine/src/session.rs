@@ -36,7 +36,7 @@ pub struct AnalysisSession {
     workspaces: Vec<WorkspaceInfo>,
     workspace_diagnostics: Vec<WorkspaceDiagnostic>,
     parsed_cache: Mutex<Option<ParsedModuleCache>>,
-    styling_cache: Mutex<Option<crate::health::StylingAnalysisArtifacts>>,
+    styling_cache: Mutex<Option<Arc<crate::health::StylingAnalysisArtifacts>>>,
 }
 
 #[derive(Debug)]
@@ -276,17 +276,21 @@ impl AnalysisSession {
         )
     }
 
-    pub(crate) fn styling_analysis_artifacts(&self) -> crate::health::StylingAnalysisArtifacts {
+    pub(crate) fn styling_analysis_artifacts(
+        &self,
+    ) -> Arc<crate::health::StylingAnalysisArtifacts> {
         if let Ok(cache) = self.styling_cache.lock()
             && let Some(artifacts) = cache.as_ref()
         {
-            return artifacts.clone();
+            return Arc::clone(artifacts);
         }
 
-        let artifacts =
-            crate::health::build_styling_analysis_artifacts(self.files(), self.config());
+        let artifacts = Arc::new(crate::health::build_styling_analysis_artifacts(
+            self.files(),
+            self.config(),
+        ));
         if let Ok(mut cache) = self.styling_cache.lock() {
-            *cache = Some(artifacts.clone());
+            *cache = Some(Arc::clone(&artifacts));
         }
         artifacts
     }
@@ -1036,6 +1040,23 @@ mod tests {
         assert!(
             Arc::ptr_eq(&first.modules, &second.modules),
             "warm session queries must share parsed module storage"
+        );
+    }
+
+    #[test]
+    fn warm_styling_cache_reuses_artifact_allocation() {
+        let project = tempfile::tempdir().expect("project");
+        let root = project.path();
+        std::fs::write(root.join("styles.css"), ".button { color: red; }\n")
+            .expect("write stylesheet");
+        let session = AnalysisSession::load_default(root);
+
+        let first = session.styling_analysis_artifacts();
+        let second = session.styling_analysis_artifacts();
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "warm styling queries must share the cached artifact allocation"
         );
     }
 
